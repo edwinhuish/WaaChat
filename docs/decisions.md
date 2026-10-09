@@ -36,6 +36,7 @@
 | [0026](#adr-0026) | 密文缓存默认**不开启**；每次启动把缓存目录对账到当前设置（关→清空，开→只清不可能命中的残留） | 已生效（默认值由 [ADR-0028](#adr-0028) 取代；启动对账保留为崩溃恢复的兜底） |
 | [0027](#adr-0027) | 密文缓存的切换改为**事务式维护流程**：确认 → 维护界面（进度）→ 全部成功才提交，失败/中断回退；提交即生效，该项不再需要重启 | 已生效（"确认"与"维护界面"由 [ADR-0028](#adr-0028) 去掉；事务与回退语义保留） |
 | [0028](#adr-0028) | 密文缓存默认**开启**；切换去掉确认框与维护界面，改成随开关立即进行的静默转换 | 已生效 |
+| [0029](#adr-0029) | PDF 一律交给系统应用：不加载上游的文档预览页，并把 `application/pdf` 的响应降级成下载（内核内置阅读器**关不掉**） | 已生效（有效范围受端到端加密限制，见"已知限制"） |
 
 ---
 
@@ -1069,4 +1070,69 @@ neither relative to project dir ("...")
 - `src/renderer/views/settings.ts`：删除维护界面（`maintenanceScreen()`）与整屏切换；开关行在转换期间禁用自己并显示一行进行态，结束后显示结果行。
 - `scripts/check-capture.ts`：'默认不开启' 的断言改为 '默认开启'；暂存区那两条断言不变（暂存区仍然存在）。
 - 文档：`usage.md`（设置表与该开关的一节）、`architecture.md` 第 3.2 节、`security.md` 的资产表、`media-capture.md` 第 2 节、`ai/TASKS.md`。
+
+---
+
+## ADR-0029
+
+**决定**：
+
+1. **上游的文档预览页**（`*.whatsapp.net/pdf-viewer/…`）在本应用里**一律不加载**：窗口那一层由 `main/window.ts` 的窗口处理拒绝，子框架那一层由 `capture/pdf.ts` 的 `webRequest.onBeforeRequest` 取消。
+2. **任何 `application/pdf` 的响应都不再交给内核的内置阅读器**：我们把它的 `content-type` 降级为 `application/octet-stream`，让它变成一次下载 —— 于是接管点 A（下载事件 → 归档 → `shell.openPath`）接手，文件交给系统默认 PDF 阅读器打开。
+3. 这一层**不随任何设置开关**，也不新增设置项：它不在"可选增强"的位置上，而是"文件交给系统应用打开"这条契约在 PDF 上的落实。
+
+**状态**：已生效（有效范围受端到端加密限制，见最后一节"已知限制"）
+
+**背景**：需求是"点开聊天里的 PDF 用系统默认阅读器打开，应用内不要预览"。直觉做法是关掉内核的 PDF 内置阅读器，但 **Electron 44 没有这个开关**。一次性探针（Linux + `xvfb-run`，Electron 44.7）实测：
+
+| 试的东西 | 结果 |
+|---|---|
+| `webPreferences.plugins: false` / `true` / 不设 | 三者完全一样：PDF 仍被内置阅读器渲染（导航完成、标题变成 PDF 名、**没有**下载事件） |
+| `--disable-plugins` / `--disable-extensions` / `--disable-pdf-extension` / `--disable-features=PdfOopif` | 同上，全部无效 |
+| `navigator.pdfViewerEnabled` | 恒为 `true`；`navigator.plugins` 里始终有 `PDF Viewer`（连 `--disable-plugins` 也改不动） |
+| `webRequest.onHeadersReceived` 把 `application/pdf` 改成 `application/octet-stream` | ✅ 立刻变成下载（`will-download` 拿到 `a.pdf`）；**子框架里的 `<iframe>` / `<embed>` 同样有效** |
+| 在 `protocol.handle('https')` 内部返回 `application/octet-stream` | ✅ 同样变成下载 |
+| 协议处理器返回 `application/pdf` 时，`webRequest.onHeadersReceived` 改它 | ❌ 改不动，PDF 照旧被渲染 |
+| `webRequest.onBeforeRequest` 取消一个会被协议处理器接住的请求 | ✅ 生效（`ERR_BLOCKED_BY_CLIENT`，协议处理器根本不会被调用） |
+| `will-navigate` + `preventDefault()` + `contents.downloadURL(blob:…)` | ❌ **进程直接崩**（core dump） |
+| `<iframe src=blob:…>` / `<embed src=blob:…>` 的 `will-frame-navigate` | ❌ 不触发 |
+
+于是"取消预览"只能等价于**不让 PDF 到达阅读器**：把它变成下载。
+
+**理由**：
+
+1. **阅读器关不掉，那就断掉它的输入。** 上表最右一列就是结论：改写 MIME 这一条确定有效，且字节与文件名都正确 —— 说明它走的就是接管点 A 的既有路径，不需要第二套下载逻辑。
+2. **挡预览页不是"顺手加的"，它和第 2 条是同一件事的两半。** 预览页（`webtp.whatsapp.net/pdf-viewer/`）的唯一作用就是把 PDF 交给内置阅读器渲染（`shared/upstream.ts` 一直是按"上游自有页"放行它的）。留着它，第 2 条就只对"直接指向 PDF 的 URL"有效，而点击文档仍然会渲染出预览面板 —— 两个目标互相打架。
+3. **挡请求只能用 `onBeforeRequest`，改写 MIME 只能放在协议处理器内部。** 这两条都是实测逼出来的：密文缓存那一层挂着时（[ADR-0027]）会话里的**所有** https 都由 `protocol.handle('https')` 接住，此时 `onHeadersReceived` 对那份响应无效，而 `onBeforeRequest` 的取消仍然有效。因此分工是"挡 = `onBeforeRequest`（与缓存开关无关，永远挂着）；改写 = 协议处理器内部 + `onHeadersReceived` 兜住缓存摘掉的情形"。
+4. **改写只做一次"渲染 → 下载"的降级，不是动页面数据。** 请求一个字节没动、响应体一个字节没动、页面的 JS 与 DOM 一行没碰（[INV-1] 的边界是注入）。这一条必须有意识地记下来，因为 `media-capture.md` 第 6 节把"修改请求内容或注入响应"列为不做的事 —— 本次是那条边界的**一次明确例外**，同一份文档里已经注明适用范围（只改 PDF 响应的 MIME 一个头，且方向只有"降级成下载"）。
+
+**被否决的替代方案**：
+
+- **`plugins: false` / 各种 `--disable-*` 开关**：实测全是安慰剂（见背景表）。写下"已关掉内置预览"而实际没关，比不写更坏 —— 它会让人以后不再怀疑这里。
+- **拦 `blob:` 导航改成 `contents.downloadURL(blob)`**：实测会让进程崩溃；而且子框架里的 blob（`<iframe>` / `<embed>`）根本不触发 `will-frame-navigate`，本来就拦不到。这条**也是"已知限制"的来源**：页面自己解密出来的 blob PDF 我们够不着。
+- **只挡预览页、不改写 MIME**：那样"直接指向 PDF 的 URL"（聊天里分享的链接、其它上游页面里的 PDF）仍会被阅读器渲染，与决定 2 的目标不一致；而且改写的成本只有一行。
+- **把预览页交给系统浏览器打开**：那个地址需要登录态，在别的浏览器里只会得到一个打不开的页面（`shared/upstream.ts` 早就记过这条）。
+- **给这一层加一个设置开关**：它不是"可选增强"（对比 [ADR-0026](#adr-0026) 的密文缓存），而是"文件交给系统应用"这条契约的一部分。做成开关等于承认默认配置不满足契约。
+
+**影响**：
+
+- `src/shared/upstream.ts`：新增纯函数 `isDocumentPreviewPage()`（host + `/pdf-viewer/` 路径前缀）；`isUpstreamPage()` 语义不变（预览页仍算"上游自己的页面"，只是我们不再加载它），三个判据共用同一个 host 检查。
+- 新模块 `src/main/capture/pdf.ts`：`isPdfResponse()` / `forceDownloadIfPdf()` / `attachPdfHandling(ses)`（`onBeforeRequest` 挡预览页 + `onHeadersReceived` 兜住缓存摘掉时的改写）。它只 `import type` electron，因此可被单测与离线自检引用。
+- `src/main/capture/protocol.ts`：唯一的回源出口 `passthrough()` 与缓存命中那条出口都过一遍 `forceDownloadIfPdf()` —— 协议处理器返回的响应是最终响应，只有这里能改（理由 3）。
+- `src/main/session.ts`：`attachPdfHandling(ses)`，与两个接管点并列。
+- `src/main/window.ts`：窗口处理拒绝文档预览页，记日志，且**不**交给系统浏览器。
+- `scripts/check-capture.ts`：新增一节断言锁住两条纯规则（预览页判据、PDF MIME 判据）—— 判据放宽一点点就会静默地让应用内重新出现 PDF 预览，属于"改了没人会立刻发现"的那一类。
+- 文档：`media-capture.md`（第 2 / 5 / 6 节）、`usage.md`（常见问题）、`architecture.md`、`roadmap.md`（M1 那条验收项的说明）、`README.md`、`ai/TASKS.md`。
+
+**已知限制（必须与决定一起读）**：
+
+WhatsApp 的媒体是端到端加密的，**PDF 的明文字节只存在于页面内存里**（页面解密后做成 `blob:`），因此：
+
+- 决定 2 的那条改写**不会**为它触发 —— 网络上根本没有 `application/pdf` 的响应（媒体 CDN 上那份是密文，`content-type` 是 `application/octet-stream`，见 [ADR-0015](#adr-0015)）；
+- `blob:` 那条路实测拦不住（见替代方案）。
+
+所以本次改动的**可观察结果**是：点击 PDF 不再出现应用内预览；文件要经**上游自己的下载入口**拿到（预览面板或消息上的下载按钮），那一步会走接管点 A，落到系统默认 PDF 阅读器。**"点 PDF 直接弹出系统阅读器"在不注入页面（[INV-1](#adr-0002)）的前提下做不到** —— 这句话写进 `roadmap.md`，而不是留一条永远打不开的验收项。
+
+如果实测发现"点 PDF **什么都没发生**"，说明上游**只**通过预览页给出 PDF（没有独立的下载入口）。这时正确的动作是**回退这一条决定**（`git revert` 本次改动）—— 那意味着这条路线会净损失一个可用功能，而不是把文件换了个应用打开。第二次遇到这种情况时，要么接受"PDF 只能在应用内预览"，要么回到 [ADR-0002](#adr-0002) 重新讨论注入这条边界，不要在这里打补丁。
+
 
