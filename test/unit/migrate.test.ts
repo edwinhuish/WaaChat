@@ -256,7 +256,7 @@ describe('migrateArchive（索引清单）', () => {
     seedSource()
     const planned = plan()
 
-    // 迁移窗口里索引被重新打开过（例如用户在确认框之前切到了「归档」标签页）。
+    // 迁移窗口里索引被重新打开过（例如用户在确认框之前打开了「文件列表」窗口）。
     writeFileSync(join(source, '.index.sqlite-wal'), 'late wal')
 
     await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })

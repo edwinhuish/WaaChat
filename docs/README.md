@@ -93,7 +93,7 @@ waachat/
 ├── src/
 │   ├── main/                       ← Electron 主进程：唯一有权限碰文件系统的地方
 │   │   ├── index.ts                应用入口：生命周期、单实例、app_id、退出清理
-│   │   ├── window.ts               窗口创建、UA、权限白名单、本地窗口引用
+│   │   ├── window.ts               窗口创建、UA、权限白名单、两扇本地窗口的引用
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
@@ -119,18 +119,21 @@ waachat/
 │   ├── preload/
 │   │   └── index.ts                contextBridge：只暴露白名单 API，单向取数据
 │   │
-│   ├── renderer/                   ← 本地界面（无框架，纯 DOM）
-│   │   ├── index.html              结构 + CSP
-│   │   ├── main.ts                 装配：挂载视图、标签切换
+│   ├── renderer/                   ← 本地界面（无框架，纯 DOM；两扇窗口各一个入口，见 ADR-0025）
+│   │   ├── files.html              「文件列表」窗口：结构 + CSP
+│   │   ├── files.ts                它的装配（只挂文件列表）
+│   │   ├── settings.html           「设置」窗口：结构 + CSP
+│   │   ├── settings.ts             它的装配（设置项 + 接管状态）
+│   │   ├── fatal.ts                装配失败的兜底提示（两个入口共用）
 │   │   ├── bridge.ts               取 window.waachat（拿不到就抛）
 │   │   ├── env.d.ts                window.waachat 的类型声明
 │   │   ├── dom.ts                  h() / part()：让 textContent 成为最省事的写法
 │   │   ├── icon.ts                 用 canvas 把图片裁成 512×512（解码在渲染进程，见 ADR-0022）
 │   │   ├── styles.css
 │   │   └── views/
-│   │       ├── archive.ts          归档浏览器（含搜索竞态处理）
+│   │       ├── archive.ts          文件列表窗口的主体（含搜索竞态处理）
 │   │       ├── settings.ts         偏好设置（含应用图标；未实现的项标记为禁用）
-│   │       └── health.ts           顶栏的接管状态
+│   │       └── health.ts           设置窗口顶栏的接管状态
 │   │
 │   └── shared/                     ← 主进程与渲染进程共享的纯类型/常量（不含副作用）
 │       ├── appicon.ts              图标尺寸/上限、裁剪几何、桌面条目生成（纯函数，可单测）

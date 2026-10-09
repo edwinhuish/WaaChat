@@ -104,7 +104,10 @@ logger.info('archive: stored', { name: fileName, chat: chatName, path: absoluteP
 ```
 
 `type`：`feat` `fix` `refactor` `docs` `test` `chore` `build` `ci` `perf`
-`scope`：`capture` `archive` `ipc` `packaging` `ci` `docs` `adr`
+`scope`：`capture` `archive` `ipc` `ui` `packaging` `ci` `docs` `adr`
+
+`ui` 覆盖本地界面的形态：窗口、托盘菜单、渲染层的入口与视图。它此前不在表里，于是窗口/托盘
+类改动只能挑 `ipc` 或 `capture` —— 两个都不准（ADR-0025 把本地界面拆成两扇窗口时补上的）。
 
 一个提交做一件事。重构与功能改动**不要**混在一起 —— 那会让 review 与回滚都变难。
 
