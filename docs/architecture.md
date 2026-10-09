@@ -97,11 +97,11 @@ sequenceDiagram
 
 热路径要解决的是"**上游每次点击都会重新下载**"这件事。注意缓存的是**密文** —— 我们不参与解密，页面拿到密文自己解。
 
-> 这一层可以关（设置里的"密文磁盘缓存"），而且**默认关闭**：[ADR-0026](decisions.md#adr-0026)。
-> 关闭后冷路径完全不受影响，代价只是"第二次打开仍要联网取一遍密文"。切换是一次**事务式维护
-> 流程**（确认 → 转换 → 提交，失败回退），因此**不需要重启**：提交的那一刻这一层就跟着注册或
-> 注销（[ADR-0027](decisions.md#adr-0027)）。启动时的对账保留着，但角色变成崩溃恢复的兜底 ——
-> 见 `capture/cache-files.ts` 与 `capture/cache-switch.ts`。
+> 这一层可以关（设置里的"密文磁盘缓存"），而且**默认开启**：[ADR-0028](decisions.md#adr-0028)。
+> 关闭后冷路径完全不受影响，代价只是"第二次打开仍要联网取一遍密文"。切换是一次**事务式转换**
+> （切协议层 → 转换 → 提交，失败回退），没有确认框也没有进度屏，因此**不需要重启**：提交的
+> 那一刻这一层就跟着注册或注销（[ADR-0027](decisions.md#adr-0027)）。启动时的对账保留着，但角色
+> 变成崩溃恢复的兜底 —— 见 `capture/cache-files.ts` 与 `capture/cache-switch.ts`。
 
 ### 3.3 后台预取（可选增强）
 
@@ -144,7 +144,7 @@ sequenceDiagram
 └── .index.sqlite                # 归档索引 + FTS5 虚表
 
 ~/.local/share/waachat/            # XDG_DATA_HOME
-└── cache/                       # 密文缓存（默认不开启；可安全删除，删了只是要重新下载）
+└── cache/                       # 密文缓存（默认开启；可安全删除，删了只是要重新下载）
 
 ~/.config/waachat/                 # XDG_CONFIG_HOME（Electron 的 userData）
 ├── settings.json                # 用户偏好（不含凭据）
