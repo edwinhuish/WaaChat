@@ -83,12 +83,15 @@
 **检查点**
 
 - [ ] `pnpm run verify` 通过（它会断言 `.desktop` **文件名**与 `StartupWMClass` 两项，以及图标）
+- [ ] 若应用名或 `Comment` 改过：运行期生成的**用户级**启动器条目仍然带 `Comment=…unofficial…`
+      与 `StartupWMClass=<appId>`（`pnpm run selfcheck` 会核对它与 `electron-builder.yml` 同文）
 - [ ] 干净环境里图标**不是**通用占位图标
 - [ ] 已固定的启动器图标与运行窗口**合并为一个**（不是两个）
 - [ ] AppImage 在**未安装 libfuse2** 的系统上能跑
 
 **容易错的地方**：只改了 `electron-builder.yml` 的 `StartupWMClass` 就以为完事
 （漏掉 `linux.syncDesktopName`、漏掉 `app.setDesktopName()`）；
+漏掉运行期生成的那份用户级启动器条目（ADR-0022）；
 只看本地机器（本地往往已经缓存了旧图标）。
 
 ---

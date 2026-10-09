@@ -20,6 +20,7 @@ import { BrowserWindow, app, shell } from 'electron'
 import { SESSION_PARTITION, UPSTREAM_URL } from '../shared/constants'
 import { isUpstreamPage } from '../shared/upstream'
 import { buildUserAgent } from '../shared/user-agent'
+import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { logger } from './logger'
 
 /** 左上角符合 GNOME 习惯的默认尺寸；上游页面是双栏布局，窄了会很难用。 */
@@ -67,6 +68,9 @@ function hideOnClose(window: BrowserWindow): void {
  *  - `sandbox: true`        → 渲染进程在受限沙箱中运行
  *  - `nodeIntegration: false` → 页面拿不到 Node
  *  - `partition`            → 登录态持久化；改了它等于让所有用户重新扫码
+ *
+ * `icon` 只在 **X11** 下决定窗口图标（`_NET_WM_ICON`）；Wayland 下由合成器按 `app_id`
+ * 从 `.desktop` 取，这里的值会被忽略。改动自定义图标要同时照顾这两条路，见 ADR-0022。
  */
 export function createMainWindow(): BrowserWindow {
   const userAgent = buildUserAgent(process.versions.chrome)
@@ -76,6 +80,7 @@ export function createMainWindow(): BrowserWindow {
     show: false,
     title: 'WaaChat',
     autoHideMenuBar: true,
+    icon: effectiveAppIcon() ?? defaultIconPath(),
     webPreferences: {
       partition: SESSION_PARTITION,
       contextIsolation: true,
@@ -138,6 +143,7 @@ export function createLocalWindow(): BrowserWindow {
     show: false,
     title: 'WaaChat',
     autoHideMenuBar: true,
+    icon: effectiveAppIcon() ?? defaultIconPath(),
     webPreferences: {
       partition: SESSION_PARTITION,
       preload: join(__dirname, '../preload/index.js'),

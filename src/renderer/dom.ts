@@ -27,6 +27,14 @@ export interface ElementProps {
   readonly type?: string
   readonly placeholder?: string
   readonly value?: string
+  /**
+   * 图片源。**只用于我们自己产出的 `data:` URL**（目前只有图标预览）。
+   *
+   * 之所以敢放进白名单：CSP 里 `img-src 'self' data:` 已经限定了它能到达的范围 ——
+   * 即使将来有人把不可信的值接到这里，也发不出请求、成不了信标。
+   */
+  readonly src?: string
+  readonly alt?: string
   readonly disabled?: boolean
   /** 复选框 / 单选框的选中态。 */
   readonly checked?: boolean
@@ -68,6 +76,8 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   if (props.type !== undefined) element.setAttribute('type', props.type)
   if (props.placeholder !== undefined) element.setAttribute('placeholder', props.placeholder)
   if (props.value !== undefined) element.setAttribute('value', props.value)
+  if (props.src !== undefined) element.setAttribute('src', props.src)
+  if (props.alt !== undefined) element.setAttribute('alt', props.alt)
   if (props.disabled === true) element.setAttribute('disabled', '')
   if (props.checked === true) element.setAttribute('checked', '')
   if (props.onClick !== undefined) element.addEventListener('click', props.onClick)

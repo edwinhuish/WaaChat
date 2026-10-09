@@ -26,6 +26,17 @@ import { sanitizeFileName } from '../src/main/archive/naming'
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
 import {
+  APP_ICON_SIZE,
+  CUSTOM_ICON_FILENAME,
+  DESKTOP_ENTRY_COMMENT,
+  DESKTOP_ENTRY_MARKER,
+  buildDesktopEntry,
+  coverCropRect,
+  desktopEntryExec,
+  isAcceptedIconName,
+} from '../src/shared/appicon'
+import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import {
   archiveDir,
   ciphertextCacheDir,
   defaultArchiveDir,
@@ -267,6 +278,81 @@ check(
 const builderConfig = source('../electron-builder.yml')
 check('deb synopsis 含 unofficial', /^\s*synopsis:.*[Uu]nofficial/m.test(builderConfig))
 check('.desktop 的 Comment 含 unofficial', /^\s*Comment:.*[Uu]nofficial/m.test(builderConfig))
+
+// ---------------------------------------------------------------------------
+// 7. 自定义图标
+// ---------------------------------------------------------------------------
+//
+// 这一层的坏结果全都不报错：图标被拉伸变形、启动器那份条目漏掉非官方声明、
+// 图标文件被别人读写。因此把几条约定固化成断言。
+//
+// 不覆盖的部分（**故意**）：真实的解码与裁剪发生在渲染进程的 canvas 里，
+// 离线状态下没有 DOM 可跑，因此那一步只能靠一次真实的点击来验证。
+
+section('自定义图标')
+
+check(
+  '接受 png / jpg / ico（需求点名了这三种）',
+  ['png', 'jpg', 'ico'].every((extension) => isAcceptedIconName(`icon.${extension}`)),
+)
+check('拒绝会承载脚本的 svg', !isAcceptedIconName('icon.svg'))
+check(`产出尺寸不小于 256（当前 ${APP_ICON_SIZE}）`, APP_ICON_SIZE >= 256)
+
+const crop = coverCropRect(1600, 900)
+check(
+  '非等比图片裁成正方形且不越界',
+  crop !== null && crop.x + crop.size <= 1600 && crop.y + crop.size <= 900,
+  JSON.stringify(crop),
+)
+
+// 不加引号时，含空格的路径会被桌面条目拆成"命令 + 参数"，症状是从启动器点开没反应。
+check('Exec 里含空格的路径会被引号化', desktopEntryExec('/a b/c').startsWith('"'))
+
+const launcherEntry = buildDesktopEntry({
+  name: 'WaaChat',
+  exec: '/opt/WaaChat/waachat',
+  iconPath: '/home/edwin/.config/waachat/custom-icon.png',
+  startupWMClass: APP_ID,
+})
+check('启动器条目带着"本应用生成"的标记', launcherEntry.includes(DESKTOP_ENTRY_MARKER))
+check('启动器条目保留非官方声明（INV-4）', /unofficial/i.test(launcherEntry))
+check(
+  '启动器条目的 Comment 与 electron-builder.yml 同文（改一处必须改另一处）',
+  builderConfig.includes(`Comment: ${DESKTOP_ENTRY_COMMENT}`),
+)
+check(
+  '启动器条目的 StartupWMClass 与 appId 同源',
+  launcherEntry.includes(`StartupWMClass=${APP_ID}`),
+)
+
+/**
+ * 下面两条只有在用户真的设过自定义图标之后才有意义。
+ *
+ * 权限是 0600 的硬要求：图标本身不敏感，但它与归档、日志并排放在同一个用户目录里，
+ * 没有必要让同机其它用户读它 —— 与归档目录 0700 是同一条理由。
+ */
+const customIcon = join(homedir(), '.config', 'waachat', CUSTOM_ICON_FILENAME)
+if (existsSync(customIcon)) {
+  check(
+    '自定义图标权限为 0600',
+    (statSync(customIcon).mode & 0o777) === 0o600,
+    `实际 ${(statSync(customIcon).mode & 0o777).toString(8)}`,
+  )
+  note(`自定义图标：${customIcon}`)
+} else {
+  note(`尚未设置自定义图标（设置后落在 ${customIcon}）`)
+}
+
+const dataHome = process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+const launcherOverride = join(dataHome, 'applications', DESKTOP_FILE_NAME)
+if (existsSync(launcherOverride)) {
+  const text = readFileSync(launcherOverride, 'utf8')
+  check('用户级启动器条目是本应用写的', text.includes(DESKTOP_ENTRY_MARKER))
+  check('用户级启动器条目保留非官方声明（INV-4）', /unofficial/i.test(text))
+  note(`启动器条目覆盖：${launcherOverride}`)
+} else {
+  note(`尚未写用户级启动器条目（设置自定义图标时会写到 ${launcherOverride}）`)
+}
 
 // ---------------------------------------------------------------------------
 

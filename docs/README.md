@@ -111,6 +111,7 @@ waachat/
 │   │   │   ├── channels.ts         通道名常量（主进程与渲染进程共享）
 │   │   │   └── index.ts            通道注册 + 调用方与参数校验
 │   │   └── integration/            系统集成
+│   │       ├── appicon.ts          应用图标：读写、贴到窗口与托盘、启动器条目覆盖
 │   │       ├── open.ts             交给默认应用打开 / 在文件管理器中定位
 │   │       ├── login.ts            开机自启（含 AppImage 的路径陷阱）
 │   │       └── tray.ts             托盘图标（Ayatana）
@@ -124,17 +125,20 @@ waachat/
 │   │   ├── bridge.ts               取 window.waachat（拿不到就抛）
 │   │   ├── env.d.ts                window.waachat 的类型声明
 │   │   ├── dom.ts                  h() / part()：让 textContent 成为最省事的写法
+│   │   ├── icon.ts                 用 canvas 把图片裁成 512×512（解码在渲染进程，见 ADR-0022）
 │   │   ├── styles.css
 │   │   └── views/
 │   │       ├── archive.ts          归档浏览器（含搜索竞态处理）
-│   │       ├── settings.ts         偏好设置（未实现的项标记为禁用）
+│   │       ├── settings.ts         偏好设置（含应用图标；未实现的项标记为禁用）
 │   │       └── health.ts           顶栏的接管状态
 │   │
 │   └── shared/                     ← 主进程与渲染进程共享的纯类型/常量（不含副作用）
+│       ├── appicon.ts              图标尺寸/上限、裁剪几何、桌面条目生成（纯函数，可单测）
 │       ├── constants.ts            上游地址、分区名、app_id、容量上限
 │       ├── types.ts                数据形状 + 默认设置 + 需重启的项
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
+│       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
 │       └── vite-assets.d.ts        `?raw` 导入的类型声明
 │

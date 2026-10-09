@@ -10,13 +10,12 @@
  * 缺失时的行为是**降级为没有托盘**，而不是启动失败。
  */
 
-import { join } from 'node:path'
-
-import { Menu, Tray, app, nativeImage } from 'electron'
+import { Menu, Tray, app } from 'electron'
 import type { BrowserWindow } from 'electron'
 
 import { logger } from '../logger'
 import { presentWindow } from '../window'
+import { effectiveAppIcon } from './appicon'
 
 export interface TrayWindows {
   readonly localWindow: BrowserWindow
@@ -26,23 +25,25 @@ export interface TrayWindows {
 let tray: Tray | null = null
 
 /**
- * 托盘图标路径。
+ * 当前托盘，供"换了图标要立刻反映到托盘上"的调用方使用（见 `ipc/index.ts`）。
  *
- * 打包后图标来自 `extraResources`（见 electron-builder.yml）—— 不能指望它出现在
- * `out/` 里，因为那里只有编译产物。
+ * 托盘可能整个不存在（缺 Ayatana 支持），因此返回 `null` 是正常路径，调用方不必区分。
  */
-function trayIconPath(): string {
-  return app.isPackaged
-    ? join(process.resourcesPath, 'icon.png')
-    : join(app.getAppPath(), 'build', 'icon.png')
+export function getTray(): Tray | null {
+  return tray
 }
 
 export function createTray(windows: TrayWindows): Tray | null {
   if (tray !== null) return tray
 
   try {
-    const image = nativeImage.createFromPath(trayIconPath())
-    if (image.isEmpty()) {
+    /**
+     * 与窗口用同一个来源（`integration/appicon.ts`）。**不要**在这里另读一次文件：
+     * 那样"自定义图标"就要在各处分别实现一遍，而漏掉其中一处的外观症状是
+     * "托盘换了、窗口没换" —— 看起来像随机故障。
+     */
+    const image = effectiveAppIcon()
+    if (image === null) {
       logger.warn('tray: icon not found, continuing without a tray icon')
       return null
     }

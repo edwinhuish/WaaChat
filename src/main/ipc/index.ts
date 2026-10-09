@@ -12,6 +12,8 @@
  * 通道名一律来自 `channels.ts`，本文件不出现字符串字面量。
  */
 
+import { basename } from 'node:path'
+
 import {
   app,
   dialog,
@@ -22,16 +24,31 @@ import {
   type OpenDialogOptions,
 } from 'electron'
 
+import { ICON_DIALOG_EXTENSIONS } from '../../shared/appicon'
 import type { ArchiveIdInput } from '../../shared/bridge'
 import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure } from '../../shared/migration'
-import type { ArchiveQuery, Settings } from '../../shared/types'
+import type {
+  AppIconInput,
+  AppIconPickResult,
+  AppIconResult,
+  ArchiveQuery,
+  Settings,
+} from '../../shared/types'
 import { planMigration } from '../archive/migrate'
 import { relocateArchive } from '../archive/relocate'
 import { archiveStore } from '../archive/store'
 import { captureHealth, onHealthChange } from '../capture/health'
+import {
+  appIconState,
+  effectiveAppIcon,
+  readIconSource,
+  resetAppIcon,
+  setAppIcon,
+} from '../integration/appicon'
 import { applyLaunchAtLogin } from '../integration/login'
 import { openPath, revealPath } from '../integration/open'
+import { getTray } from '../integration/tray'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { getSettings, updateSettings } from '../settings'
@@ -184,6 +201,60 @@ async function chooseDirectory(defaultPath: string): Promise<string | null> {
   return result.filePaths[0]
 }
 
+/**
+ * 让用户挑一张图片，返回它的**字节**。取消时返回 `null`。
+ *
+ * 不给"所有文件"这一项：能解码的格式已经列全，放开只会让用户选中一个必然失败的文件，
+ * 然后收到一句"不支持的格式"（而那个文件本来就看不出哪里不对）。
+ */
+async function chooseIconFile(): Promise<AppIconPickResult | null> {
+  const options: OpenDialogOptions = {
+    title: '选择要作为应用图标的图片',
+    buttonLabel: '使用这张图片',
+    properties: ['openFile'],
+    filters: [{ name: '图片', extensions: [...ICON_DIALOG_EXTENSIONS] }],
+  }
+
+  const window = getLocalWindow()
+  const result =
+    window === null || window.isDestroyed()
+      ? await dialog.showOpenDialog(options)
+      : await dialog.showOpenDialog(window, options)
+
+  if (result.canceled || result.filePaths.length === 0) return null
+
+  const path = result.filePaths[0]
+  // 只把 basename 往下传：完整路径在这里之后就没有第二个用途了（G-1）。
+  return readIconSource(path, basename(path))
+}
+
+/**
+ * 把渲染进程送来的图标数据收成字节。
+ *
+ * 结构化克隆会把 `Uint8Array` 原样送达，但**不要**因此相信它 —— 类型可能被改成字符串，
+ * 也可能塞一个超大数组进来。除了"是不是字节"以外的判断都在 `appicon.ts` 里做。
+ */
+function toIconBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== 'object' || value === null) return null
+  const png = (value as Partial<AppIconInput>).png
+  return png instanceof Uint8Array ? png : null
+}
+
+/**
+ * 图标换了之后，把托盘那一份也刷新掉。
+ *
+ * 托盘**不归** `appicon.ts` 管（那会引入 window → appicon → tray → window 的循环依赖），
+ * 所以这最后一步留在这里。漏掉它的症状很具体：窗口换了新图标，托盘还是旧的。
+ */
+function refreshTrayIcon(result: AppIconResult): AppIconResult {
+  if (!result.ok) return result
+
+  const image = effectiveAppIcon()
+  if (image !== null) getTray()?.setImage(image)
+
+  return result
+}
+
 export function registerIpcHandlers(): void {
   /**
    * 归档存储**每次**向 `archiveStore()` 取，而不是在这里捕获一份引用：用户在设置里
@@ -292,6 +363,28 @@ export function registerIpcHandlers(): void {
       settings: presentSettings(getSettings()),
     }
   })
+
+  // --- 应用图标 --------------------------------------------------------------
+
+  guard(CHANNELS.appIconGet, () => appIconState())
+
+  guard(CHANNELS.appIconPick, () => chooseIconFile())
+
+  guard(CHANNELS.appIconSet, (input: unknown) => {
+    const png = toIconBytes(input)
+    if (png === null) {
+      const invalid: AppIconResult = {
+        ok: false,
+        failure: 'invalid-image',
+        detail: '没有收到图片数据',
+      }
+      return invalid
+    }
+
+    return refreshTrayIcon(setAppIcon(png))
+  })
+
+  guard(CHANNELS.appIconReset, () => refreshTrayIcon(resetAppIcon()))
 
   // --- 接管健康 --------------------------------------------------------------
 

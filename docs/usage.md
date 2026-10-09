@@ -99,9 +99,13 @@ sudo apt install gnome-shell-extension-appindicator
 
 ~/.config/waachat/               配置与登录态（Electron 的 userData）
 ├── settings.json              偏好设置
+├── custom-icon.png            自定义应用图标（设置过才有），0600
 └── …                          Cookies / Local Storage / IndexedDB —— 登录态在这里
 
 ~/.cache/waachat/logs/           日志，可随时删除
+
+~/.local/share/applications/     仅在你换过应用图标之后才会出现
+└── io.github.edwinhuish.waachat.desktop   启动器条目覆盖（Icon= 指向上面那张图）
 ```
 
 | 目录 | 删了会怎样 |
@@ -110,6 +114,8 @@ sudo apt install gnome-shell-extension-appindicator
 | `~/Downloads/WaaChat_files/`（或你自己设的位置） | 你打开过的文件丢失，且若原链接已过期则无法恢复 |
 | `~/.local/share/waachat/cache/` | 只影响性能，下次自动重建，随时可删 |
 | `~/.cache/waachat/logs/` | 只是丢失排查线索 |
+| `~/.config/waachat/custom-icon.png` | 图标回到默认值，其余不受影响（也可以在设置里点「恢复默认」） |
+| `…/applications/io.github.edwinhuish.waachat.desktop` | 启动器图标回到默认；下次改图标会重新写入 |
 
 登录态与归档**物理分离**（前者在 `~/.config`，后者在你选的文档目录）是刻意的：这样一来"清理归档"这类功能在文件系统层面就不可能走到登录态，而不是靠实现者记得别传错路径。
 
@@ -134,6 +140,7 @@ sudo apt install gnome-shell-extension-appindicator
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
+| 应用图标 | 默认图标 | 点「选择图片…」换图标（PNG / JPG / ICO）。窗口与托盘立即生效；启动器 / 任务栏图标要重新登录桌面。见下 |
 | 文件保存位置 | `~/Downloads/WaaChat_files` | 点「更改…」选目录 → 确认后**自动迁移**已有归档；取消则存储位置与数据都不变 |
 | 点击文件时自动打开 | 开启 | 关闭后只归档，你自己从归档界面打开 |
 | 密文磁盘缓存 | 开启 | 第二次打开同一个文件不再联网。**改这项需要重启** |
@@ -144,6 +151,29 @@ sudo apt install gnome-shell-extension-appindicator
 | 密文缓存上限 | 2 GiB | **尚未生效（计划 M3）**，界面上该项是禁用的 |
 
 > 把"没实现的项"标成禁用而不是悄悄留着，是刻意的：一个能改但不起作用的开关，会让用户相信一件不成立的事。见 `ai/CONVENTIONS.md` 第 4 节「降级必须可见」。
+
+### 应用图标
+
+点「选择图片…」，选中一张 PNG / JPG / ICO（WebP、BMP、GIF 也认）。应用会自动**居中裁剪成
+正方形**再缩放到 512×512，裁剪结果立刻显示在按钮左边 —— 到这一步它已经生效了。
+
+Linux 下"应用图标"其实是三个落点，生效时机并不一样：
+
+| 落点 | 什么时候能看到 |
+|---|---|
+| 窗口图标（标题栏、任务切换器） | 立刻。**只在 X11 会话下有效** —— Wayland 下窗口图标由桌面环境按应用标识决定，应用无权改 |
+| 托盘图标 | 立刻 |
+| 启动器 / 任务栏 / Dock 图标 | **要重新登录桌面**（或注销再进来）。桌面环境按应用标识缓存图标，改文件不会立刻反映出来 |
+
+最后一条很容易被读成"改了没用"。不是没改，是桌面还没有重新读它 —— 界面上的提示也写了这一点。
+
+「恢复默认」会删掉自定义图标与那份启动器条目，回到安装时的样子。
+
+失败时会告诉你具体原因（不是图片、太大、磁盘已满、或者启动器里已经有一个**你自己写的**同名
+条目），并且**什么都不改** —— 原来的图标仍然在。
+
+> 为什么启动器图标要重新登录才能变、为什么不直接改系统目录：见
+> [`decisions.md`](decisions.md) 的 [ADR-0022](decisions.md#adr-0022)。
 
 ## 6. 常见问题
 
@@ -185,6 +215,8 @@ sudo apt remove --purge waachat
 rm -rf ~/.config/waachat ~/.cache/waachat ~/.local/share/waachat
 # 归档目录（若在设置里改过位置，换成你设的那个）
 rm -rf ~/Downloads/WaaChat_files
+# 换过应用图标的话，还有一份用户级启动器条目（系统装的那份由 apt remove 收走）
+rm -f ~/.local/share/applications/io.github.edwinhuish.waachat.desktop
 ```
 
 ## 7. 安全与风险提示

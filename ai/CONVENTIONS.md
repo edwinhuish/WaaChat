@@ -23,11 +23,15 @@
 | `src/main/` | 一切本地能力 | 依赖具体界面形态 |
 | `src/main/capture/` | 观察内核层事件、产出"文件 + 身份" | 解密、解析页面、决定存哪里 |
 | `src/main/archive/` | 存储、索引、去重、淘汰 | 知道文件从哪来 |
-| `src/main/integration/` | 交系统打开、托盘 | 决定何时/是否存储 |
+| `src/main/integration/` | 交系统打开、托盘、应用图标（含用户级启动器条目） | 决定何时/是否存储、解码图片（那是渲染进程的事） |
 | `src/preload/` | 白名单桥接，**单向** | 暴露"让页面发起本地动作"的能力 |
 | `src/renderer/` | 自有界面 | 直接访问文件系统 |
 
 **依赖方向**：`capture → archive`（可以），`archive → capture`（不可以）。`shared` 被所有人依赖，它不依赖任何人。
+
+**一个刻意的例外**：图片解码与裁剪发生在 `src/renderer/`（canvas），而不是主进程 —— Electron 的
+`nativeImage` 只保证 PNG / JPEG，而 ICO 只有 Chromium 的解码器认得。界面拿到的仍然是**字节**；
+落盘位置、权限与启动器条目由 `src/main/integration/appicon.ts` 决定。见 ADR-0022。
 
 ## 3. TypeScript
 

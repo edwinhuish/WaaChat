@@ -11,10 +11,15 @@
  *   - 参数只接受**主进程产生的标识**（记录 id），永远不接受路径、URL、命令。
  *   - 没有"执行任意操作"的通用入口（没有 `invoke(channel, ...args)` 这种反射式桥）。
  *     反过来说：**新增一个能力 = 新增一个具名方法 + 一条通道**，没有捷径可走。
- *   - 数据只从主进程流向界面（读）。唯一的写操作是改设置，且写的是白名单字段。
+ *   - 数据只从主进程流向界面（读）。写操作只有两个，且都不接受路径：改设置（白名单字段），
+ *     以及提交一张已裁剪好的图标（纯字节，落盘位置由主进程决定）。
  */
 
 import type {
+  AppIconInput,
+  AppIconPickResult,
+  AppIconResult,
+  AppIconState,
   ArchiveMigrationProgress,
   ArchiveMigrationResult,
   ArchiveQuery,
@@ -71,6 +76,32 @@ export interface WaaChatBridge {
    * `onCaptureHealthChanged`：不返回的话，界面每次重新挂载都会多留一个监听器。
    */
   onArchiveMigration(listener: (progress: ArchiveMigrationProgress) => void): () => void
+
+  // --- 应用图标 --------------------------------------------------------------
+
+  /** 读取自定义图标状态（是否启用、预览数据 URL、启动器条目是否已写入）。 */
+  getAppIcon(): Promise<AppIconState>
+
+  /**
+   * 弹系统对话框让用户挑一张图片，返回**原文件字节**。
+   *
+   * `null` 表示用户取消 —— 与失败分开：取消不是错误，界面不该留下任何痕迹。
+   *
+   * 传字节而不是路径：路径是能力，字节只是数据。解码与裁剪在界面侧完成（只有 Chromium
+   * 认得 ICO 这类格式，见 ADR-0022），但**写到哪里始终由主进程决定**。
+   */
+  pickAppIcon(): Promise<AppIconPickResult | null>
+
+  /**
+   * 提交已经裁剪、缩放好的 PNG。
+   *
+   * 主进程会自己再解码一次来确认它确实是一张 512×512 的图 —— 渲染进程送进来的是**数据**，
+   * 哪怕送它的是我们自己的代码。
+   */
+  setAppIcon(input: AppIconInput): Promise<AppIconResult>
+
+  /** 恢复默认图标（同时删掉我们写的那份启动器条目）。 */
+  resetAppIcon(): Promise<AppIconResult>
 
   // --- 接管健康 --------------------------------------------------------------
 

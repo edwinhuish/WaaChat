@@ -86,10 +86,12 @@ rg -n "from 'node:crypto'" src/     # 允许，但用途只能是 sha256（内�
 
 视觉资产始终留在禁止项，与名称无关：它成本为零、混淆风险最高，是真正可避免的那部分。
 
-**自动化**：`pnpm run selfcheck` 断言三处声明都在位 —— README 顶部、DISCLAIMER、
-以及 `electron-builder.yml` 里会进**安装产物**的那两份（deb 的 `synopsis` 与
-`.desktop` 的 `Comment`）。声明消失属于"静默失效"那一类：改配置时顺手删掉一行，
-谁也不会发现，而用户装完之后可能永远不会打开 README。
+**自动化**：`pnpm run selfcheck` 断言**四处**声明都在位 —— README 顶部、DISCLAIMER、
+`electron-builder.yml` 里会进**安装产物**的两份（deb 的 `synopsis` 与 `.desktop` 的 `Comment`），
+以及运行期生成的那份**用户级启动器条目**（`shared/appicon.ts` 的 `buildDesktopEntry()`，
+见 [ADR-0022](../docs/decisions.md#adr-0022) —— 它会取代安装时那份条目，因此义务跟着一起走）。
+声明消失属于"静默失效"那一类：改配置时顺手删掉一行，谁也不会发现，
+而用户装完之后可能永远不会打开 README。
 
 **自查**：
 

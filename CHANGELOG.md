@@ -3,6 +3,15 @@
 本文件记录所有值得用户注意的变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **自定义应用图标**：设置里点「选择图片…」即可更换，支持 PNG / JPG / ICO（WebP、BMP、GIF 也认）。
+  会自动**居中裁剪成正方形**并缩放到 512×512，裁剪结果立刻预览。窗口与托盘图标**立即生效**；
+  启动器 / 任务栏 / Dock 图标由桌面环境按应用标识缓存，需要**重新登录桌面**之后才会更新。
+  失败时会说明具体原因并**保留原图标**；点「恢复默认」回到安装时的样子。
+
 ## [1.0.0] - 2026-10-09
 
 ### 新增
@@ -61,4 +70,5 @@
 - `Taskfile.yml`：任务全部下沉到 `package.json` 的 `scripts`，只留一个入口。
 - `package-lock.json`：由 `pnpm-lock.yaml` 取代。
 
+[Unreleased]: https://github.com/edwinhuish/waachat/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/edwinhuish/waachat/releases/tag/v1.0.0

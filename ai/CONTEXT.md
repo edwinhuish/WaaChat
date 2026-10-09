@@ -45,6 +45,7 @@
 | **签名参数** | URL 上会随每次请求变化的字段（有效期、签名等）。参与缓存键会导致永不命中 |
 | **降级** | 接管失效时退回上游原生行为。**必须可见**，不允许静默 |
 | **app_id / StartupWMClass / .desktop 文件名** | 桌面环境用来把窗口与启动器条目关联起来的标识。GNOME 按窗口的 `app_id` 去找**同名** `.desktop`；`app_id` 同时是文件名词干与 `StartupWMClass` 的值。四处（含 electron-builder 的 `linux.syncDesktopName`）不一致会导致图标显示异常 |
+| **用户级启动器条目** | `~/.local/share/applications/<app_id>.desktop`。XDG 的查找顺序让它优先于系统目录里的同名条目 —— "换应用图标"能生效靠的就是这个机制（ADR-0022）。只认带 `X-WaaChat-Managed=true` 标记的那份，其余视为用户自己的文件，不碰 |
 
 ## 3. 项目的价值集中在哪里
 
@@ -80,6 +81,7 @@ docs/decisions.md（唯一事实源：为什么这样设计）
 | 会话类型 | Wayland 优先；Ozone 平台相关设置需同时照顾两种会话 |
 | 桌面集成 | 打开文件走系统 MIME 关联（`xdg-open` / 门户），不自己维护关联表 |
 | 托盘 | Ayatana AppIndicator；GNOME 下需要对应扩展，缺失时只能降级为"无托盘" |
+| 应用图标 | 三个落点、生效时机不同：窗口（`setIcon`，X11 立即 / **Wayland 无效**）、托盘（立即）、启动器条目（要等桌面刷新或重新登录）。见 ADR-0022 |
 | 权限模型 | 归档目录 `0700` / 文件 `0600`；登录态目录**绝不清除** |
 | 分发 | deb + AppImage，均为 x64；AppImage 必须在 Linux 上构建 |
 

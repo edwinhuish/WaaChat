@@ -33,6 +33,20 @@ export const CHANNELS = {
   /** 归档迁移进度（主进程 → 渲染进程的单向推送）。 */
   archiveMigration: 'archive:migration',
 
+  /** 读取自定义图标状态（是否启用、预览、启动器条目）。 */
+  appIconGet: 'appicon:get',
+  /**
+   * 弹系统对话框让用户挑一张图片。
+   *
+   * **不接受任何参数**，与 `archiveDirPick` 同一条理由：路径只能由主进程的对话框产生。
+   * 返回的是**字节**而不是路径 —— 渲染进程拿数据去解码，落盘位置仍由主进程决定。
+   */
+  appIconPick: 'appicon:pick',
+  /** 提交已裁剪好的 PNG 字节（渲染进程的 canvas 产出的那张）。 */
+  appIconSet: 'appicon:set',
+  /** 恢复默认图标：删掉自定义图标与**我们自己写的**启动器条目。 */
+  appIconReset: 'appicon:reset',
+
   /** 读取接管健康状态。 */
   captureHealth: 'capture:health',
   /** 接管健康状态发生变化（主进程 → 渲染进程的单向推送）。 */

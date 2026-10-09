@@ -220,3 +220,85 @@ export type OpenOutcome =
  */
 export type RevealOutcome =
   { readonly ok: true } | { readonly ok: false; readonly reason: 'not-found' | 'failed' }
+
+// ---------------------------------------------------------------------------
+// 自定义应用图标
+// ---------------------------------------------------------------------------
+
+/**
+ * 设置自定义图标失败的结构化原因。
+ *
+ * 文案只有一份，在 `shared/appicon.ts` —— 主进程要拿它填错误信息，界面要拿它填状态行
+ * （与 `MigrationFailure` 同样的理由）。
+ */
+export type AppIconFailure =
+  /** 选中的文件读不出来（权限、中途被删除）。 */
+  | 'unreadable'
+  /** 源文件超过上限。图标最终只有 512×512，读进来只是浪费内存。 */
+  | 'too-large'
+  /** 扩展名不在预期范围内。 */
+  | 'unsupported-format'
+  /** 扩展名对得上，但内容解不开（Chromium 的图片解码器认不出来）。 */
+  | 'decode-failed'
+  /** canvas 无法把裁剪结果编码成 PNG。 */
+  | 'encode-failed'
+  /** 回传的字节不是可解码的图片，或尺寸不合理。 */
+  | 'invalid-image'
+  /** 写图标文件或启动器条目失败（磁盘满、只读挂载、权限）。 */
+  | 'write-failed'
+  /** `~/.local/share/applications/` 下的同名条目不是本应用生成的。 */
+  | 'desktop-entry-conflict'
+
+/**
+ * 自定义图标的当前状态。界面靠它渲染预览与按钮。
+ *
+ * `preview` 走数据 URL 而不是文件路径：界面层拿不到、也不该拿到文件系统里的路径
+ * （`ai/INVARIANTS.md` G-1）。
+ */
+export interface AppIconState {
+  /** 是否正在使用自定义图标。 */
+  readonly custom: boolean
+  /** 自定义图标的设置时间；未启用时为 null。 */
+  readonly updatedAt: number | null
+  /**
+   * 用户级启动器条目是否已由本应用写入。
+   *
+   * **开发模式下恒为 false** —— 那时的 `Exec` 会指向 `node_modules` 里的 Electron，
+   * 写进启动器只会变成一个点不开的图标（同 `integration/login.ts` 的判断）。
+   */
+  readonly desktopEntry: boolean
+  /** 当前生效图标的 PNG 数据 URL；连默认图标都读不到时为 null。 */
+  readonly preview: string | null
+}
+
+/**
+ * 在系统对话框里挑一张图片的结果。
+ *
+ * `null`（由 `bridge.pickAppIcon` 返回）表示用户取消 —— 与失败分开，因为"取消"不是错误，
+ * 不该在界面上留下任何痕迹。
+ */
+export type AppIconPickResult =
+  | {
+      readonly ok: true
+      /** 原文件名，仅用于提示与日志（不参与任何路径拼接）。 */
+      readonly name: string
+      /**
+       * 原文件字节。
+       *
+       * 传字节而不是传路径：路径是能力，字节只是数据。界面拿字节去解码、裁剪，
+       * 落盘位置始终由主进程决定（`ai/INVARIANTS.md` G-1 / T2）。
+       */
+      readonly bytes: Uint8Array
+    }
+  | { readonly ok: false; readonly failure: AppIconFailure; readonly detail: string }
+
+/** 设置或恢复图标的结果。 */
+export type AppIconResult =
+  | { readonly ok: true; readonly state: AppIconState }
+  | { readonly ok: false; readonly failure: AppIconFailure; readonly detail: string }
+
+/** 提交给主进程的裁剪结果，只含字节。 */
+export interface AppIconInput {
+  /** 已裁剪并缩放好的 PNG 字节，边长应当等于 `APP_ICON_SIZE`。 */
+  readonly png: Uint8Array
+}

@@ -4,8 +4,9 @@
  * 这一层的**唯一职责**是把 {@link WaaChatBridge} 里的具名方法接到 IPC 通道上。
  * 三条硬性约束：
  *
- *  1. **单向。** 暴露出去的只有"取数据"和"改设置"，没有任何让渲染侧发起本地
+ *  1. **单向。** 暴露出去的都是具名的取数/提交方法，没有任何让渲染侧发起**任意**本地
  *     动作的入口（不暴露 `ipcRenderer`、不暴露 `shell`、不暴露通道名列表）。
+ *     提交类方法（改设置、交图标字节）传的是值而不是路径 —— 路径是能力，值只是数据。
  *  2. **不做逻辑。** 任何判断、降级、校验都留在主进程。放在这里的逻辑会同时
  *     躲过主进程的测试与校验。
  *  3. **对象是冻结的。** 渲染侧的脚本（或将来误引入的第三方库）改不动它。
@@ -19,6 +20,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 import type { ArchiveIdInput, WaaChatBridge } from '../shared/bridge'
 import type {
+  AppIconInput,
   ArchiveMigrationProgress,
   ArchiveQuery,
   CaptureHealth,
@@ -42,6 +44,14 @@ const bridge: WaaChatBridge = {
   setSettings: (patch: Partial<Settings>) => ipcRenderer.invoke(CHANNELS.settingsSet, patch),
 
   pickArchiveDir: () => ipcRenderer.invoke(CHANNELS.archiveDirPick),
+
+  getAppIcon: () => ipcRenderer.invoke(CHANNELS.appIconGet),
+
+  pickAppIcon: () => ipcRenderer.invoke(CHANNELS.appIconPick),
+
+  setAppIcon: (input: AppIconInput) => ipcRenderer.invoke(CHANNELS.appIconSet, input),
+
+  resetAppIcon: () => ipcRenderer.invoke(CHANNELS.appIconReset),
 
   onArchiveMigration: (listener: (progress: ArchiveMigrationProgress) => void) => {
     /**

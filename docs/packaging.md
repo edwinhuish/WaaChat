@@ -63,6 +63,25 @@ getDesktopFileName(fallback = this.packager.executableName) {
 `scripts/verify-package.sh` 会解包产物并**同时**断言"文件名"与 `StartupWMClass` 两项，
 `pnpm run verify` 与 CI 都会跑。
 
+### 2.2 运行期还会再写一份**用户级**覆盖
+
+用户换了应用图标时（ADR-0022），应用会在 `~/.local/share/applications/<appId>.desktop`
+写一份**用户级**条目，`Icon=` 指向 `~/.config/waachat/custom-icon.png`，其余键由
+`shared/appicon.ts` 的 `buildDesktopEntry()` 拼出。
+
+这不是与上面那份打架，而是 XDG 的查找顺序在起作用：同名条目在用户目录里优先，因此
+**不需要 root**，卸载时系统那份也仍然完好。「恢复默认」会把用户级那份删掉。
+
+据此有两条约束：
+
+- **`buildDesktopEntry()` 必须继续带 `Comment=…unofficial…` 与 `StartupWMClass=<appId>`。**
+  它取代了安装产物里那份条目，因此 INV-4 的义务跟着一起走。`pnpm run selfcheck` 两条都断言
+  （并且会回头核对 `Comment` 与 `electron-builder.yml` 里的那一行同文）。
+- **`Exec` 在 AppImage 下必须取 `process.env.APPIMAGE`**，而不是挂载点里的可执行文件 ——
+  挂载点每次启动都不同（与 `integration/login.ts` 是同一个陷阱）。
+
+开发模式下**不写**这份覆盖：那时的 `Exec` 只能指向 `node_modules` 里的 Electron。
+
 ## 3. 关键点二：AppImage 不再需要 FUSE2
 
 ```

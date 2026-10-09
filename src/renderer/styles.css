@@ -290,6 +290,34 @@ ul.archive li:last-child {
   flex: 0 0 auto;
 }
 
+/* 图标预览。固定尺寸是必须的：让不同形状的图片自己决定行高，会让这一行忽高忽低。 */
+.icon-preview {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  object-fit: contain;
+}
+
+/* 连默认图标都读不到时的占位（例如开发模式下 build/icon.png 被删了）。 */
+.icon-preview.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 20px;
+}
+
+/* 图标那一行有两个按钮，同样不参与拉伸，竖排以免把提示文字挤成窄条。 */
+.setting .actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .setting[data-pending='true'] {
   opacity: 0.65;
 }

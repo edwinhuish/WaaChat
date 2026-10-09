@@ -11,18 +11,24 @@
  *     前者会让用户相信一件不成立的事。
  *  3. **长任务要有过程。** 换保存位置会真的搬动整个归档库，因此它有确认框（主进程）、
  *     进度、成功与失败三种可见的结果 —— 用户不该对着一个没有反应的按钮猜发生了什么。
+ *  4. **图标要如实说明生效范围。** Linux 下"应用图标"有三个落点，生效时机各不相同
+ *     （窗口与托盘立即生效，启动器 / 任务栏要等桌面刷新）。含糊其辞会让 Wayland 用户
+ *     以为功能坏了 —— 理由与取舍见 ADR-0022。
  */
 
+import { describeIconFailure } from '../../shared/appicon'
+import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import {
   RESTART_REQUIRED_SETTINGS,
+  type AppIconState,
   type ArchiveMigrationProgress,
   type MigrationFailure,
   type Settings,
 } from '../../shared/types'
-import { formatBytes } from '../../shared/format'
 import { bridge } from '../bridge'
 import { h } from '../dom'
+import { cropToAppIcon } from '../icon'
 
 /** 只挑出 `Settings` 里的布尔字段，新增布尔项时编译器会在这里报错提醒补描述。 */
 type BooleanKey = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings]
@@ -97,6 +103,18 @@ type LocationState =
       readonly rolledBack: boolean
     }
 
+/**
+ * 图标那一行的状态。
+ *
+ * 与保存位置一样分几态：成功与失败必须分得开 —— "失败时保留原图标"意味着失败时预览
+ * 必须**不动**，而不是先变再变回来。
+ */
+type IconState =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'busy' }
+  | { readonly kind: 'ok'; readonly text: string }
+  | { readonly kind: 'failed'; readonly text: string }
+
 export interface SettingsView {
   refresh(): Promise<void>
   /** 取消订阅迁移进度。窗口真正卸载时调用。 */
@@ -106,6 +124,16 @@ export interface SettingsView {
 export function mountSettingsView(root: HTMLElement): SettingsView {
   let settings: Settings | null = null
   let location: LocationState = { kind: 'idle' }
+  let appIcon: AppIconState | null = null
+  let icon: IconState = { kind: 'idle' }
+
+  /**
+   * 刚裁剪出来、主进程还没确认的那张图的预览。
+   *
+   * 它让"实时预览"成为可能：用户选完图立刻看到结果，而不是先等一次 IPC 往返。
+   * 主进程确认后清空，改由 `appIcon.preview` 作为唯一来源。
+   */
+  let iconPreview: string | null = null
 
   /** 提交一次部分更新，并把返回的完整设置重新渲染。 */
   async function patch(change: Partial<Settings>): Promise<void> {
@@ -118,10 +146,150 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     const current = settings
 
     root.replaceChildren(
+      iconRow(),
       locationRow(current),
       ...TOGGLES.map((spec) => toggleRow(spec, current)),
       ...SIZES.map((spec) => sizeRow(spec, current)),
     )
+  }
+
+  /**
+   * 应用图标。
+   *
+   * 三件事必须说清楚，否则用户会把"平台限制"读成"功能坏了"：
+   *   - 支持哪些格式（PNG / JPG / ICO）；
+   *   - 会被处理成什么样（居中裁剪成正方形、缩放）；
+   *   - 三个落点各自的生效时机（窗口与托盘立即，启动器要刷新桌面）。
+   */
+  function iconRow(): HTMLElement {
+    const busy = icon.kind === 'busy'
+    const custom = appIcon?.custom ?? false
+    const preview = iconPreview ?? appIcon?.preview ?? null
+
+    async function pick(): Promise<void> {
+      icon = { kind: 'busy' }
+      render()
+
+      const picked = await bridge().pickAppIcon()
+
+      // null = 用户取消了对话框。取消不是错误，状态清干净即可。
+      if (picked === null) {
+        icon = { kind: 'idle' }
+        render()
+        return
+      }
+
+      if (!picked.ok) {
+        icon = { kind: 'failed', text: describeIconFailure(picked.failure, picked.detail) }
+        render()
+        return
+      }
+
+      const cropped = await cropToAppIcon(picked.bytes)
+      if (!cropped.ok) {
+        icon = { kind: 'failed', text: describeIconFailure(cropped.failure, picked.name) }
+        render()
+        return
+      }
+
+      // 先把裁剪结果亮出来（这一步就是"实时预览"），再去落盘。
+      iconPreview = cropped.preview
+      render()
+
+      const result = await bridge().setAppIcon({ png: cropped.png })
+      if (!result.ok) {
+        // 主进程失败时什么都没改，因此预览退回当前**实际生效**的那张 —— 不能留着一张
+        // 看上去已生效、实际没生效的图。
+        iconPreview = null
+        icon = { kind: 'failed', text: describeIconFailure(result.failure, result.detail) }
+        render()
+        return
+      }
+
+      appIcon = result.state
+      iconPreview = null
+      icon = { kind: 'ok', text: '已生效：窗口与托盘已经用上新图标。' }
+      render()
+    }
+
+    async function reset(): Promise<void> {
+      icon = { kind: 'busy' }
+      render()
+
+      const result = await bridge().resetAppIcon()
+      if (!result.ok) {
+        icon = { kind: 'failed', text: describeIconFailure(result.failure, result.detail) }
+        render()
+        return
+      }
+
+      appIcon = result.state
+      iconPreview = null
+      icon = { kind: 'ok', text: '已恢复默认图标。' }
+      render()
+    }
+
+    return h(
+      'div',
+      { class: 'setting' },
+      preview === null
+        ? h('div', { class: 'icon-preview placeholder', text: '?' })
+        : h('img', { class: 'icon-preview', src: preview, alt: '当前应用图标' }),
+      h(
+        'div',
+        { class: 'meta' },
+        h('div', { class: 'label', text: '应用图标' }),
+        h('div', {
+          class: 'hint',
+          text: 'PNG / JPG / ICO 都可以。会自动居中裁剪成正方形，再缩放到 512×512。',
+        }),
+        h('div', {
+          class: 'path',
+          text: custom ? '当前：自定义图标' : '当前：默认图标',
+        }),
+        h('div', {
+          class: 'hint',
+          text: '窗口与托盘图标立即生效。启动器 / 任务栏图标由桌面环境缓存，要重新登录桌面（或注销再进来）之后才会更新。',
+        }),
+        iconStatusNode(),
+      ),
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', {
+          class: 'action',
+          type: 'button',
+          text: busy ? '处理中…' : '选择图片…',
+          disabled: busy,
+          onClick: () => void pick(),
+        }),
+        h('button', {
+          class: 'action',
+          type: 'button',
+          text: '恢复默认',
+          // 没有自定义图标时禁用它：那个按钮此时什么也不会发生。
+          disabled: busy || !custom,
+          onClick: () => void reset(),
+        }),
+      ),
+    )
+  }
+
+  /** 图标那一行的结果行。没有可说的就返回 `null`（而不是一个空节点）。 */
+  function iconStatusNode(): HTMLElement | null {
+    switch (icon.kind) {
+      case 'idle':
+        return null
+
+      case 'busy':
+        return h('div', { class: 'path', data: { state: 'running' }, text: '正在处理…' })
+
+      case 'ok':
+        return h('div', { class: 'path', data: { state: 'ok' }, text: icon.text })
+
+      case 'failed':
+        return h('div', { class: 'path', data: { state: 'error' }, text: icon.text })
+    }
   }
 
   /**
@@ -298,7 +466,24 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
   return {
     async refresh(): Promise<void> {
-      settings = await bridge().getSettings()
+      /**
+       * 并行取：两者互不依赖，串行只会让窗口晚一点画出内容。
+       *
+       * 每次刷新都重新读一次图标状态，而不是只在挂载时读 —— 图标文件可能被外部删掉
+       * （主进程读到坏文件就会清掉它），那时界面必须跟着回到"默认图标"。
+       *
+       * 图标状态取不到时退化为"没有自定义图标"：这一行的问题不该把**别的**行也带走 ——
+       * 让整个设置页空掉，用户连保存位置都看不到。
+       */
+      const [nextSettings, nextIcon] = await Promise.all([
+        bridge().getSettings(),
+        bridge()
+          .getAppIcon()
+          .catch(() => null),
+      ])
+
+      settings = nextSettings
+      appIcon = nextIcon
       render()
     },
 
