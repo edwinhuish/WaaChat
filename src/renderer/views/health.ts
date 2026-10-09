@@ -66,15 +66,15 @@ function pills(health: CaptureHealth): HTMLElement[] {
     result.push(h('span', { class: 'pill', text: '尚无接管记录', data: { state: 'unknown' } }))
   }
 
-  // 密文缓存的开关状态需要重启才变，但它的**当前生效值**必须可见：
-  // 否则用户无法判断"第二次打开还要联网"是设置没开，还是缓存坏了。
+  // 密文缓存的**当前生效值**必须可见：否则用户无法判断"第二次打开还要联网"是设置没关掉，
+  // 还是缓存坏了。
   result.push(
     h('span', {
       class: 'pill',
       text: health.ciphertextCacheActive ? '密文缓存：开' : '密文缓存：关',
       title: health.ciphertextCacheActive
         ? '重复打开同一个文件不会再走网络。'
-        : '每次打开都会重新从 CDN 拉取。可在设置里开启（需重启）。',
+        : '每次打开都会重新从 CDN 拉取。可在设置里打开。',
       data: { state: health.ciphertextCacheActive ? 'ok' : 'unknown' },
     }),
   )
