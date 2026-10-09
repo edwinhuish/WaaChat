@@ -39,6 +39,10 @@
 
 **只有 B 没用**：缓存了密文但页面还是把文件丢进 `~/Downloads`。
 
+**这一层发出去的请求必须是"它自己的"**（[ADR-0033](decisions.md#adr-0033)）：被接住的是 `persist:` 分区里的请求，因此回源用 `ses.fetch`，而不是默认会话的 `net.fetch` —— cookie 罐子、代理与证书配置、连接池都挂在会话上。实测过两条后果：`net.fetch` 会把响应里的 `Set-Cookie` 写进**默认会话**的罐子（页面自己的罐子永远得不到更新），以及两套连接池各开一条连接。
+
+**连接层失败会有限重试**（同一个 ADR）：网络抖动时一次 TLS 握手被重置（`net_error -101`）本来可以靠重试救回来，而 Chromium 不替调用方重试。策略写死在 `capture/retry.ts`：只重试 `GET`/`HEAD`、只重试连接层错误（白名单）、最多 3 次尝试、间隔约 0.3 / 0.9 秒带抖动。重试与放弃各记一条日志（`capture: retrying…` / `capture: gave up on a flaky connection`，带 `host` 与 `net::ERR_…`）。**网络被整段阻断时重试必然也失败** —— 那不是这一层能解决的问题，判断方法见 [`usage.md`](usage.md) 的常见问题。
+
 因此实现顺序是 A → B（见 [`roadmap.md`](roadmap.md)），A 是必须的，B 是质量提升，且 B 可以随时关闭而不影响正确性。它**默认开启**（[ADR-0028](decisions.md#adr-0028)）：缓存里存的是上游已经加密好的那份密文，本应用不参与加解密，因此没有理由把"第二次打开还要联网"留给用户。开关本身是一次**静默的事务式转换**：切协议层 → 转换 → 提交，全部成功才切换，失败或中断回退；提交即生效，**不需要重启**，也没有确认框与进度屏（[ADR-0027](decisions.md#adr-0027) / [ADR-0028](decisions.md#adr-0028)）。关闭时 `cache/` 里不留东西，开启则保留可命中的条目（`capture/cache-files.ts` / `capture/cache-switch.ts`）。
 
 **A 还有一条可选的前提：PDF 也可以走到下载事件。** 内核内置的 PDF 阅读器在 Electron 里**关不掉**

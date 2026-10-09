@@ -263,6 +263,31 @@ xdg-mime query default application/pdf
 
 > 旧版本（[ADR-0031](decisions.md#adr-0031) 之前）落盘的正文仍是哈希名，本应用**不会**在启动时替它们改名：改名与索引写入没有共同的提交点，为一批"多数人并没有"的数据引入半途失败路径不值得。它们照常可以打开、搜索、迁移，被打开时会把只读权限补上。
 
+### 资源加载不出来 / 日志里一堆 `handshake failed`
+
+那行日志来自 Chromium 的网络栈：
+
+```
+ERROR:net/socket/ssl_client_socket_impl.cc:962] handshake failed; returned -1, SSL error code 1, net_error -101
+```
+
+`net_error -101` 是 `ERR_CONNECTION_RESET`：TCP 连接在 TLS 握手过程中被**重置** —— 不是证书问题，也不是"协议谈不拢"，是连接本身没了。常见来源有三种：链路自己抖动（Wi-Fi 切换、休眠唤醒）、中间的防火墙/代理在按域名重置连接、运营商侧的干预。
+
+本应用能做的只有两件事（[ADR-0033](decisions.md#adr-0033)）：把拦截来的请求**发回它自己的会话**（不再多维护一套连接池与 cookie 罐子），以及在**连接层失败**时对它自己发起的请求做有限重试（只重试 `GET`/`HEAD`，最多 3 次尝试，间隔约 0.3 / 0.9 秒）。
+
+看日志就能分出两种情况：
+
+```bash
+waachat 2>&1 | grep -iE 'retrying|gave up' | tail -20
+```
+
+- 只有 `capture: retrying after a connection failure` —— 网络在抖，但**重试救回来了**，可以不管。
+- 出现 `capture: gave up on a flaky connection`（带 `host` 与 `net::ERR_…`）—— 连试几次都不通。**如果它反复出现且集中在同一个 host，那是这条链路被阻断或极不稳定，改这个应用没有用**：用代理 / VPN，或者换网络。
+
+> 页面的 websocket（`wss://`）与不经过 https 的流量不在这条路径上，它们由上游页面自己负责。
+>
+> 想试命令行开关的话：`waachat --disable-quic`（如果日志里出现的是 `quic_*` 一类错误，说明是 UDP 被干扰）或 `waachat --disable-http2`。这些**不是**默认行为 —— 它们会实打实地牺牲性能，只有确认是协议栈被干扰时才值得试。
+
 ### 「浏览器不受支持」
 
 上游的检测变化。请提 issue 并附上系统信息。

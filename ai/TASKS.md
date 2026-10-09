@@ -147,6 +147,11 @@
    > （静默、事务式、可回退）。`cache-switch.ts` 负责把"切协议层 → 转换 → 落设置 → 收尾"串成一次
    > 要么全成、要么全不成（ADR-0027）。改条目形态或后缀时这几处都要跟着改；它们**不动**不认识的
    > 扩展名与非普通文件 —— "不删别人的东西"这条纪律别顺手放宽。
+   > 协议层的回源请求有两个写死的约定（[ADR-0033](../docs/decisions.md#adr-0033)）：**用
+   > `ses.fetch` 而不是 `net.fetch`**（被接住的是分区里的请求，cookie 罐子/代理/连接池都挂在
+   > 会话上；用默认会话会让响应的 `Set-Cookie` 进错罐子），以及连接层失败走 `capture/retry.ts`
+   > 的有限重试（只重试 GET/HEAD、只重试白名单里的错误）。往白名单里加错误码之前先拿实测证据 ——
+   > 判据锁的是 `Error.message` 里的 `net::ERR_…`（实测没有 code/errno 可读），自检那一节会先变红。
    > 另外：`cache/.staging/` 是转换期间的可回滚存放处，**不能**让它被 `isEntryName()` 认成条目
    > （认错的话对账会连内容一起清掉，"回滚"当场失效；`scripts/check-capture.ts` 有断言守着）。
    > PDF 那一层（`capture/pdf.ts`，[ADR-0029](../docs/decisions.md#adr-0029) /
