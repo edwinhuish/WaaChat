@@ -38,7 +38,7 @@ import type { Session } from 'electron'
 
 import { isDocumentPreviewPage } from '../../shared/upstream'
 import type { Settings } from '../../shared/types'
-import { logger } from '../logger'
+import { hostOf, logger } from '../logger'
 
 /** 告诉内核"这不是一份它能显示的东西"，于是它走下载而不是内嵌渲染。 */
 export const PDF_DOWNLOAD_MIME = 'application/octet-stream'
@@ -139,13 +139,4 @@ export function attachPdfHandling(ses: Session, getSettings: () => Settings): vo
  */
 function findHeader(headers: Record<string, string[]>, wanted: string): string | undefined {
   return Object.keys(headers).find((name) => name.toLowerCase() === wanted)
-}
-
-/** 日志里只留 host：路径与查询串可能带签名与对象标识（INVARIANTS G-1）。 */
-function hostOf(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).hostname
-  } catch {
-    return ''
-  }
 }

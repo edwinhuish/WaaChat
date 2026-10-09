@@ -24,6 +24,21 @@ import { LOG_HASH_PREFIX_LENGTH } from '../shared/constants'
 
 type Level = 'debug' | 'info' | 'error' | 'warn'
 
+/**
+ * 从 URL 里取出 host，供日志使用。
+ *
+ * 日志里允许出现 host，**不允许**出现完整 URL（[INVARIANTS G-1]：路径与查询串可能带签名与
+ * 对象标识）。解析失败时返回空串 —— 绝不回退成"原样打印传进来的字符串"，那正好是这条纪律
+ * 要防的事。
+ */
+export function hostOf(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname
+  } catch {
+    return ''
+  }
+}
+
 const LEVEL_ORDER: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 }
 
 function isLevel(value: string): value is Level {

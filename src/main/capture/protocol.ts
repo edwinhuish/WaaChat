@@ -18,6 +18,11 @@
  *  4. **PDF 的一处改写挂在这里**（[ADR-0029]，与缓存无关）：协议处理器返回的响应就是
  *     最终响应，`webRequest` 改不动它（实测），因此"缓存开着时不让内核内嵌渲染 PDF"
  *     只有这一个地方能做 —— 见下面的 {@link passthrough}。
+ *
+ *  5. **直通请求发回它自己的会话，并且在抖动时重试**（[ADR-0033]）：这一层接住的是**分区**里的
+ *     请求，因此必须用 `ses.fetch` 而不是默认会话的 `net.fetch` —— cookie 罐子、代理与证书
+ *     配置、连接池都挂在会话上，重发到别的会话等于把同一份流量拆成两套（实测：响应里的
+ *     `Set-Cookie` 会进错罐子）。连接层失败交给 `retry.ts` 的有限重试。
  */
 
 import { createHash } from 'node:crypto'
@@ -32,15 +37,16 @@ import {
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
-import { net, type Session } from 'electron'
+import type { Session } from 'electron'
 
 import { CACHE_DIR_MODE, CACHE_VERSION, cacheEntryPaths } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
 import { forceDownloadIfPdf } from './pdf'
 import { setCiphertextCacheActive } from './health'
+import { fetchWithRetry, type RetryAttempt } from './retry'
 import { failureReason } from '../errors'
-import { logger } from '../logger'
+import { hostOf, logger } from '../logger'
 import { ciphertextCacheDir } from '../paths'
 
 /** 这一层现在挂着没有。注册是一次性的，因此必须自己记着（见 attach/detach）。 */
@@ -66,7 +72,7 @@ export function attachCiphertextCache(ses: Session): void {
 
   ses.protocol.handle('https', async (request) => {
     const key = deriveCacheKey(request.url)
-    if (key === null) return passthrough(request)
+    if (key === null) return passthrough(request, ses)
 
     /**
      * 分片请求不参与缓存。
@@ -76,7 +82,7 @@ export function attachCiphertextCache(ses: Session): void {
      * 放行它们只是"视频仍然联网播放"，而错误地回应一个 Range 请求会让播放直接坏掉。
      */
     if (request.method !== 'GET' || request.headers.has('range')) {
-      return passthrough(request)
+      return passthrough(request, ses)
     }
 
     const id = createHash('sha256').update(key).digest('hex')
@@ -90,7 +96,7 @@ export function attachCiphertextCache(ses: Session): void {
       return forceDownloadIfPdf(cached)
     }
 
-    const response = await passthrough(request)
+    const response = await passthrough(request, ses)
 
     // 只缓存成功的、完整的响应。失败与 3xx 落盘没有意义，还会污染缓存。
     if (response.ok) {
@@ -145,11 +151,40 @@ export function isCiphertextCacheAttached(): boolean {
  * 原样回源，出口处过一遍 PDF 规则（[ADR-0029]）—— 请求一个字节没动，只有"这份响应能不能
  * 被内核内嵌显示"被降级成下载。
  *
- * `bypassCustomProtocolHandlers` 是必需的：不带它，`net.fetch` 会再次进入我们
- * 自己的处理器，形成无限递归（表现为请求挂死）。
+ * **为什么必须用 `ses.fetch` 而不是 `net.fetch`**（[ADR-0033]）：我们接住的是这个**分区**里的
+ * 请求，而 `net.fetch` 发在默认会话上 —— cookie 罐子、代理与证书配置、连接池都不是同一个。
+ * 实测过两条后果：响应里的 `Set-Cookie` 会进默认会话的罐子（页面自己的罐子永远得不到更新），
+ * 以及两套连接池各开一条连接。
+ *
+ * `bypassCustomProtocolHandlers` 是必需的：不带它，这次 fetch 会再次进入我们自己的处理器，
+ * 形成无限递归（表现为请求挂死）。
+ *
+ * 连接层失败按 [ADR-0033] 做有限重试：网络抖动时一次握手被重置本可以靠重试救回来，而
+ * Chromium 不替调用方重试。重试与放弃各记一条日志，**只带 host 与错误码**（G-1 / G-3）——
+ * Chromium 自己那行 `handshake failed` 不带主机名，用户拿到的信息只够猜。
  */
-async function passthrough(request: Request): Promise<Response> {
-  return forceDownloadIfPdf(await net.fetch(request, { bypassCustomProtocolHandlers: true }))
+async function passthrough(request: Request, ses: Session): Promise<Response> {
+  const logContext = (info: RetryAttempt): Record<string, unknown> => ({
+    host: hostOf(request.url),
+    attempt: info.attempt,
+    limit: info.limit,
+    error: info.error,
+  })
+
+  const response = await fetchWithRetry(
+    (current) => ses.fetch(current, { bypassCustomProtocolHandlers: true }),
+    request,
+    {
+      onRetry: (info) => {
+        logger.warn('capture: retrying after a connection failure', logContext(info))
+      },
+      onGaveUp: (info) => {
+        logger.warn('capture: gave up on a flaky connection', logContext(info))
+      },
+    },
+  )
+
+  return forceDownloadIfPdf(response)
 }
 
 function readCached(bodyPath: string, metaPath: string): Response | null {

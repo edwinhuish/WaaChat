@@ -29,6 +29,12 @@ import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
 import { PDF_DOWNLOAD_MIME, isPdfResponse } from '../src/main/capture/pdf'
 import {
+  MAX_ATTEMPTS,
+  describeNetworkError,
+  isTransientNetworkError,
+  nextDelayMs,
+} from '../src/main/capture/retry'
+import {
   APP_ICON_SIZE,
   CUSTOM_ICON_FILENAME,
   DESKTOP_ENTRY_COMMENT,
@@ -466,6 +472,41 @@ check(
     !isPdfResponse('application/octet-stream'),
 )
 check('降级方向是 octet-stream（内核据此走下载）', PDF_DOWNLOAD_MIME === 'application/octet-stream')
+
+// ---------------------------------------------------------------------------
+// 10. 网络：值得重试的错误
+// ---------------------------------------------------------------------------
+//
+// 判据锁在**实测到的形状**上：fetch 失败抛出的 Error 只有 message 里的 `net::ERR_…`，
+// 没有 code / errno 可读（见 ADR-0033 的实测表）。白名单放宽会把证书错误也算成"可重试"
+// —— 那等于把真正的原因伪装成偶发抖动；收紧则会让网络抖动救不回来。
+
+section('网络：值得重试的错误')
+
+check(
+  '连接被重置 / 被对端关闭可重试（用户日志里的 net_error -101 是第一类）',
+  isTransientNetworkError(new Error('net::ERR_CONNECTION_RESET')) &&
+    isTransientNetworkError(new Error('net::ERR_CONNECTION_CLOSED')),
+)
+check(
+  '证书问题不重试（重试不会改变结论）',
+  !isTransientNetworkError(new Error('net::ERR_CERT_AUTHORITY_INVALID')),
+)
+check(
+  '主动取消与非网络错误不重试',
+  !isTransientNetworkError(new Error('net::ERR_ABORTED')) &&
+    !isTransientNetworkError(new TypeError('fetch failed')),
+)
+check(
+  '日志里只写错误码，不写完整消息',
+  describeNetworkError(new Error('net::ERR_CONNECTION_RESET 发生在 https://x/y?token=1')) ===
+    'net::ERR_CONNECTION_RESET',
+)
+check(
+  `重试有上限：最多 ${MAX_ATTEMPTS} 次尝试（网络被阻断时不能变成"一直加载中"）`,
+  MAX_ATTEMPTS === 3,
+)
+check('退避带抖动且有上界', nextDelayMs(1, () => 1) <= 400 && nextDelayMs(2, () => 1) <= 1200)
 
 // ---------------------------------------------------------------------------
 
