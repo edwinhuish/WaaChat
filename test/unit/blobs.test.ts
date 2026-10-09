@@ -40,7 +40,7 @@ beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'waachat-blobs-'))
 
   // 归档位置由设置注入（ADR-0018），不再从 XDG 变量推导 —— 必须显式挡开，
-  // 否则这些用例会写进开发者本机真实的 `~/Downloads/WaaChat_files`。
+  // 否则这些用例会写进开发者本机真实的 `~/Documents/WhatsApp_files`。
   archive = join(root, 'archive')
   setArchiveDir(archive)
   ensureArchiveDir()

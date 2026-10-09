@@ -132,7 +132,7 @@ sequenceDiagram
 ## 6. 存储布局
 
 ```
-~/Downloads/WaaChat_files/               # 归档：位置可在设置里改（ADR-0018）
+~/Documents/WhatsApp_files/             # 归档：位置可在设置里改（ADR-0018 / ADR-0023）
 ├── <sha256>                     # 正文：内容寻址，文件名为内容哈希
 ├── .open/                       # 打开用的硬链接（派生物，启动时重建）
 └── .index.sqlite                # 归档索引 + FTS5 虚表

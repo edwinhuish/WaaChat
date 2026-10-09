@@ -25,8 +25,15 @@ import { isAbsolute, join } from 'node:path'
 /** 应用标识在文件系统层面的名字，与 package.json 的 name 一致。 */
 const APP_DIR_NAME = 'waachat'
 
-/** 默认归档目录名。放在用户的文档目录下 —— 文件是用户的东西，应该出现在他能自己找到的地方。 */
-const ARCHIVE_DIR_NAME = 'WaaChat_files'
+/**
+ * 默认归档目录名。
+ *
+ * 这里用的是**服务方的名字**而不是项目名（`WaaChat_files`），因为这个名字要回答的是用户
+ * 脑子里的问题 —— "这些是谁的文件"，而那个界面的上下文是聊天服务，不是"哪个程序写的"。
+ * 属于**指示性使用**，与代码里出现 `web.whatsapp.com` 同类，不涉及任何视觉标识素材
+ * （[INV-4] 约束的是后者）。理由与取舍见 [ADR-0023]。
+ */
+const ARCHIVE_DIR_NAME = 'WhatsApp_files'
 
 /**
  * 归档索引的文件名。
@@ -47,14 +54,19 @@ function cacheHome(): string {
 }
 
 /**
- * 归档的默认位置：`~/Downloads/WaaChat_files`。
+ * 归档的默认位置：`~/Documents/WhatsApp_files`。
  *
- * 选 `~/Downloads` 是因为它正是"官方网页版会把文件放进去"的那个目录 —— 用户对
- * "我下载的东西在哪"的直觉就建立在这上面，而本应用的卖点恰恰是"不再需要走一遍下载"。
+ * 放在文档目录下，因为归档是**用户自己的文件**：他应该能自己念出这个路径、自己找到它、
+ * 自己决定备份还是删掉（[ADR-0018] 的原始理由）。
+ *
+ * ⚠️ `~/Documents` 在很多桌面环境里是同步盘的地盘。这条风险由文档承担
+ * （`docs/usage.md` 第 4 节明确写了不要把归档放进同步盘），而不是换一个"更安全"、
+ * 但用户想不到也找不到的位置 —— 取舍见 [ADR-0023]。
+ *
  * 目录本身由 `archive/blobs.ts` 的 `ensureArchiveDir()` 在启动时创建（`mkdir` 的
- * `recursive` 会连 `~/Downloads` 一起补上），不需要用户先手工建。
+ * `recursive` 会连 `~/Documents` 一起补上），不需要用户先手工建。
  */
-export const defaultArchiveDir = (): string => join(homedir(), 'Downloads', ARCHIVE_DIR_NAME)
+export const defaultArchiveDir = (): string => join(homedir(), 'Documents', ARCHIVE_DIR_NAME)
 
 /**
  * 把用户给的路径规整成一个可用的归档根目录；不可用时返回 `null`（调用方回落到默认位置）。

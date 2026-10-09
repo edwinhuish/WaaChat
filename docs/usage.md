@@ -83,14 +83,14 @@ sudo apt install gnome-shell-extension-appindicator
 | 想找以前打开过的文件 | 在应用的归档界面按文件名搜索 |
 | 不想让它自动打开 | 在偏好设置里改为"只归档，不自动打开" |
 
-**注意**：文件不会散落在 `~/Downloads` 根目录里。这是刻意的 —— `报告 (1).pdf`、`报告 (2).pdf` 那种堆积正是本项目要消灭的行为。归档统一收进 `~/Downloads/WaaChat_files/` 这一个子目录，正文以内容哈希命名（去重靠它），要看原始文件名就用归档界面。
+**注意**：文件**不会进 `~/Downloads`**，更不会散落在它的根目录里。归档统一收进 `~/Documents/WhatsApp_files/` 这一个子目录，正文以内容哈希命名（去重靠它），要看原始文件名就用归档界面。这是刻意的 —— `报告 (1).pdf`、`报告 (2).pdf` 那种堆积正是本项目要消灭的行为。
 
 ## 4. 文件存在哪里
 
-归档的位置**可以改**（默认 `~/Downloads/WaaChat_files`，**首次启动会自动创建**，连 `~/Downloads` 不存在时也会一并建好），其余几处固定。**删除后果完全不同**（见 [ADR-0008](decisions.md#adr-0008) / [ADR-0018](decisions.md#adr-0018) / [ADR-0021](decisions.md#adr-0021)）：
+归档的位置**可以改**（默认 `~/Documents/WhatsApp_files`，**首次启动会自动创建**，连 `~/Documents` 不存在时也会一并建好），其余几处固定。**删除后果完全不同**（见 [ADR-0008](decisions.md#adr-0008) / [ADR-0018](decisions.md#adr-0018) / [ADR-0023](decisions.md#adr-0023)）：
 
 ```
-~/Downloads/WaaChat_files/             归档：你打开过的文件（位置可在设置里改）
+~/Documents/WhatsApp_files/            归档：你打开过的文件（位置可在设置里改）
 ├── <sha256>                   文件正文，文件名为内容哈希
 ├── .open/                     临时的、带原始文件名的硬链接，用于交给系统应用打开
 └── .index.sqlite              归档索引（含"什么时候打开过什么"）
@@ -111,7 +111,7 @@ sudo apt install gnome-shell-extension-appindicator
 | 目录 | 删了会怎样 |
 |---|---|
 | `~/.config/waachat/` | **需要重新扫码链接设备。不要删。** |
-| `~/Downloads/WaaChat_files/`（或你自己设的位置） | 你打开过的文件丢失，且若原链接已过期则无法恢复 |
+| `~/Documents/WhatsApp_files/`（或你自己设的位置） | 你打开过的文件丢失，且若原链接已过期则无法恢复 |
 | `~/.local/share/waachat/cache/` | 只影响性能，下次自动重建，随时可删 |
 | `~/.cache/waachat/logs/` | 只是丢失排查线索 |
 | `~/.config/waachat/custom-icon.png` | 图标回到默认值，其余不受影响（也可以在设置里点「恢复默认」） |
@@ -130,7 +130,7 @@ sudo apt install gnome-shell-extension-appindicator
 **归档目录里的文件是解密后的明文**，不受端到端加密保护。它的安全性等于你本机磁盘的安全性。
 
 - 目录权限是 `0700`（仅本人可读），文件 `0600`。目录已存在但权限更宽时，启动时会被收紧。
-- **不要**把归档目录放进任何云同步盘（Dropbox / OneDrive / iCloud / 坚果云 等）。默认位置 `~/Downloads/WaaChat_files` 通常不在同步范围里，但**你随时可以在设置里把它改到同步盘覆盖的目录** —— 那会把解密后的明文复制到别处，且同步客户端通常不保留权限位。
+- **不要**把归档目录放进任何云同步盘（Dropbox / OneDrive / iCloud / 坚果云 等）。默认位置 `~/Documents/WhatsApp_files` **有可能正落在同步范围里**（有些同步客户端默认就接管 `~/Documents`）—— 如果你的同步盘盖住了它，请**在设置里把保存位置改到同步范围之外**。理由不止是隐私：那会把解密后的明文复制到别处，而且同步客户端通常不保留权限位。
 - 共享机器上请开启"退出时清除归档"（见下）。
 - 需要更强保护请使用全盘加密，或把归档目录指向加密卷。
 
@@ -141,7 +141,7 @@ sudo apt install gnome-shell-extension-appindicator
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | 应用图标 | 默认图标 | 点「选择图片…」换图标（PNG / JPG / ICO）。窗口与托盘立即生效；启动器 / 任务栏图标要重新登录桌面。见下 |
-| 文件保存位置 | `~/Downloads/WaaChat_files` | 点「更改…」选目录 → 确认后**自动迁移**已有归档；取消则存储位置与数据都不变 |
+| 文件保存位置 | `~/Documents/WhatsApp_files` | 点「更改…」选目录 → 确认后**自动迁移**已有归档；取消则存储位置与数据都不变 |
 | 点击文件时自动打开 | 开启 | 关闭后只归档，你自己从归档界面打开 |
 | 密文磁盘缓存 | 开启 | 第二次打开同一个文件不再联网。**改这项需要重启** |
 | 后台预取文档 | 关闭 | 收到文件消息时预先拉取密文，点开时更快。**尚未实现（计划 M3）** |
@@ -214,7 +214,7 @@ sudo apt remove --purge waachat
 # 手动清除数据（注意：会删除归档与登录态，不可恢复）
 rm -rf ~/.config/waachat ~/.cache/waachat ~/.local/share/waachat
 # 归档目录（若在设置里改过位置，换成你设的那个）
-rm -rf ~/Downloads/WaaChat_files
+rm -rf ~/Documents/WhatsApp_files
 # 换过应用图标的话，还有一份用户级启动器条目（系统装的那份由 apt remove 收走）
 rm -f ~/.local/share/applications/io.github.edwinhuish.waachat.desktop
 ```

@@ -124,13 +124,13 @@ https://<media-host>/v/t62.xxxx.../NNNNNN.enc?ccb=11-4&oh=<签名>&oe=<过期时
 waachat 2>&1 | grep -iE 'download|capture|cache|archive' | tail -40
 
 # 归档目录一致性：数量、大小、是否有残留半成品
-find "$HOME/Downloads/WaaChat_files" -name '.part-*' -o -type f | wc -l
+find "$HOME/Documents/WhatsApp_files" -name '.part-*' -o -type f | wc -l
 
 # 索引与文件是否对得上（是否存在"有记录无文件"）
-sqlite3 "$HOME/Downloads/WaaChat_files/.index.sqlite" 'select count(*) from files'
+sqlite3 "$HOME/Documents/WhatsApp_files/.index.sqlite" 'select count(*) from files'
 ```
 
-> 归档位置可在设置里改（默认 `~/Downloads/WaaChat_files`，见 [ADR-0018](decisions.md#adr-0018)），
-> 索引就在它的内部。上面的路径要跟着换成实际值。
+> 归档位置可在设置里改（默认 `~/Documents/WhatsApp_files`，见 [ADR-0018](decisions.md#adr-0018) /
+> [ADR-0023](decisions.md#adr-0023)），索引就在它的内部。上面的路径要跟着换成实际值。
 
 日志里**不得**出现文件名全文、会话名、完整路径（见 [`security.md`](security.md)）。调试需要时用哈希前缀代替。

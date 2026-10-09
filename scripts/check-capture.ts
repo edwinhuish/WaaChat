@@ -138,7 +138,7 @@ const home = homedir()
 
 check(
   '默认归档位置在文档目录下',
-  defaultArchiveDir() === join(home, 'Downloads', 'WaaChat_files'),
+  defaultArchiveDir() === join(home, 'Documents', 'WhatsApp_files'),
   defaultArchiveDir(),
 )
 check('拒绝根目录', normalizeArchiveDir('/') === null)
