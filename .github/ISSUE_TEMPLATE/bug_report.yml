@@ -1,0 +1,79 @@
+name: 缺陷报告
+description: 应用崩溃、行为异常、界面问题等
+title: '[bug] '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先确认这不是[已知的坑](https://github.com/edwinhuish/waachat/blob/main/AGENTS.md#5-已知的坑省你一次踩)。
+
+        > 「点了文件没反应 / 文件还是跑进了 ~/Downloads」属于接管失效，请改用**接管失效**模板，那里会问到关键信息。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 应用内「关于」，或 `dpkg -l waachat` / AppImage 文件名
+      placeholder: 1.0.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 发行版与版本、桌面环境、会话类型（Wayland / X11）、安装方式
+      placeholder: |
+        Ubuntu 26.04 / GNOME 50 / Wayland / deb 安装
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开某个包含 PDF 的会话
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与诊断输出
+      description: |
+        从终端启动应用可以看到主进程日志：
+
+        ```bash
+        waachat 2>&1 | tail -50
+        ```
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已经搜索过现有 issue，没有重复
+          required: true
+        - label: 这个问题不涉及账号被封或安全漏洞（后者请见 SECURITY.md）
+          required: true

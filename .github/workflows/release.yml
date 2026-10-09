@@ -1,0 +1,218 @@
+name: Release
+
+# 触发：
+#   1. 推送 `v*` 标签 —— 唯一自动入口，由 `pnpm run release`（bumpp）推送；
+#   2. 手动触发（workflow_dispatch），对**已存在**的标签重跑或补发。
+#
+#      正常路径：
+#        pnpm run release -- --release minor
+#
+#      等价的手工入口（走这条路就必须自己保证 package.json 的版本与标签一致）：
+#        git tag v0.2.0 && git push origin v0.2.0
+#
+# 产物由 electron-builder 的 GitHub publisher 上传：它同时生成自动更新需要的
+# `latest-linux.yml`。自己拼上传流程最容易漏掉的就是这个文件，漏掉之后自动更新会静默失效。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发布的已存在标签（如 v0.2.0）。留空则用当前触发引用的标签
+        required: false
+        default: ''
+        type: string
+
+# 创建 / 更新 Release 与上传产物都需要写权限；默认的 `read` 会让发布在最后一步 403。
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # electron-builder 的 GitHub publisher 与 `gh` 都认这个变量
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  release:
+    name: 构建并发布
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # changelog 要跑 `git log <前一个标签>..<当前标签>`，也要能解析出前一个标签；
+          # 默认的浅克隆（fetch-depth: 1）两条都拿不到。
+          fetch-depth: 0
+          # 手动触发时按输入的标签取代码，保证 package.json 里的版本与该标签一致
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # ⚠️ 必须排在安装依赖与构建**之前**。
+      #
+      # 这一步曾经在 check / verify 之后，于是"手动触发时填了错的标签"这个错误会被
+      # 前面的失败盖住，报出来的是一句和标签毫无关系的报错（实测：手动触发填了一个
+      # 与当前版本不符的历史标签，检出被拉回旧提交，用旧 `.nvmrc` 的 Node 跑旧测试，
+      # 最后以 `Worker ... SIGSEGV` 收场）。
+      # 现在这种输入会在几十秒内以本步的报错结束。
+      - name: 解析并校验版本标签
+        id: version
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+
+          version="v$(node -p "require('./package.json').version")"
+          [ -n "$tag" ] || tag="$version"
+
+          if [ "$tag" != "$version" ]; then
+            echo "::error::标签 $tag 与 package.json 的版本 $version 不一致，而 electron-builder 只会发布到 $version。请先用 pnpm run release 提升版本再打标签。"
+            exit 1
+          fi
+
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::标签 $tag 不存在。发布只针对已推送的标签，请先 pnpm run release，或 git push origin $tag。"
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "✅ 发布标签：$tag"
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 发布前的静态检查
+        run: pnpm run check
+
+      # 与 CI 相同的校验。发布前再跑一次是刻意的：校验脚本断言的正是
+      # 用户装完之后才会发现的那几个问题。
+      - name: 构建并校验产物
+        run: pnpm run verify
+
+      # 查出对比起点：v0.2.0 的说明里应该包含 v0.1.x 的全部提交，所以用 --minor
+      # （当前是 X.Y.0 时取整个上一个 minor 系列的最新标签，而不是紧邻的那一个）。
+      - name: 获取前一个版本标签
+        id: get_tags
+        run: |
+          chmod +x .github/scripts/get-tags.sh
+          .github/scripts/get-tags.sh --minor "${{ steps.version.outputs.tag }}"
+
+      - name: 生成 Changelog
+        id: changelog
+        run: |
+          chmod +x .github/scripts/generate-changelog.sh
+          # 产出的文件由后面「写入发布说明」那一步用 `gh release edit --notes-file` 读走。
+          # 注意 electron-builder 的 `releaseInfo.releaseNotesFile` **不能**指向它：
+          # 显式点名的资源缺失时 electron-builder 会抛错，而普通构建也会读它
+          # （理由见 electron-builder.yml 的注释与 ADR-0014）。
+          .github/scripts/generate-changelog.sh \
+            "${{ steps.get_tags.outputs.current_tag }}" \
+            "${{ steps.get_tags.outputs.previous_tag }}" \
+            release-notes.md
+
+      # 与上一步的区别只有 `--publish always`（脚本里已带）。单独一步是为了让
+      # "产物没问题"与"上传成功"在 Actions 界面上是两个可分辨的状态。
+      #
+      # 这一步同时**创建** Release：`releaseType: release` 让它直接是已发布状态
+      # （默认值 `draft` 会停在草稿区，页面上看不到，electron-updater 也读不到）。
+      - name: 创建 Release 并上传产物
+        run: pnpm run pack:publish
+        env:
+          # electron-builder 拒绝往"已发布超过 2 小时"的同一 Release 再上传产物，而且只打
+          # 一条 warn 就跳过（构建仍然是绿的）—— 重跑必须能刷新产物与自动更新清单。
+          EP_GH_IGNORE_TIME: 'true'
+
+      - name: 生成校验值
+        run: |
+          cd dist
+          sha256sum *.deb *.AppImage > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # 两件事，都是幂等的：
+      #
+      #   1. 写入发布说明。刻意由工作流显式写入，而不是交给 electron-builder 在创建时带
+      #      上 —— 那条路依赖"隐式读取项目根的 release-notes.md"，且无法在配置里点名
+      #      （点名就会让**普通构建**失败，见 electron-builder.yml 的注释）。显式写入后，
+      #      body 与本次生成的 notes 一致，与创建路径无关。
+      #   2. 确保是**已发布**状态。正常路径下上一步刚建出来的就是已发布的，这里是空操作；
+      #      留着是为了覆盖"同名标签的 Release 早已是草稿"的情形 —— electron-builder 会
+      #      复用草稿但不会把它转正，于是产物传进了草稿，Release 页面永远看不到。
+      - name: 写入发布说明并确保已发布
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --notes-file release-notes.md
+
+      - name: 附加校验值到 Release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release upload "$TAG" dist/SHA256SUMS.txt --clobber
+
+      # electron-builder 在"Release 类型不兼容"或"已发布超过 2 小时窗口"时**不报错**，
+      # 只打一条 warn 就跳过上传。只看退出码会把这种情况当成发布成功，所以把终态断言出来：
+      # Release 必须是已发布状态、发布说明非空，且四个文件都在。
+      - name: 验证 Release 状态、发布说明与产物
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$draft" != "false" ]; then
+            echo "::error::Release $TAG 仍是草稿：Releases 页面上看不到，electron-updater 也不认草稿为最新版本（自动更新会静默失效）。"
+            exit 1
+          fi
+
+          body=$(gh release view "$TAG" --json body --jq .body)
+          # 发布说明为空时页面只有产物、没有变更内容，而这正是"用户看不到改了什么"的
+          # 那种静默失败；生成脚本写的是带对比链接的 Markdown，因此它必须提到本次标签。
+          if [ -z "$body" ] || [[ "$body" != *"$TAG"* ]]; then
+            echo "::error::Release $TAG 的发布说明为空或与本次标签无关（body 长度 ${#body}）。检查生成 Changelog 与写入发布说明这两步。"
+            exit 1
+          fi
+
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          echo "$assets"
+
+          missing=""
+          for name in latest-linux.yml SHA256SUMS.txt; do
+            grep -qxF "$name" <<< "$assets" || missing="$missing $name"
+          done
+          grep -qE '\.deb$' <<< "$assets" || missing="$missing <一个 .deb>"
+          grep -qE '\.AppImage$' <<< "$assets" || missing="$missing <一个 .AppImage>"
+
+          if [ -n "$missing" ]; then
+            echo "::error::Release $TAG 缺少：${missing# }。实际上传的是：$(tr '\n' ' ' <<< "$assets")"
+            exit 1
+          fi
+
+          echo "✅ Release $TAG 已发布，产物齐全：$(gh release view "$TAG" --json url --jq .url)"
+
+      # 产物同时存档 30 天，防止 Release 被误删后无从追溯
+      - name: 归档产物
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: waachat-${{ steps.version.outputs.tag || github.ref_name }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.yml
+            dist/SHA256SUMS.txt
+            release-notes.md

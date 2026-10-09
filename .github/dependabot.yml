@@ -1,0 +1,64 @@
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # npm
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      # 补丁与小版本合并成一个 PR，减少评审噪音
+      tooling-minor:
+        patterns:
+          - 'eslint*'
+          - 'prettier'
+          - 'vitest'
+          - 'typescript-eslint'
+          - 'globals'
+        update-types: [minor, patch]
+      build-chain:
+        patterns:
+          - 'electron'
+          - 'electron-builder'
+          - 'electron-vite'
+          - 'vite'
+    ignore:
+      # typescript-eslint 的 peer 要求 typescript <6.1.0。跨过这条线会直接装不上，
+      # 不是"跑起来有点问题"。升级 TS 必须是一个单独的、人工的、带 ADR 的动作。
+      - dependency-name: typescript
+        versions: ['>=6.1.0']
+      # Electron 主版本升级会换掉 Chromium 与 Node，必须人工跑 `pnpm run verify`。
+      - dependency-name: electron
+        update-types: [version-update:semver-major]
+      # 原生模块：主版本升级需要人工确认 prebuilds 是否覆盖 linux-x64。
+      # （它是 Node-API 模块，因此**不**存在 ABI 耦合，见 docs/packaging.md 第 6 节。）
+      - dependency-name: better-sqlite3
+        update-types: [version-update:semver-major]
+      # vite 的主版本被 electron-vite 的 peer 范围卡住（^5 || ^6 || ^7）。
+      # 升到 8 会让 `pnpm install --frozen-lockfile` 直接 ERESOLVE 失败 —— 那是 CI 全红，不是"有点问题"。
+      # 等 electron-vite 放开范围之后再解除这条。
+      - dependency-name: vite
+        update-types: [version-update:semver-major]
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: 'chore(ci)'

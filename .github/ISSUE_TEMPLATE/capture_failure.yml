@@ -1,0 +1,87 @@
+name: 接管失效
+description: 点击聊天里的文件后没有直接打开，或又落进了 ~/Downloads
+title: '[capture] '
+labels: ['capture', 'bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这是本项目最核心、也最容易受上游改版影响的功能，因此单独设一个模板。
+
+        接管逻辑只允许依赖**标准浏览器内核行为**（下载事件、https 请求）。一旦上游改了实现方式，
+        失效通常表现为「静默降级回原生下载」——所以我们特别需要下面这几项信息来定位。
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 失效表现
+      options:
+        - 文件下载到了 ~/Downloads，没有自动打开
+        - 文件完全没有反应，也没有下载
+        - 打开了，但打开的是错误的应用
+        - 打开了，但内容是损坏的 / 无法解析
+        - 归档目录里没有出现新文件
+        - 出现了「浏览器不受支持」之类的提示
+        - 其他（在下面补充）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: occurrence
+    attributes:
+      label: 这是第几次打开该文件
+      options:
+        - 该文件第一次打开（走的是下载路径）
+        - 之前打开过（应该走缓存，但仍在联网或重新下载）
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: fileinfo
+    attributes:
+      label: 文件信息
+      description: 文件类型、大小、来源（单聊 / 群聊 / 自己发的）
+      placeholder: |
+        PDF，2.3 MB，群聊里的他人发送
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: 1.0.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: verify
+    attributes:
+      label: 产物校验输出
+      description: 在仓库里执行 `pnpm run verify`，把输出贴在这里（它会检查接管相关的配置是否完好）
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 主进程日志
+      description: |
+        从终端启动并复现一次：
+
+        ```bash
+        waachat 2>&1 | grep -iE 'download|capture|cache' | tail -40
+        ```
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: noregress
+    attributes:
+      label: 确认
+      options:
+        - label: 我没有通过注入脚本或调试协议的方式"修好"它（那会改变问题的性质）
+          required: true

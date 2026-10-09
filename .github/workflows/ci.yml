@@ -1,0 +1,93 @@
+name: CI
+
+# 命令全部来自 package.json 的 scripts，与贡献者在本地跑的 `pnpm run check` /
+# `pnpm run verify` 完全一致。CI 里不出现第二条命令路径，避免"本地过了 CI 没过"。
+#
+# 安装一步是唯一的例外：本地是 `pnpm install`，CI 加 `--frozen-lockfile` 以确保
+# 锁文件与 package.json 一致（不一致时要**失败**，而不是悄悄改写锁文件）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 打包链路不需要遥测与更新检查；也避免 Electron 启动噪声混进日志
+  ELECTRON_ENABLE_LOGGING: '0'
+
+jobs:
+  check:
+    name: 静态检查与单测
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # 版本取自 package.json 的 `packageManager`，因此这里不写版本号 ——
+      # 写死会在升级 pnpm 时变成第二处需要同步的事实。
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: lint + 格式 + 类型检查 + 单元测试
+        run: pnpm run check
+
+  package:
+    name: 打包 deb / AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # electron-builder 探测包管理器时跑的是 PATH 上的 `pnpm`（见 app-builder-lib
+      # 的 node-module-collector）。装上 pnpm 是这一步的前提，不是可选项。
+      #
+      # `pnpm run verify` = 构建 deb + AppImage，然后实际解包产物并断言：
+      #   .desktop 的 StartupWMClass 与 app.setDesktopName() 一致
+      #   图标已打进包内
+      #   deb 里 postinst 引用的 AppArmor profile 确实存在
+      #   deb 的依赖字段合理（没有被硬编码的 *t64 名字污染）
+      #   AppImage 不依赖 libfuse2
+      # 这些断言拦的是"本地跑得好好的、装到别人机器上图标变齿轮"这类问题。
+      - name: 构建并校验产物
+        run: pnpm run verify
+
+      - name: 上传产物供排查
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: waachat-pr-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.yml
