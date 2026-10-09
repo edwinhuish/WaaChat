@@ -7,7 +7,11 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { FALLBACK_NAME, sanitizeFileName } from '../../src/main/archive/naming'
+import {
+  FALLBACK_NAME,
+  archiveNameCandidates,
+  sanitizeFileName,
+} from '../../src/main/archive/naming'
 
 describe('sanitizeFileName', () => {
   it('剥掉路径，只留最后一段', () => {
@@ -63,5 +67,44 @@ describe('sanitizeFileName', () => {
   it('幂等：净化过的名字再净化一次不变', () => {
     const once = sanitizeFileName('../../a/b/合同 final.pdf')
     expect(sanitizeFileName(once)).toBe(once)
+  })
+})
+
+describe('archiveNameCandidates', () => {
+  const hash = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2'
+
+  it('第一个候选就是净化后的原名', () => {
+    expect(archiveNameCandidates('2026年第三季度 采购合同.pdf', hash)[0]).toBe(
+      '2026年第三季度 采购合同.pdf',
+    )
+    // 不可信输入先过 sanitize —— 落盘的名字始终是净化过的。
+    expect(archiveNameCandidates('../../etc/passwd', hash)[0]).toBe('passwd')
+    expect(archiveNameCandidates('', hash)[0]).toBe(FALLBACK_NAME)
+  })
+
+  it('冲突候选把哈希插在扩展名之前', () => {
+    const candidates = archiveNameCandidates('报告.pdf', hash)
+
+    expect(candidates[1]).toBe('报告 (a1b2c3d4).pdf')
+    expect(candidates[2]).toBe('报告 (a1b2c3d4e5f6a7b8).pdf')
+    expect(candidates[3]).toBe(`报告 (${hash}).pdf`)
+  })
+
+  it('每个候选都保留扩展名', () => {
+    // 扩展名必须留在最后一段：去掉它，系统就推断不出 MIME，症状是"没有可用于打开该文件的应用"。
+    for (const candidate of archiveNameCandidates('合同.pdf', hash)) {
+      expect(candidate.endsWith('.pdf')).toBe(true)
+    }
+
+    // 没有扩展名时后缀直接接在末尾。
+    expect(archiveNameCandidates('README', hash)[1]).toBe('README (a1b2c3d4)')
+  })
+
+  it('候选名不超长度上限（加上后缀也不能超）', () => {
+    const candidates = archiveNameCandidates(`${'あ'.repeat(300)}.pdf`, hash)
+
+    for (const candidate of candidates) {
+      expect(candidate.length).toBeLessThanOrEqual(180)
+    }
   })
 })

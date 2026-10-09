@@ -26,7 +26,7 @@ export const FALLBACK_NAME = 'file.bin'
  *   - 只取 `basename`      → 掐掉 `../../` 这类目录穿越
  *   - 去掉 `\` 与 NUL      → 防止在其它平台或经 shell 传递时被解释为路径
  *   - 去掉控制字符         → 它们会污染终端输出与日志
- *   - 不许以点开头         → 否则会与归档内部的 `.part-*` / `.open` 同名，或变成隐藏文件
+ *   - 不许以点开头         → 否则会与归档内部的 `.part-*` / `.index.sqlite*` 同名，或变成隐藏文件
  *   - 长度截断并保留扩展名 → 截断不能把 `.pdf` 砍掉，否则打开方式就丢了
  *
  * 注意：这里**不做** Unicode 归一化。`NFC` / `NFD` 两种形式的中文或重音字符都能安全
@@ -65,4 +65,45 @@ export function sanitizeFileName(raw: string): string {
 function basename(raw: string): string {
   const lastSlash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'))
   return lastSlash === -1 ? raw : raw.slice(lastSlash + 1)
+}
+
+/** 冲突候选里哈希前缀的长度，依次尝试；最后一个是完整哈希（理论上不可能再冲突）。 */
+const SUFFIX_LENGTHS = [8, 16] as const
+
+/**
+ * 一份内容在归档目录里的**候选文件名**，按优先级排列（[ADR-0031]）。
+ *
+ *   报告.pdf  →  报告 (a1b2c3d4).pdf  →  报告 (a1b2c3d4e5f6a7b8).pdf  →  报告 (完整哈希).pdf
+ *
+ * 第一个候选永远是**净化后的原名**，因此正常情况（这个名字没被别的内容占着）落盘的就是
+ * 用户认得出来的名字；只有真冲突时才多一小段哈希。
+ *
+ * 为什么用哈希后缀而不是浏览器式的 `报告 (1).pdf`：后者要扫描目录找空位，名字会随目录内容
+ * 变化（删掉 `(1)` 之后下一个同名文件又变成 `(1)`），而索引里存着这个名字 —— 失配就是
+ * "搜得到但打不开"。哈希后缀是**确定性**的：同一个哈希总能算出同一个名字。
+ *
+ * 纯函数（不碰文件系统），因此"哪个候选能被用上"由调用方按 `existsSync` 决定。
+ */
+export function archiveNameCandidates(rawName: string, hash: string): string[] {
+  const plain = sanitizeFileName(rawName)
+  const suffixes = [...SUFFIX_LENGTHS.map((length) => hash.slice(0, length)), hash]
+
+  return [plain, ...suffixes.map((suffix) => withHashSuffix(plain, suffix))]
+}
+
+/**
+ * 把哈希后缀插在**扩展名之前**：`报告.pdf` + `a1b2c3d4` → `报告 (a1b2c3d4).pdf`。
+ *
+ * 扩展名必须留在最后一段，否则系统按扩展名推断 MIME 就失效了 —— 那正是这次改动要修的问题
+ * 之一。同时按 {@link MAX_NAME_LENGTH} 截断主干：加上后缀之后可能超出限制。
+ */
+function withHashSuffix(name: string, suffix: string): string {
+  const dot = name.lastIndexOf('.')
+  const extension = dot <= 0 ? '' : name.slice(dot)
+  const stem = dot <= 0 ? name : name.slice(0, dot)
+
+  const marker = ` (${suffix})`
+  const room = Math.max(1, MAX_NAME_LENGTH - extension.length - marker.length)
+
+  return `${stem.slice(0, room)}${marker}${extension}`
 }

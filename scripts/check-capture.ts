@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path'
 
 import { ARCHIVE_FILE_MODE } from '../src/main/archive/blobs'
 import { isAllowedTarget } from '../src/main/archive/migrate'
-import { sanitizeFileName } from '../src/main/archive/naming'
+import { archiveNameCandidates, sanitizeFileName } from '../src/main/archive/naming'
 import { STAGING_DIR_NAME, isEntryName } from '../src/main/capture/cache-files'
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
@@ -165,6 +165,22 @@ check('索引与归档同目录（换位置时一起换）', dirname(indexDbPath
 // 内容不再相符（症状是"搜到但打开后不是当初那份"）。见 ADR-0031。
 check('归档正文的权限是只读（0400）', ARCHIVE_FILE_MODE === 0o400)
 
+// 归档正文的文件名判据：第一个候选必须是**净化后的原名**（不是哈希），冲突候选把哈希插在
+// 扩展名之前。放宽或收紧都会静默改变"用户在文件夹里看到什么"，属于改了没人会立刻发现的那类。
+const sampleHash = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2'
+check(
+  '归档文件名优先用原文名',
+  archiveNameCandidates('报告 2026Q3.pdf', sampleHash)[0] === '报告 2026Q3.pdf',
+)
+check(
+  '同名冲突时改用带哈希后缀的候选名',
+  archiveNameCandidates('报告.pdf', sampleHash)[1] === '报告 (a1b2c3d4).pdf',
+)
+check(
+  '每个候选名都保留扩展名（否则系统推断不出 MIME）',
+  archiveNameCandidates('合同.pdf', sampleHash).every((name) => name.endsWith('.pdf')),
+)
+
 // 迁移目标是用户在对话框里选的目录（ADR-0019），选错一个 —— 选到自己的子目录、或
 // 选到上级 —— 会让搬迁变成"自我递归"或"搬完等于没搬"。这条判据是纯字符串比较，
 // 因此能离线断言。
@@ -195,8 +211,12 @@ if (existsSync(archive)) {
   const blobs = entries.filter((name) => !name.startsWith('.'))
   const leftovers = entries.filter((name) => name.startsWith('.part-'))
 
+  const legacyNames = blobs.filter((name) => /^[0-9a-f]{64}$/.test(name)).length
+
   note(`归档目录：${archive}`)
-  note(`正文 ${blobs.length} 个，链接目录条目 ${entries.includes('.open') ? '有' : '无'}`)
+  note(
+    `正文 ${blobs.length} 个${legacyNames === 0 ? '' : `（其中 ${legacyNames} 个是旧布局的哈希名，打开时会补上只读）`}`,
+  )
 
   // 残留的临时文件说明上次进程是被 kill 的（正常退出不会留下）。
   // 它不是错误 —— 下次启动会清扫掉 —— 但知道这件事有助于解释磁盘占用。

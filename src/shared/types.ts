@@ -19,10 +19,22 @@
 export interface ArchiveRecord {
   /** 主键，自增。IPC 只接受这个标识，不接受路径（见 ai/CONVENTIONS.md 第 6 节）。 */
   readonly id: number
-  /** 内容哈希，同时是归档目录中的文件名。 */
+  /**
+   * 内容哈希 —— 这份内容的**身份**（[ADR-0031]）。
+   *
+   * 它不再是文件名：归档正文以原文名落盘（见 {@link storedName}）。同一份内容可能有
+   * 多个名字（硬链接），但只有一个哈希。
+   */
   readonly hash: string
-  /** 打开时的原始文件名，用于展示与导出时还原。 */
+  /** 打开时的原始文件名，用于展示与搜索。 */
   readonly name: string
+  /**
+   * 磁盘上的实际文件名（原文名；同名冲突时带一小段哈希后缀）。
+   *
+   * 打开与"在文件夹中显示"都用它定位文件。旧布局（[ADR-0031] 之前）的记录这里是
+   * 内容哈希 —— 那时正文就是哈希名，两种形态因此都能打开。
+   */
+  readonly storedName: string
   readonly bytes: number
   readonly mime: string
   /** 归档时间（Unix 毫秒）。 */

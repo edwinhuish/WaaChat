@@ -6,9 +6,9 @@
  *  1. **要么全搬过去，要么回到原样。** 中途失败时把已经搬走的条目搬回来；搬不动的
  *     留在原地**不做删除**。在一个可能持有唯一副本的目录里"顺手删干净"，是这类操作
  *     里最不可原谅的一种写法 —— 宁可让用户看到"两边都有数据"，也不能替他删文件。
- *  2. **不搬派生物。** `.open/` 里的硬链接与 `.part-*` 半成品都能从正文重建（应用
- *     启动时本来就会重建与清扫）。复制它们只会让迁移变慢，而且硬链接复制过去会指向
- *     新的 inode —— 在新位置留下一批看起来正常、实则与正文脱钩的文件。
+ *  2. **不搬派生物。** `.part-*` 半成品能从正文重建（启动时本来就会清扫）；旧版本的
+ *     `.open/` 影子目录（[ADR-0031] 之前为"带原始文件名的硬链接"而建）同理 —— 复制过去
+ *     只会留下一批指向新 inode、与正文脱钩的文件。
  *  3. **不阻塞事件循环。** 迁移可能是几十 GB（跨文件系统时会真的复制一遍），因此
  *     文件操作一律走 `node:fs/promises`。用同步 API 会让主进程卡住，界面连同承载
  *     上游页面的那个窗口一起失去响应。
@@ -43,9 +43,6 @@ import { setReadOnly } from './blobs'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
 const INDEX_PREFIX = '.index.sqlite'
-
-/** 正文的文件名：内容寻址，因此是小写十六进制的 SHA-256（见 `archive/blobs.ts`）。 */
-const BLOB_NAME = /^[0-9a-f]{64}$/
 
 /**
  * 并发兜底的最多轮数。
@@ -83,7 +80,7 @@ export interface MigrationPlan {
    * 删掉。执行阶段以源目录**当时**的内容为准，理由见文件头的说明。
    */
   readonly entries: readonly string[]
-  /** 源目录里可以直接删掉的派生物（`.open/`、`.part-*`）。 */
+  /** 源目录里可以直接删掉的派生物（`.part-*` 半成品、旧版本的 `.open/` 影子目录）。 */
   readonly disposable: readonly string[]
   readonly summary: MigrationSummary
 }
@@ -399,7 +396,14 @@ function listTargetEntries(dir: string): string[] {
  * 我们自己的临时文件（`.part-*`）。回滚用它把"我们搬过去的"与"别人放进来的"分开。
  */
 function isOwnEntry(name: string): boolean {
-  return BLOB_NAME.test(name) || name.startsWith(INDEX_PREFIX) || name.startsWith(TEMP_FILE_PREFIX)
+  if (name.startsWith(INDEX_PREFIX) || name.startsWith(TEMP_FILE_PREFIX)) return true
+
+  // 正文在 [ADR-0031] 之后用**原文名**，没有可判定的名字形态了 —— 因此只能放宽成"非点开头"
+  // （点开头的只剩索引与临时文件，那两类上面按前缀认掉了）。为什么选择放宽而不是收紧：
+  // 两个方向的错误不对称。**漏搬**一个我们自己的文件会让回滚**谎报成功**，而文件其实留在
+  // 新位置；错搬一个外来文件只是让用户在两个位置都看到它（界面本来就提示"请核对两处"）。
+  // 另有两道更早的防线：目标目录在计划时必须为空、源目录里已有同名文件就跳过。
+  return !name.startsWith('.')
 }
 
 /**

@@ -25,6 +25,7 @@ interface FileRow {
   id: number
   hash: string
   name: string
+  stored_name: string | null
   bytes: number
   mime: string
   opened_at: number
@@ -36,10 +37,34 @@ function toRecord(row: FileRow): ArchiveRecord {
     id: row.id,
     hash: row.hash,
     name: row.name,
+    /**
+     * 空 → 回落到哈希名：那是 [ADR-0031] 之前的布局，正文就是内容哈希，文件名因此可以
+     * 推导出来。让"读"这一侧统一处理，调用方（打开 / 定位 / 索引界面）就不必各判一次。
+     */
+    storedName: row.stored_name ?? row.hash,
     bytes: row.bytes,
     mime: row.mime,
     openedAt: row.opened_at,
     ...(row.chat_label === null ? {} : { chatLabel: row.chat_label }),
+  }
+}
+
+/**
+ * 旧库补列。
+ *
+ * `schema.sql` 是 `IF NOT EXISTS` 风格、**没有版本号机制**，因此对已经存在的 `files` 表，
+ * `CREATE TABLE IF NOT EXISTS` 不会补上新列 —— 加列必须在打开时显式做一次（[ADR-0031]
+ * 引入了 `stored_name`）。这里判断存在性而不是无脑 `ALTER TABLE`：重复加列会抛
+ * "duplicate column name"，那会让应用**开不了**库。
+ */
+function addMissingColumns(db: Database.Database): void {
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(files)').all() as { name: string }[]).map((row) => row.name),
+  )
+
+  if (!columns.has('stored_name')) {
+    db.exec('ALTER TABLE files ADD COLUMN stored_name TEXT')
+    logger.info('archive: added the missing stored_name column')
   }
 }
 
@@ -54,6 +79,10 @@ export class ArchiveStore {
     this.#db.pragma('journal_mode = WAL')
     this.#db.pragma('synchronous = NORMAL')
     this.#db.exec(schema)
+
+    // 旧库补列：`schema.sql` 是 `IF NOT EXISTS` 风格、没有版本号机制，对已经存在的表
+    // CREATE 不会补新列（ADR-0031 引入了 stored_name）。
+    addMissingColumns(this.#db)
   }
 
   /**
@@ -68,17 +97,22 @@ export class ArchiveStore {
       .get(record.hash, record.name) as { id: number } | undefined
 
     if (existing !== undefined) {
+      /**
+       * 顺带更新磁盘名：同一个 `(hash, name)` 再次打开时，磁盘上的名字可能已经变了
+       * （原来那个文件被删掉后重新下载，冲突候选算出了另一个名字）—— 索引必须跟着走，
+       * 否则就是"搜得到但打不开"（[ADR-0031]）。
+       */
       this.#db
-        .prepare('UPDATE files SET opened_at = ? WHERE id = ?')
-        .run(record.openedAt, existing.id)
+        .prepare('UPDATE files SET opened_at = ?, stored_name = ? WHERE id = ?')
+        .run(record.openedAt, record.storedName, existing.id)
       const row = this.#db.prepare('SELECT * FROM files WHERE id = ?').get(existing.id) as FileRow
       return toRecord(row)
     }
 
     const info = this.#db
       .prepare(
-        `INSERT INTO files (hash, name, bytes, mime, opened_at, chat_label)
-         VALUES (@hash, @name, @bytes, @mime, @openedAt, @chatLabel)`,
+        `INSERT INTO files (hash, name, stored_name, bytes, mime, opened_at, chat_label)
+         VALUES (@hash, @name, @storedName, @bytes, @mime, @openedAt, @chatLabel)`,
       )
       .run({ ...record, chatLabel: record.chatLabel ?? null })
 

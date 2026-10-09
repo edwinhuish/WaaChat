@@ -309,8 +309,8 @@ export function registerIpcHandlers(): void {
     const record = archiveStore().byId(id)
     if (record === null) return { ok: false, reason: 'not-found' } as const
 
-    // 打开需要原始文件名来构造带扩展名的入口，因此哈希与名字一起交给 open.ts。
-    return openPath(record.hash, record.name)
+    // 定位文件靠 storedName（磁盘上的实际文件名），哈希只用于日志与失败报告（ADR-0031）。
+    return openPath(record.hash, record.storedName)
   })
 
   guard(CHANNELS.archiveReveal, (input: unknown) => {
@@ -320,7 +320,7 @@ export function registerIpcHandlers(): void {
     const record = archiveStore().byId(id)
     if (record === null) return { ok: false, reason: 'not-found' } as const
 
-    return revealPath(record.hash, record.name)
+    return revealPath(record.hash, record.storedName)
   })
 
   guard(CHANNELS.archiveStats, () => archiveStore().stats())

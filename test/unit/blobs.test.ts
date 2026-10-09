@@ -1,10 +1,14 @@
 /**
- * 内容寻址存储的单测。
+ * 归档落盘的单测。
  *
- * 这一层要保证的是**归档目录里永远不存在半成品**，以及去重不依赖任何判断逻辑。
- * 两个性质都是靠"先算哈希、再原子改名"的顺序拿到的，因此测试用真实文件系统
- * （在隔离的归档目录下），而不是 mock `node:fs` —— mock 掉 fs 之后，
- * 被测的恰好就只剩"我有没有按顺序调用它们"，而顺序正是最容易看出来的东西。
+ * 这一层要保证三件事，每一件都对应一个具体的坏结果：
+ *
+ *   1. **归档目录里永远不存在半成品** —— 靠"先算哈希、再原子改名"的顺序拿到；
+ *   2. **文件名是用户认得的原名**（同名冲突时带一小段哈希），否则目录就没法直接看（[ADR-0031]）；
+ *   3. **正文只读**，而只读不妨碍删除（否则清理与淘汰都会在只读文件上失败）。
+ *
+ * 因此测试跑在真实文件系统上（隔离在临时的归档目录里），而不是 mock `node:fs` —— mock 掉
+ * fs 之后，被测的恰好就只剩"我有没有按顺序调用它们"，而顺序正是最容易看出来的东西。
  */
 
 import { createHash } from 'node:crypto'
@@ -25,7 +29,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
   ARCHIVE_FILE_MODE,
-  blobPath,
+  archiveFilePath,
   commitFromTemp,
   ensureArchiveDir,
   sweepTempFiles,
@@ -66,44 +70,82 @@ function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
+/** 归档目录里的**正文**（非点开头的东西）。 */
+function bodies(): string[] {
+  return readdirSync(archive).filter((name) => !name.startsWith('.'))
+}
+
 describe('commitFromTemp', () => {
-  it('把临时文件原子改名成哈希名', async () => {
+  it('用原文名落盘，而不是哈希名', async () => {
     const temp = staged('hello waachat')
 
-    const result = await commitFromTemp(temp)
+    const result = await commitFromTemp(temp, '报告 2026Q3.pdf')
 
     expect(result.created).toBe(true)
     expect(result.hash).toBe(sha256('hello waachat'))
+    expect(result.storedName).toBe('报告 2026Q3.pdf')
+    expect(result.bytes).toBe('hello waachat'.length)
     expect(existsSync(temp)).toBe(false) // rename 而不是 copy：临时名不该留下
-    expect(readFileSync(blobPath(result.hash), 'utf8')).toBe('hello waachat')
+    expect(readFileSync(archiveFilePath(result.storedName), 'utf8')).toBe('hello waachat')
   })
 
-  it('相同内容第二次提交时命中去重，且丢弃临时文件', async () => {
+  it('同名同内容命中去重，并丢弃临时文件', async () => {
     const content = `dup-${String(Date.now())}`
 
-    const first = await commitFromTemp(staged(content))
-    const second = await commitFromTemp(staged(content))
+    const first = await commitFromTemp(staged(content), '合同.pdf')
+    const second = await commitFromTemp(staged(content), '合同.pdf')
 
     expect(first.created).toBe(true)
     expect(second.created).toBe(false)
-    expect(second.hash).toBe(first.hash)
+    expect(second.storedName).toBe(first.storedName)
 
     // 关键断言：去重命中的临时文件必须被清掉，否则重复打开同一个文件会不断留下垃圾。
     expect(readdirSync(archive).filter((name) => name.startsWith('.part-'))).toHaveLength(0)
   })
 
-  it('不同内容得到不同的哈希名', async () => {
-    const a = await commitFromTemp(staged(`a-${String(Date.now())}`))
-    const b = await commitFromTemp(staged(`b-${String(Date.now())}`))
+  it('同名不同内容时给后者加一段哈希后缀（绝不覆盖）', async () => {
+    const first = await commitFromTemp(staged(`first-${String(Date.now())}`), '合同.pdf')
+    const second = await commitFromTemp(staged(`second-${String(Date.now())}`), '合同.pdf')
 
-    expect(a.hash).not.toBe(b.hash)
+    expect(second.storedName).not.toBe(first.storedName)
+    expect(second.storedName.startsWith('合同 (')).toBe(true)
+    expect(second.storedName.endsWith(').pdf')).toBe(true)
+
+    // 两份内容都还在，谁也没被覆盖 —— 覆盖一份用户可能只有一份的文件是最不可接受的失败。
+    expect(readFileSync(archiveFilePath(first.storedName), 'utf8')).toContain('first-')
+    expect(readFileSync(archiveFilePath(second.storedName), 'utf8')).toContain('second-')
+  })
+
+  it('同一份内容换个名字时只多一个名字，不多占字节', async () => {
+    const content = `alias-${String(Date.now())}`
+    const first = await commitFromTemp(staged(content), '报告.pdf')
+
+    const second = await commitFromTemp(staged(content), '报价单.pdf', {
+      findStored: (hash) => (hash === first.hash ? first.storedName : null),
+    })
+
+    expect(second.created).toBe(false)
+    expect(second.storedName).toBe('报价单.pdf')
+    // 硬链接：两个名字，同一个 inode。
+    expect(statSync(archiveFilePath(second.storedName)).ino).toBe(
+      statSync(archiveFilePath(first.storedName)).ino,
+    )
+  })
+
+  it('索引给的线索指向一个已经不存在的文件时，老老实实写一份新的', async () => {
+    const content = `stale-${String(Date.now())}`
+
+    const result = await commitFromTemp(staged(content), 'x.pdf', {
+      findStored: () => '早就没了的名字.pdf',
+    })
+
+    expect(result.created).toBe(true)
+    expect(readFileSync(archiveFilePath(result.storedName), 'utf8')).toBe(content)
   })
 
   it('落盘即只读，而只读不妨碍删除', async () => {
-    const temp = staged(`read-only-${String(Date.now())}`)
-
-    const result = await commitFromTemp(temp)
-    const path = blobPath(result.hash)
+    const result = await commitFromTemp(staged(`read-only-${String(Date.now())}`), 'readonly.pdf')
+    const path = archiveFilePath(result.storedName)
 
     expect(statSync(path).mode & 0o777).toBe(ARCHIVE_FILE_MODE)
 
@@ -126,23 +168,29 @@ describe('sweepTempFiles', () => {
 })
 
 describe('usage', () => {
-  it('只统计正文，跳过内部条目', () => {
-    // `.open/` 是为打开而建的硬链接目录，把它算进来会让占用翻倍。
-    mkdirSync(join(archive, '.open', 'somehash'), { recursive: true })
-    writeFileSync(join(archive, '.open', 'somehash', 'file.pdf'), 'x')
+  it('跳过内部条目（旧影子目录与索引）', () => {
+    // 用"前后快照相等"来断言，而不是拿条目数去对：目录里的东西由别的用例攒出来，
+    // 数条目数等于把用例的执行顺序写进断言里。
+    const before = usage()
 
-    const { files, bytes } = usage()
-
-    expect(files).toBe(readdirSync(archive).filter((n) => !n.startsWith('.')).length)
-    expect(bytes).toBeGreaterThan(0)
-  })
-
-  it('索引文件（点开头）不计入占用', () => {
-    // 索引就在归档目录里（ADR-0018），它既不是正文，也不该被统计。
+    mkdirSync(join(archive, '.open', 'legacy'), { recursive: true })
+    writeFileSync(join(archive, '.open', 'legacy', 'file.pdf'), 'x')
     writeFileSync(join(archive, '.index.sqlite'), 'not a real database')
 
-    const { files } = usage()
+    expect(usage()).toEqual(before)
+  })
 
-    expect(files).toBe(readdirSync(archive).filter((n) => !n.startsWith('.')).length)
+  it('同一份内容的多个名字只算一份（按 inode 去重）', async () => {
+    const content = `usage-alias-${String(Date.now())}`
+    const first = await commitFromTemp(staged(content), 'a.pdf')
+    const before = usage()
+
+    await commitFromTemp(staged(content), 'b.pdf', {
+      findStored: (hash) => (hash === first.hash ? first.storedName : null),
+    })
+
+    // 多了一个名字，但占用不变 —— 这正是硬链接的意义，也是"按 inode 去重"存在的理由。
+    expect(bodies()).toContain('b.pdf')
+    expect(usage()).toEqual(before)
   })
 })

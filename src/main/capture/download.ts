@@ -12,7 +12,7 @@
  *   - 不接触密钥、不做解密（流里已经是页面解密后的明文）
  */
 
-import { statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 
 import type { DownloadItem, Session } from 'electron'
@@ -20,14 +20,15 @@ import type { DownloadItem, Session } from 'electron'
 import { LIMITS } from '../../shared/constants'
 import type { Settings } from '../../shared/types'
 import {
-  blobPath,
+  archiveFilePath,
   commitFromTemp,
   ensureArchiveDir,
+  removeLegacyOpenDir,
   sweepTempFiles,
   tempPath,
 } from '../archive/blobs'
 import { archiveStore } from '../archive/store'
-import { clearOpenDir, openPath } from '../integration/open'
+import { openPath } from '../integration/open'
 import { hashPrefix, logger } from '../logger'
 import { markCaptured, markFailure } from './health'
 
@@ -39,8 +40,9 @@ export function attachDownloadCapture(ses: Session, getSettings: () => Settings)
   const swept = sweepTempFiles()
   if (swept > 0) logger.info('capture: swept leftover temp files', { count: swept })
 
-  // 打开动作会把带原始文件名的硬链接重建一遍，旧链接没有保留价值。
-  clearOpenDir()
+  // 旧版本的 `.open/` 影子目录（为"带原始文件名的硬链接"而建）不再使用，启动时清一次：
+  // 里面那些链接会让"文件看起来还在占空间"（[ADR-0031]）。
+  removeLegacyOpenDir()
 
   ses.on('will-download', (_event, item) => {
     handleDownload(item, getSettings)
@@ -102,10 +104,14 @@ async function finalize(input: FinalizeInput): Promise<void> {
   }
 
   let hash: string
+  let storedName: string
+  let bytes: number
   let created: boolean
 
   try {
-    ;({ hash, created } = await commitFromTemp(temp))
+    ;({ hash, storedName, bytes, created } = await commitFromTemp(temp, name, {
+      findStored: findStoredName,
+    }))
   } catch (error) {
     await unlink(temp).catch(() => undefined)
     markFailure({ kind: 'write-failed', reason: (error as Error).name })
@@ -123,7 +129,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
     archiveStore().record({
       hash,
       name,
-      bytes: fileSize(hash),
+      // 磁盘上的实际名字（原名，冲突时带哈希后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031）。
+      storedName,
+      bytes,
       mime,
       openedAt: Date.now(),
       // chatLabel 刻意留空：我们不读取页面内部数据（INV-1），
@@ -143,7 +151,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
     return
   }
 
-  const outcome = await openPath(hash, name)
+  const outcome = await openPath(hash, storedName)
   if (!outcome.ok) {
     markFailure({ kind: 'open-failed', reason: outcome.reason })
     logger.warn('capture: open failed', { hash: hashPrefix(hash), reason: outcome.reason })
@@ -153,10 +161,17 @@ async function finalize(input: FinalizeInput): Promise<void> {
   markCaptured()
 }
 
-function fileSize(hash: string): number {
-  try {
-    return statSync(blobPath(hash)).size
-  } catch {
-    return 0
+/**
+ * 索引里已知的、内容为 `hash` 的那个磁盘文件名（且文件仍在）；没有则返回 `null`。
+ *
+ * 交给 `commitFromTemp()` 用：同一份内容换个名字发来时，给它在归档里**再挂一个名字**，
+ * 而不是再写一份字节（[ADR-0031]）。索引是唯一知道"这份内容叫什么名字"的地方 ——
+ * 磁盘上的名字与内容无关了，这正是那次改动的代价。
+ */
+function findStoredName(hash: string): string | null {
+  for (const record of archiveStore().byHash(hash)) {
+    if (existsSync(archiveFilePath(record.storedName))) return record.storedName
   }
+
+  return null
 }

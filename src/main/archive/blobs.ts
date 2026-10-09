@@ -1,14 +1,27 @@
 /**
- * 内容寻址存储。
+ * 归档正文的落盘。
  *
- * 核心思想：用内容的 SHA-256 作为文件名。由此得到两个**免费**的性质：
+ * ── 命名：原文名，不是哈希 ──
  *
- *   1. 去重不需要任何判断逻辑 —— 同一份内容必然同名。文件名上的差异
- *      （`报告.pdf` / `报告 (1).pdf`）不会产生新的存储。
- *   2. "文件是否已存在"变成一个廉价问题 —— 先算哈希，命中就丢掉临时文件。
+ * 哈希（SHA-256）是这份内容的**身份**，用于索引里去重与查找；而**磁盘上的名字**是净化后的
+ * 原文名（`2026年第三季度合同.pdf`），这样归档目录在文件管理器里可以直接看、直接用
+ * （[ADR-0031]）。
  *
- * 本模块不导入 electron，因为其中的哈希与路径推导逻辑需要被单测覆盖。
- * 文件系统的写入约定见下方 commitFromTemp 的注释。
+ * 两件事分别由两处决定：
+ *
+ *   1. **同名不同内容**（两个对端各发一份 `合同.pdf`）：按 `naming.ts` 的候选名依次尝试
+ *      （原名 → 带一小段哈希 → 带完整哈希），取第一个可用的。确定性，不扫描目录。
+ *   2. **同一份内容**：只存一份。名字相同时丢掉临时文件；名字不同时给已有内容**再挂一个
+ *      名字**（硬链接，不额外占字节）。因此 `usage()` 必须按 inode 去重统计。
+ *
+ * ── 顺序 ──
+ *
+ * 算哈希 → 决定名字 → 原子改名（rename，不是 copy）→ 置为只读。用 rename 是为了让归档
+ * 目录里**永远不存在半成品**：要么文件不存在，要么它是完整的。前提是临时文件与目标在同一
+ * 个文件系统上（因此 `tempPath()` 也落在归档目录内）。
+ *
+ * 本模块不导入 electron，也不导入 `archive/store.ts`（后者是原生模块，且方向是 store → blobs）：
+ * 其中的哈希与路径推导逻辑需要被单测覆盖。
  */
 
 import { createHash } from 'node:crypto'
@@ -16,6 +29,7 @@ import {
   chmodSync,
   createReadStream,
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -27,8 +41,9 @@ import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { TEMP_FILE_PREFIX } from '../../shared/constants'
-import { logger, redactPath } from '../logger'
+import { hashPrefix, logger, redactPath } from '../logger'
 import { archiveDir } from '../paths'
+import { archiveNameCandidates } from './naming'
 
 /** 归档目录权限：仅本人可读写执行。里面的文件是**解密后的明文**。 */
 const DIR_MODE = 0o700
@@ -60,9 +75,34 @@ export function ensureArchiveDir(): void {
   }
 }
 
-/** 内容哈希对应的归档路径。 */
-export function blobPath(hash: string): string {
-  return join(archiveDir(), hash)
+/**
+ * 归档目录里某个文件名的完整路径。
+ *
+ * @param storedName 磁盘上的**实际**文件名：原文名（冲突时带一小段哈希后缀），或旧布局的
+ *   内容哈希。调用方从 `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值拿到它。
+ */
+export function archiveFilePath(storedName: string): string {
+  return join(archiveDir(), storedName)
+}
+
+/** 旧版本的影子目录（[ADR-0031] 之前为"带原始文件名的硬链接"而建）。 */
+const LEGACY_OPEN_DIR_NAME = '.open'
+
+/**
+ * 清掉旧版本的影子目录 `.open/`。
+ *
+ * [ADR-0031] 之前正文以哈希命名、没有扩展名，为了能交给系统应用打开才需要一条带原始文件名
+ * 的硬链接；现在正文本身就是原名，那套东西不再需要。它是**派生物**（删掉不影响归档），
+ * 而里面那些硬链接会让"文件看起来还在占空间"。删不掉只记日志 —— 不影响任何功能。
+ */
+export function removeLegacyOpenDir(): void {
+  try {
+    rmSync(join(archiveDir(), LEGACY_OPEN_DIR_NAME), { recursive: true, force: true })
+  } catch (error) {
+    logger.warn('archive: failed to remove the legacy link directory', {
+      reason: (error as Error).name,
+    })
+  }
 }
 
 /**
@@ -116,38 +156,122 @@ export function sha256File(path: string): Promise<string> {
 
 export interface CommitResult {
   readonly hash: string
-  /** false 表示内容已存在，临时文件已被丢弃（去重命中）。 */
+  /** 磁盘上的实际文件名（原文名；同名冲突时带一小段哈希后缀）。 */
+  readonly storedName: string
+  readonly bytes: number
+  /**
+   * false 表示这次**没有写入新字节**：同内容同名字（去重命中），或同一份内容换了名字
+   * （给它挂了一个硬链接）。两种情况都不会让归档变大。
+   */
   readonly created: boolean
 }
 
-/**
- * 把临时文件提交进归档。
- *
- * 顺序是有讲究的，不要重排：
- *
- *   算哈希 → 命中则丢弃临时文件 → 否则**原子改名**（rename，不是 copy）
- *
- * 用 rename 而不是 copy，是为了让归档目录里**永远不存在半成品**：要么文件不存在，
- * 要么它是完整的。copy 会产生一个可被观察到的中间态。
- *
- * 前提：临时文件与目标必须在同一个文件系统上（因此 tempPath 也落在归档目录内）。
- */
-export async function commitFromTemp(temp: string): Promise<CommitResult> {
-  const hash = await sha256File(temp)
-  const target = blobPath(hash)
+export interface CommitOptions {
+  /**
+   * 内容哈希已知时，它在归档里的文件名；不知道（或索引里没有）则返回 `null`。
+   *
+   * **注入**而不是直接查索引：`archive/` 内部的方向是 `store → blobs`，反过来 import 会成环
+   * （`store.ts` 要 import 这里的 `ensureArchiveDir` 与 `usage`）。
+   */
+  readonly findStored?: (hash: string) => string | null
+}
 
-  if (existsSync(target)) {
-    await unlink(temp)
-    return { hash, created: false }
+/**
+ * 把临时文件提交进归档，文件名用**原文名**（[ADR-0031]）。
+ *
+ * 顺序不要重排：
+ *
+ *   算哈希 → 定名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字" → 否则原子改名 → 置只读
+ *
+ * 用 rename 而不是 copy，是为了让归档目录里**永远不存在半成品**：要么文件不存在，要么它是
+ * 完整的。前提是临时文件与目标在同一个文件系统上（因此 `tempPath()` 也落在归档目录内）。
+ *
+ * @param temp 位于归档目录内的临时文件（`capture/download.ts` 下载时指定）
+ * @param rawName 打开时的原始文件名，**不可信输入**（由对端发送者决定），由 `naming.ts` 净化
+ */
+export async function commitFromTemp(
+  temp: string,
+  rawName: string,
+  options: CommitOptions = {},
+): Promise<CommitResult> {
+  const hash = await sha256File(temp)
+  const bytes = statSync(temp).size
+
+  // 同一份内容可能已经在归档里（只是叫别的名字）—— 那就只多挂一个名字，不再写一份字节。
+  const existing = findExisting(hash, bytes, options)
+
+  for (const candidate of archiveNameCandidates(rawName, hash)) {
+    const target = archiveFilePath(candidate)
+
+    if (existsSync(target)) {
+      // 这个名字被占着：内容相同就是"已经存过"（去重），不同就试下一个候选名。
+      if (await sameContent(target, hash, bytes)) {
+        await unlink(temp)
+        return { hash, storedName: candidate, bytes, created: false }
+      }
+
+      continue
+    }
+
+    if (existing !== null) {
+      // 内容在归档里、只是叫别的名字：挂一个硬链接。多一个名字，不多占字节。
+      linkSync(existing, target)
+      setReadOnly(target)
+      await unlink(temp)
+      return { hash, storedName: candidate, bytes, created: false }
+    }
+
+    renameSync(temp, target)
+
+    // 改名之后再收紧权限：名字在改名那一刻就是最终形态，而权限位与内容无关，
+    // 因此中间没有可被观察到的坏状态（[ADR-0031]）。
+    setReadOnly(target)
+
+    return { hash, storedName: candidate, bytes, created: true }
   }
 
-  renameSync(temp, target)
+  /**
+   * 候选名全被别的内容占着 —— 理论上不可能（最后一个候选带完整哈希）。
+   *
+   * 因此当成一次写入失败报出去，而**不删**临时文件：调用方（`capture/download.ts`）负责在
+   * 失败路径上清掉它。日志里只出现哈希前缀，文件名不进日志（INVARIANTS G-3）。
+   */
+  throw new Error(`archive: no free name for ${hashPrefix(hash)}`)
+}
 
-  // 改名之后再收紧权限：名字在改名那一刻就已经是最终形态，而权限位与内容无关，
-  // 因此中间没有可被观察到的坏状态（[ADR-0031]）。
-  setReadOnly(target)
+/**
+ * 磁盘上已有的、内容为 `hash` 的那份文件（绝对路径）；不确定时返回 `null`。
+ *
+ * 先用索引给的线索，再确认那个文件还在、**大小也对得上** —— 索引可能指向一个已被删除或已被
+ * 替换的文件，那时去 link 会得到一个错的链接或 `ENOENT`。只比大小是够的：为"索引过期"这种
+ * 情形每次下载都把整个文件哈希一遍不值得。
+ */
+function findExisting(hash: string, bytes: number, options: CommitOptions): string | null {
+  const hinted = options.findStored?.(hash)
+  if (hinted === undefined || hinted === null) return null
 
-  return { hash, created: true }
+  try {
+    const stat = statSync(archiveFilePath(hinted))
+    return stat.isFile() && stat.size === bytes ? archiveFilePath(hinted) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 磁盘上那个文件是不是这份内容。
+ *
+ * 先比大小：不同大小一定不是同一份内容（"同名但不是同一个文件"的绝大多数情况，一次 stat
+ * 就够了），大小相同才去算哈希。
+ */
+async function sameContent(path: string, hash: string, bytes: number): Promise<boolean> {
+  try {
+    if (statSync(path).size !== bytes) return false
+  } catch {
+    return false
+  }
+
+  return (await sha256File(path)) === hash
 }
 
 /**
@@ -173,25 +297,34 @@ export function sweepTempFiles(): number {
   return removed
 }
 
-/** 归档当前占用的总字节数与文件数。 */
+/**
+ * 归档当前占用的字节数与文件数。
+ *
+ * **按 inode 去重**：同一份内容可以有多个名字（硬链接，[ADR-0031]），按名字累加会让占用翻倍
+ * —— `.open/` 时代就已经是这条纪律。因此这里的 `files` 是"磁盘上真实占用的文件数"，
+ * 与索引里的记录条数不是一回事。
+ */
 export function usage(): { bytes: number; files: number } {
   ensureArchiveDir()
   let bytes = 0
-  let files = 0
+  const inodes = new Set<number>()
 
   for (const entry of readdirSync(archiveDir())) {
-    // 跳过所有点开头的条目：`.part-*` 是半成品，`.open/` 是为打开而建的硬链接目录
-    // （硬链接与正文共享存储，把它算进来会让统计翻倍）。
+    // 点开头的条目都不是正文：`.part-*` 是半成品（临时文件），`.index.sqlite*` 是索引。
     if (entry.startsWith('.')) continue
+
     try {
-      bytes += statSync(join(archiveDir(), entry)).size
-      files += 1
+      const stat = statSync(join(archiveDir(), entry))
+      if (inodes.has(stat.ino)) continue
+
+      inodes.add(stat.ino)
+      bytes += stat.size
     } catch {
       // 统计失败不应影响主流程。
     }
   }
 
-  return { bytes, files }
+  return { bytes, files: inodes.size }
 }
 
 /**
@@ -211,7 +344,7 @@ export function wipeArchive(): number {
   let removed = 0
 
   for (const entry of readdirSync(archiveDir())) {
-    // 连 `.open/` 与残留的 `.part-*` 一起清掉：它们都是派生物。
+    // 连残留的 `.part-*` 与旧版本的 `.open/` 一起清掉：它们都是派生物。
     try {
       rmSync(join(archiveDir(), entry), { recursive: true, force: true })
       removed += 1

@@ -174,6 +174,24 @@ describe('migrateArchive', () => {
     expect(readFileSync(join(source, BLOB_A), 'utf8')).toBe('first')
   })
 
+  it('原文名的正文也会被回滚（正文不再有可判定的名字形态）', async () => {
+    seedSource()
+    const name = '2026年第三季度 采购合同.pdf'
+    writeFileSync(join(source, name), 'original name')
+
+    const planned = plan()
+
+    // 先整库搬过去（成功），再回滚 —— 这样"搬没搬过去"不依赖目录枚举顺序。
+    await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })
+    expect(existsSync(join(target, name))).toBe(true)
+
+    // ADR-0031 之后正文用的是原文名，`isOwnEntry()` 只能放宽成"非点开头"。
+    // 这条断言守的是放宽之后仍然成立的那一半：我们自己搬过去的东西必须搬得回来。
+    await expect(rollbackMigration(planned)).resolves.toBe(true)
+    expect(existsSync(join(source, name))).toBe(true)
+    expect(existsSync(join(target, name))).toBe(false)
+  })
+
   it('没有可回滚的东西时，回滚是幂等的', async () => {
     seedSource()
 

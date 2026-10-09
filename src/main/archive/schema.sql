@@ -10,10 +10,13 @@
 
 CREATE TABLE IF NOT EXISTS files (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  -- 内容哈希，同时是归档目录中的文件名
+  -- 内容哈希：这份内容的**身份**（不是文件名，见 stored_name）
   hash        TEXT    NOT NULL,
-  -- 打开时的原始文件名（归档内部是哈希名，展示与导出时用这个还原）
+  -- 打开时的原始文件名（展示与搜索用这个）
   name        TEXT    NOT NULL,
+  -- 磁盘上的实际文件名：原文名，同名冲突时带一小段哈希后缀（ADR-0031）。
+  -- 为 NULL 表示旧布局 —— 那个文件当时以内容哈希命名，读取时回落到 hash。
+  stored_name TEXT,
   bytes       INTEGER NOT NULL,
   mime        TEXT    NOT NULL DEFAULT '',
   -- 归档时间（Unix 毫秒）

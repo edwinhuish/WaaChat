@@ -1,12 +1,14 @@
 /**
  * 归档索引的单测。
  *
- * 覆盖三件容易悄悄坏掉的事：
+ * 覆盖四件容易悄悄坏掉的事：
  *
  *   1. 同一个 (hash, name) 重复打开时**更新**时间，而不是新增一行
  *      （否则用户每点一次同一个文件，搜索里就多一条重复条目）
  *   2. 中文子串搜索能命中（trigram 分词器的存在理由）
  *   3. 短查询回退到 LIKE（trigram 要求 >= 3 字符，不回退就会"搜两个字返回空"）
+ *   4. 旧库能补上 `stored_name` 列，且旧记录（那一列为空）读回来回落到哈希名
+ *      （[ADR-0031]：正文改用原文名之后，旧归档里的哈希名文件必须仍然打得开）
  *
  * 这个文件能在不加载 Electron 的前提下跑，依赖一个条件：`archive/` 整层都不导入
  * electron。曾经 `logger` 为了读 `app.isPackaged` 而导入它，连带把整层拖住；现在
@@ -26,6 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 // 类型导入会被编译期擦除，因此这一行**不会**在模块加载时拉起 better-sqlite3。
 import type { ArchiveStore } from '../../src/main/archive/store'
+import type { ArchiveRecord } from '../../src/shared/types'
 import { setArchiveDir } from '../../src/main/paths'
 import { probeSqlite } from '../helpers/sqlite'
 
@@ -75,16 +78,42 @@ describe.skipIf(!available)('ArchiveStore', () => {
     return instance
   }
 
+  /**
+   * 构造一条记录。
+   *
+   * `storedName`（磁盘上的实际文件名）在真实路径里由 `commitFromTemp()` 给出；这些用例只关心
+   * 索引行为，因此统一填成与 `name` 相同 —— 磁盘名在 [ADR-0031] 之后默认就是原文名，只有
+   * 同名冲突时才会多一段哈希后缀。
+   */
+  function entry(fields: {
+    hash: string
+    name: string
+    storedName?: string
+    bytes?: number
+    mime?: string
+    openedAt: number
+  }): Omit<ArchiveRecord, 'id'> {
+    return {
+      bytes: 0,
+      mime: '',
+      ...fields,
+      storedName: fields.storedName ?? fields.name,
+    }
+  }
+
   it('记录后可读回，字段完整', () => {
-    const record = store().record({
-      hash: 'a'.repeat(64),
-      name: '报告.pdf',
-      bytes: 1234,
-      mime: 'application/pdf',
-      openedAt: 1_700_000_000_000,
-    })
+    const record = store().record(
+      entry({
+        hash: 'a'.repeat(64),
+        name: '报告.pdf',
+        bytes: 1234,
+        mime: 'application/pdf',
+        openedAt: 1_700_000_000_000,
+      }),
+    )
 
     expect(record.id).toBeGreaterThan(0)
+    expect(record.storedName).toBe('报告.pdf')
     expect(store().byId(record.id)).toEqual(record)
     expect(store().byHash('a'.repeat(64))).toHaveLength(1)
   })
@@ -92,30 +121,45 @@ describe.skipIf(!available)('ArchiveStore', () => {
   it('同一份内容多次打开只更新打开时间', () => {
     const base = { hash: 'b'.repeat(64), name: '合同.pdf', bytes: 10, mime: 'application/pdf' }
 
-    const first = store().record({ ...base, openedAt: 1_000 })
-    const second = store().record({ ...base, openedAt: 2_000 })
+    const first = store().record(entry({ ...base, openedAt: 1_000 }))
+    const second = store().record(entry({ ...base, openedAt: 2_000 }))
 
     expect(second.id).toBe(first.id)
     expect(second.openedAt).toBe(2_000)
     expect(store().byHash(base.hash)).toHaveLength(1)
   })
 
+  it('磁盘名变了时跟着更新（否则会"搜得到但打不开"）', () => {
+    const base = { hash: 'b2'.repeat(32), name: '报价单.pdf', bytes: 10, mime: '' }
+    const first = store().record(entry({ ...base, openedAt: 1_000 }))
+
+    // 同名冲突让磁盘上的名字换了候选（ADR-0031），索引必须跟着走。
+    const second = store().record(
+      entry({ ...base, storedName: '报价单 (a1b2c3d4).pdf', openedAt: 2_000 }),
+    )
+
+    expect(second.id).toBe(first.id)
+    expect(second.storedName).toBe('报价单 (a1b2c3d4).pdf')
+  })
+
   it('文件名不同则视为两条记录（同一份内容被转发）', () => {
     const hash = 'c'.repeat(64)
-    store().record({ hash, name: 'v1.pdf', bytes: 1, mime: '', openedAt: 1_000 })
-    store().record({ hash, name: 'v2.pdf', bytes: 1, mime: '', openedAt: 2_000 })
+    store().record(entry({ hash, name: 'v1.pdf', bytes: 1, mime: '', openedAt: 1_000 }))
+    store().record(entry({ hash, name: 'v2.pdf', bytes: 1, mime: '', openedAt: 2_000 }))
 
     expect(store().byHash(hash)).toHaveLength(2)
   })
 
   it('中文子串搜索命中（trigram）', () => {
-    store().record({
-      hash: 'd'.repeat(64),
-      name: '2026年第三季度采购合同.pdf',
-      bytes: 1,
-      mime: '',
-      openedAt: 3_000,
-    })
+    store().record(
+      entry({
+        hash: 'd'.repeat(64),
+        name: '2026年第三季度采购合同.pdf',
+        bytes: 1,
+        mime: '',
+        openedAt: 3_000,
+      }),
+    )
 
     // 4 个字符，走 FTS5 的 trigram 路径。子串命中是它与 unicode61 的关键差别：
     // unicode61 会把整串中文当成一个 token，于是"搜子串"完全失效。
@@ -148,7 +192,9 @@ describe.skipIf(!available)('ArchiveStore', () => {
 
   it('删除哈希时同步清掉全文索引', () => {
     const hash = 'e'.repeat(64)
-    store().record({ hash, name: '待删除-独特词-zzz.pdf', bytes: 1, mime: '', openedAt: 4_000 })
+    store().record(
+      entry({ hash, name: '待删除-独特词-zzz.pdf', bytes: 1, mime: '', openedAt: 4_000 }),
+    )
 
     const removed = store().deleteByHashes([hash])
 
@@ -160,6 +206,53 @@ describe.skipIf(!available)('ArchiveStore', () => {
   it('删除不存在的哈希返回 0 而不是抛错', () => {
     expect(store().deleteByHashes(['f'.repeat(64)])).toBe(0)
     expect(store().deleteByHashes([])).toBe(0)
+  })
+
+  it('旧库：补上 stored_name 列，旧记录读回来回落到哈希名', async () => {
+    // 手搓一个 ADR-0031 之前的库：没有 stored_name 列，正文就是内容哈希。
+    const { default: Database } = await import('better-sqlite3')
+    const path = join(root, 'legacy.sqlite')
+    const hash = '9'.repeat(64)
+
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hash TEXT NOT NULL,
+        name TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        mime TEXT NOT NULL DEFAULT '',
+        opened_at INTEGER NOT NULL,
+        chat_label TEXT
+      );
+      INSERT INTO files (hash, name, bytes, mime, opened_at)
+      VALUES ('${hash}', '旧文件.pdf', 1, '', 1);
+    `)
+    legacy.close()
+
+    const module = await import('../../src/main/archive/store')
+    const upgraded = new module.ArchiveStore(path)
+
+    try {
+      // 列被补上了（否则 record() 会抛 "no such column"），而旧记录那一列为空 ——
+      // 读取时回落到哈希名，正是旧布局里正文的实际名字。
+      expect(upgraded.byId(1)?.storedName).toBe(hash)
+      expect(upgraded.byId(1)?.name).toBe('旧文件.pdf')
+
+      // 补列之后还能正常写入新记录。
+      const written = upgraded.record({
+        hash: '8'.repeat(64),
+        name: '新文件.pdf',
+        storedName: '新文件.pdf',
+        bytes: 2,
+        mime: '',
+        openedAt: 2,
+      })
+
+      expect(upgraded.byId(written.id)?.storedName).toBe('新文件.pdf')
+    } finally {
+      upgraded.close()
+    }
   })
 })
 
