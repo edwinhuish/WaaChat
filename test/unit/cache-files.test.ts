@@ -298,7 +298,8 @@ describe('reconcileCiphertextCache（关闭）', () => {
     const result = await reconcileCiphertextCache(false)
 
     expect(result).toEqual({ removed: 0, bytes: 0, kept: 0, foreign: 0 })
-    // 默认关闭的新机器上就不该有这个目录 —— 它只有 `attachCiphertextCache()` 会建。
+    // 对账**不建**这个目录 —— 它只有 `attachCiphertextCache()` 会建。因此目录不在时
+    // 对账必须是"什么都不做"，而不是顺手把它建出来（那会把"关闭"变成"半个开启"）。
     expect(existsSync(dir())).toBe(false)
   })
 

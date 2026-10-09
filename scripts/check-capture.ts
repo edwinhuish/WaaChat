@@ -361,7 +361,8 @@ if (existsSync(launcherOverride)) {
 // ---------------------------------------------------------------------------
 //
 // 这几条都属于"改了没人会立刻发现"的约定：
-//   - 默认值被改回开启，等于让用户在不知情的情况下多一份本地密文副本（ADR-0026）；
+//   - 默认值被改回关闭，会让"第二次打开还要联网"重新成为默认体验 —— 而缓存里存的始终是
+//     上游已经加密好的密文（ADR-0028 / INV-3），默认不该退回到那一侧；
 //   - 它**不能**再回到"重启后生效"名单里：切换是事务式的（ADR-0027），提交即生效。
 //     一旦有人把它加回去，界面会显示"重启后生效"，而实际提交就已经生效了 —— 两边打架。
 //   - 暂存区以点开头、且不被当成缓存条目：它是转换期间的可回滚存放处，若被 `isEntryName()`
@@ -369,7 +370,7 @@ if (existsSync(launcherOverride)) {
 
 section('密文缓存的开关约定')
 
-check('默认不开启', DEFAULT_SETTINGS.enableCiphertextCache === false)
+check('默认开启', DEFAULT_SETTINGS.enableCiphertextCache === true)
 check(
   '不在"重启后生效"名单里（切换是事务式的，提交即生效）',
   !RESTART_REQUIRED_SETTINGS.includes('enableCiphertextCache'),
