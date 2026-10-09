@@ -22,6 +22,7 @@ import { isDocumentPreviewPage, isUpstreamPage } from '../shared/upstream'
 import { buildUserAgent } from '../shared/user-agent'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { logger } from './logger'
+import { getSettings } from './settings'
 
 /** 左上角符合 GNOME 习惯的默认尺寸；上游页面是双栏布局，窄了会很难用。 */
 const DEFAULT_SIZE = { width: 1280, height: 820 } as const
@@ -123,15 +124,16 @@ export function createMainWindow(): BrowserWindow {
    * `ERR_BLOCKED_BY_RESPONSE`），而我们还会把这个需要登录态的地址交给系统浏览器 ——
    * 那边根本没有登录态。
    *
-   * **例外是文档预览页**：它的唯一作用是把 PDF 交给内核的**内置阅读器**渲染，而本应用要的
-   * 是"文件交给系统应用打开"（[ADR-0029]）。因此**拒绝**它 —— 并且**不**交给系统浏览器：
+   * **例外是"禁用 PDF 预览"打开时的文档预览页**（[ADR-0030]）：它的唯一作用是把 PDF 交给
+   * 内核的**内置阅读器**渲染（[ADR-0029]），因此**拒绝**它 —— 并且**不**交给系统浏览器：
    * 同一个理由，那个地址需要登录态，在别处打开只会得到一个打不开的页面。
    *
    * 子框架那一层（预览被嵌进 `web.whatsapp.com` 的 iframe 时）由 `capture/pdf.ts` 的
    * 请求拦截负责，窗口处理看不到它。
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isDocumentPreviewPage(url)) {
+    // 每个窗口请求现读设置：开关改完必须立刻生效，不能等下次启动（ADR-0030）。
+    if (getSettings().disablePdfPreview && isDocumentPreviewPage(url)) {
       logger.warn('window: blocked the upstream document preview window')
       return { action: 'deny' }
     }

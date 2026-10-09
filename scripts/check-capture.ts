@@ -408,6 +408,14 @@ check(
   '预览页判据不限定 host（上游换域时不会静默放行）',
   isDocumentPreviewPage('https://web.whatsapp.com/pdf-viewer/'),
 )
+// 两条都属于"改了没人会立刻发现"的约定（ADR-0030）：默认打开会让没做过选择的用户撞上
+// ADR-0029 的已知限制（点 PDF 没反应），而加进"重启后生效"名单则会让一个立刻生效的开关
+// 顶着一个不成立的徽标。
+check('"禁用 PDF 预览"默认关闭', DEFAULT_SETTINGS.disablePdfPreview === false)
+check(
+  '"禁用 PDF 预览"不在"重启后生效"名单里（判据每请求现读）',
+  !RESTART_REQUIRED_SETTINGS.includes('disablePdfPreview'),
+)
 check(
   'PDF 的 MIME 判据认 application/pdf（含带参数），不认 octet-stream',
   isPdfResponse('application/pdf') &&

@@ -1,5 +1,5 @@
 /**
- * PDF 一律交给系统应用 —— 不让内核的**内置阅读器**渲染它。
+ * PDF 不进内核的**内置阅读器**，交给系统应用。
  *
  * 为什么需要这个模块：Electron 44 **没有**关掉内置 PDF 阅读器的开关。实测
  * `webPreferences.plugins`（`false` / `true` / 不设）、`--disable-plugins`、
@@ -7,6 +7,14 @@
  * 全部无效，`navigator.pdfViewerEnabled` 恒为 `true`（证据表见 [ADR-0029]）。
  * 因此"取消预览"只能等价于**不让 PDF 到达阅读器**：把它变成一次下载，交给接管点 A
  * （归档 → `shell.openPath` → 系统默认应用）。
+ *
+ * ── 两条规则都只在"禁用 PDF 预览"开着时生效 ──
+ *
+ * 这一层由设置 `disablePdfPreview` 控制，**默认关闭**（[ADR-0030]）：关着的时候上游的预览页
+ * 照常加载、PDF 在应用内预览；打开之后才有下面两条规则 ——
+ *
+ *   1. 上游的**文档预览页**（`*.whatsapp.net/pdf-viewer/…`）不再加载；
+ *   2. `application/pdf` 的响应降级成 `application/octet-stream`，于是内核走下载。
  *
  * ── 两个挂点，各自覆盖一半 ──
  *
@@ -29,10 +37,20 @@
 import type { Session } from 'electron'
 
 import { isDocumentPreviewPage } from '../../shared/upstream'
+import type { Settings } from '../../shared/types'
 import { logger } from '../logger'
 
 /** 告诉内核"这不是一份它能显示的东西"，于是它走下载而不是内嵌渲染。 */
 export const PDF_DOWNLOAD_MIME = 'application/octet-stream'
+
+/**
+ * "禁用 PDF 预览"当前开着没有。
+ *
+ * 这不是设置的一份**副本**，而是 {@link attachPdfHandling} 注入的**实时读取函数**：注入读取
+ * 函数而不是读一次快照，是因为用户在设置里改了它必须立刻生效（与接管层读 `openOnCapture`
+ * 同一条纪律 —— "设置改了不起作用"这种问题很难被当成 bug 报出来）。
+ */
+let pdfPreviewDisabled: () => boolean = () => false
 
 /**
  * 这份响应的 MIME 是不是 PDF。
@@ -48,15 +66,16 @@ export function isPdfResponse(contentType: string | null | undefined): boolean {
 }
 
 /**
- * 把一份 PDF 响应改写成"下载"。
+ * 把一份 PDF 响应降级成下载 —— **只在"禁用 PDF 预览"开着时**。
  *
- * **不复制字节**：只换 `content-type`，响应体（流）原样透传。实测这样 Chromium 立刻走
- * 下载，文件名与字节都正确（`will-download` 拿到的就是 `a.pdf`）。
+ * **不复制字节**：只换 `content-type`，响应体（流）原样透传。实测这样 Chromium 立刻走下载，
+ * 文件名与字节都正确（`will-download` 拿到的就是 `a.pdf`）。
  *
  * 只改这一项的意义：请求一个字节没动、响应体一个字节没动、页面的 JS 与 DOM 一行没碰
  * （[INV-1] 的边界是注入）。见 [ADR-0029] 的理由 4。
  */
 export function forceDownloadIfPdf(response: Response): Response {
+  if (!pdfPreviewDisabled()) return response
   if (!isPdfResponse(response.headers.get('content-type'))) return response
 
   const headers = new Headers(response.headers)
@@ -72,16 +91,17 @@ export function forceDownloadIfPdf(response: Response): Response {
 /**
  * 装上这一层。
  *
- * 与密文缓存那一层不同，它**不随任何设置开关**：PDF 交给系统应用是本应用的契约
- * （README 第 1 节、roadmap 的 M1），不是可选项。
- *
  * 幂等：`webRequest` 的每个事件只保留最后一个监听器，重复调用只是覆盖成同一个实现。
+ *
+ * @param getSettings 读当前设置。**每个请求现读**（不在这里取快照）—— 开关必须改完立刻生效。
  */
-export function attachPdfHandling(ses: Session): void {
+export function attachPdfHandling(ses: Session, getSettings: () => Settings): void {
+  pdfPreviewDisabled = () => getSettings().disablePdfPreview
+
   // 上游的文档预览页。窗口那一层在 `main/window.ts` 拒绝，这里挡**子框架**那一层 ——
   // 实测它确实会被嵌进 `web.whatsapp.com` 的 iframe（那次 COEP 症状见 ADR-0016 的背景）。
   ses.webRequest.onBeforeRequest((details, callback) => {
-    if (!isDocumentPreviewPage(details.url)) {
+    if (!pdfPreviewDisabled() || !isDocumentPreviewPage(details.url)) {
       callback({})
       return
     }
@@ -98,7 +118,12 @@ export function attachPdfHandling(ses: Session): void {
     const headers = details.responseHeaders
     const key = headers === undefined ? undefined : findHeader(headers, 'content-type')
 
-    if (headers === undefined || key === undefined || !isPdfResponse(headers[key]?.[0])) {
+    if (
+      !pdfPreviewDisabled() ||
+      headers === undefined ||
+      key === undefined ||
+      !isPdfResponse(headers[key]?.[0])
+    ) {
       callback({})
       return
     }
