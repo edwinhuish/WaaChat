@@ -175,6 +175,15 @@ function applySettings(value: unknown): Settings {
   }
 
   /**
+   * 密文缓存的开关同理，而且更严格：它必须走事务式维护流程（确认 → 转换 → 提交，
+   * 见 [ADR-0027]）。从这里直接改它的后果不是"半截状态"，而是"设置说关闭、磁盘上却
+   * 还留着缓存" —— 也就是"状态不一致"本身。界面侧也不走这条路，两边都拦。
+   */
+  if ('enableCiphertextCache' in patch) {
+    throw new Error(`ipc: ${CHANNELS.cacheSwitch} is the only way to change the ciphertext cache`)
+  }
+
+  /**
    * 切换进行中不许改别的设置。界面侧已经不在渲染设置列表了（维护界面换了一屏），
    * 这里是**兜底**：挡住"界面还没来得及换、用户已经点到了"这类窗口，以及将来可能
    * 出现的新调用方。见 ADR-0027。

@@ -9,20 +9,30 @@
  *     还没实现（见 docs/roadmap.md M2/M3），因此它们渲染成**禁用的**控件并说明原因。
  *     一个能改但不起作用的开关，比一个明确标注"尚未生效"的开关糟得多 ——
  *     前者会让用户相信一件不成立的事。
- *  3. **长任务要有过程。** 换保存位置会真的搬动整个归档库，因此它有确认框（主进程）、
- *     进度、成功与失败三种可见的结果 —— 用户不该对着一个没有反应的按钮猜发生了什么。
+ *  3. **长任务要有过程。** 换保存位置会真的搬动整个归档库、切换密文缓存会真的处理缓存
+ *     文件，因此它们都有确认框（主进程）、进度、成功与失败三种可见的结果 —— 用户不该
+ *     对着一个没有反应的开关猜发生了什么。密文缓存那一项更进一步：切换期间整个设置页会
+ *     换成维护界面，于是"这期间不能进行其他操作"是**结构上的事实**，不靠每个控件记得
+ *     加 `disabled`（见 ADR-0027）。
  *  4. **图标要如实说明生效范围。** Linux 下"应用图标"有三个落点，生效时机各不相同
  *     （窗口与托盘立即生效，启动器 / 任务栏要等桌面刷新）。含糊其辞会让 Wayland 用户
  *     以为功能坏了 —— 理由与取舍见 ADR-0022。
  */
 
 import { describeIconFailure } from '../../shared/appicon'
+import {
+  describeCacheConversionProgress,
+  describeCacheSwitchFailure,
+} from '../../shared/cache-conversion'
 import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import {
   RESTART_REQUIRED_SETTINGS,
   type AppIconState,
   type ArchiveMigrationProgress,
+  type CacheConversionProgress,
+  type CacheSwitchFailure,
+  type CacheSwitchResult,
   type MigrationFailure,
   type Settings,
 } from '../../shared/types'
@@ -48,7 +58,7 @@ const TOGGLES: readonly ToggleSpec[] = [
   {
     key: 'enableCiphertextCache',
     label: '密文磁盘缓存',
-    hint: '把聊天文件的密文留在本地，第二次打开不再联网。不涉及解密，也不保存密钥。关闭后重启会清掉已有的缓存（只影响速度），开启则继续沿用。',
+    hint: '把聊天文件的密文留在本地，第二次打开不再联网。不涉及解密，也不保存密钥。切换时会先确认、再显示进度：关闭会清掉已有缓存（只影响速度）。',
   },
   {
     key: 'prefetch',
@@ -115,9 +125,37 @@ type IconState =
   | { readonly kind: 'ok'; readonly text: string }
   | { readonly kind: 'failed'; readonly text: string }
 
+/**
+ * 密文缓存的切换状态（[ADR-0027]）。
+ *
+ * 它比别的行多一个形态：`running` 时**整个设置页**会被维护界面取代。因此这个状态不属于
+ * "某一行"而属于整个视图，放在 `render()` 第一眼就能看到的地方。
+ */
+type CacheSwitchState =
+  | { readonly kind: 'idle' }
+  | {
+      readonly kind: 'running'
+      readonly target: boolean
+      /** 确认框弹出来之前还没有进度；之后由主进程推送填上。 */
+      readonly progress: CacheConversionProgress | null
+    }
+  | {
+      readonly kind: 'done'
+      readonly enabled: boolean
+      readonly converted: number
+      readonly pendingCleanup: number
+    }
+  | {
+      readonly kind: 'failed'
+      readonly target: boolean
+      readonly failure: CacheSwitchFailure
+      readonly detail: string
+      readonly rolledBack: boolean
+    }
+
 export interface SettingsView {
   refresh(): Promise<void>
-  /** 取消订阅迁移进度。窗口真正卸载时调用。 */
+  /** 取消订阅迁移与缓存切换的进度。窗口真正卸载时调用。 */
   dispose(): void
 }
 
@@ -126,6 +164,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   let location: LocationState = { kind: 'idle' }
   let appIcon: AppIconState | null = null
   let icon: IconState = { kind: 'idle' }
+  let cacheSwitch: CacheSwitchState = { kind: 'idle' }
 
   /**
    * 刚裁剪出来、主进程还没确认的那张图的预览。
@@ -143,14 +182,125 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
   function render(): void {
     if (settings === null) return
-    const current = settings
 
+    /**
+     * 切换期间**整个设置页换成维护界面**，而不是把控件逐个禁掉。
+     *
+     * 这样"切换过程中用户无法进行其他操作"就是结构上的事实：那些控件此刻根本不存在，
+     * 也就不存在"漏加一个 disabled"的可能（[ADR-0027] 理由 5）。
+     */
+    if (cacheSwitch.kind === 'running') {
+      root.replaceChildren(maintenanceScreen(cacheSwitch))
+      return
+    }
+
+    const current = settings
     root.replaceChildren(
       iconRow(),
       locationRow(current),
       ...TOGGLES.map((spec) => toggleRow(spec, current)),
       ...SIZES.map((spec) => sizeRow(spec, current)),
     )
+  }
+
+  /**
+   * 维护界面。
+   *
+   * 三件事必须说清：**目标状态**、**现在到哪了**、**为什么这期间点不了别的东西**。
+   * 还没收到第一条进度时显示"准备中…" —— 那一刻窗口被模态确认框挡着，用户回来时看到的
+   * 是进度，而不是"刚才那一下好像没反应"。
+   *
+   * 用 `.setting` / `.meta` 这套既有类名，而不是新造一层样式：维护界面看起来就该像是
+   * 设置页里的一屏，而不是另一个应用。
+   */
+  function maintenanceScreen(state: {
+    readonly target: boolean
+    readonly progress: CacheConversionProgress | null
+  }): HTMLElement {
+    const target = state.target ? '开启' : '关闭'
+    const progress = state.progress
+
+    return h(
+      'div',
+      { class: 'setting' },
+      h(
+        'div',
+        { class: 'meta' },
+        h('div', { class: 'label', text: `正在${target}密文磁盘缓存` }),
+        h('div', {
+          class: 'path',
+          data: { state: 'running' },
+          text: progress === null ? '准备中…' : describeCacheConversionProgress(progress),
+        }),
+        h('div', {
+          class: 'hint',
+          text:
+            progress === null || progress.total === 0
+              ? `目标状态：${target}`
+              : `目标状态：${target} · 已处理 ${formatBytes(progress.bytesDone)} / ${formatBytes(progress.bytesTotal)}`,
+        }),
+        h('div', {
+          class: 'hint',
+          text: '转换期间不能进行其他操作。全部文件转换成功后才会切换；任何一步失败都会回到现在的状态。',
+        }),
+      ),
+    )
+  }
+
+  /**
+   * 发起一次切换。
+   *
+   * 界面**先**进入维护态再调 IPC：确认框是主进程弹的模态框，如果等它返回才换屏，用户在
+   * 按下开关与看到反应之间会有一段时间什么也没发生。此刻设置还没变，因此那个复选框会被
+   * 重新渲染回**已提交**的值 —— 它不会先跳过去再跳回来。
+   */
+  async function switchCache(target: boolean): Promise<void> {
+    cacheSwitch = { kind: 'running', target, progress: null }
+    render()
+
+    let result: CacheSwitchResult | null
+
+    try {
+      result = await bridge().switchCiphertextCache(target)
+    } catch (error) {
+      // 主进程拒绝（例如切换闸门）不该让界面卡在维护态。这一条属于 bug 路径，
+      // 因此把原文带上 —— 排查的人需要它。
+      cacheSwitch = {
+        kind: 'failed',
+        target,
+        failure: 'write-failed',
+        detail: error instanceof Error ? error.message : String(error),
+        rolledBack: true,
+      }
+      render()
+      return
+    }
+
+    // null = 用户在确认框里取消（或已经是目标状态）。取消不是错误：什么都不留下。
+    if (result === null) {
+      cacheSwitch = { kind: 'idle' }
+      render()
+      return
+    }
+
+    settings = result.settings
+
+    cacheSwitch = result.ok
+      ? {
+          kind: 'done',
+          enabled: result.enabled,
+          converted: result.converted,
+          pendingCleanup: result.pendingCleanup,
+        }
+      : {
+          kind: 'failed',
+          target,
+          failure: result.failure,
+          detail: result.detail,
+          rolledBack: result.rolledBack,
+        }
+
+    render()
   }
 
   /**
@@ -399,6 +549,17 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       checked: current[spec.key],
       onChange: (event) => {
         const checked = (event.target as HTMLInputElement).checked
+
+        /**
+         * 密文缓存的开关**不走** `settings:set`：它必须伴随一次真实的文件转换
+         * （确认 → 转换 → 提交，[ADR-0027]）。主进程也会拒绝绕道改它 —— 两边都拦，
+         * 是因为"设置说关闭、磁盘上却还留着缓存"这种不一致一旦出现，用户是看不出来的。
+         */
+        if (spec.key === 'enableCiphertextCache') {
+          void switchCache(checked)
+          return
+        }
+
         void patch({ [spec.key]: checked } as Partial<Settings>)
       },
     })
@@ -417,8 +578,54 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
           ...(needsRestart ? [h('span', { class: 'badge', text: '重启后生效' })] : []),
         ),
         ...(spec.hint === '' ? [] : [h('div', { class: 'hint', text: spec.hint })]),
+        ...(spec.key === 'enableCiphertextCache' ? cacheSwitchResultNodes() : []),
       ),
     )
+  }
+
+  /**
+   * 切换的结果行（成功或失败）。没有可说的就返回空数组。
+   *
+   * 用数组返回，是为了能在 `h()` 的子节点列表里展开 —— 与 `spec.hint` 那处同样的写法。
+   */
+  function cacheSwitchResultNodes(): HTMLElement[] {
+    if (cacheSwitch.kind === 'done') {
+      const cleanup =
+        cacheSwitch.pendingCleanup > 0
+          ? `还有 ${cacheSwitch.pendingCleanup} 个文件将在下次启动时清理。`
+          : ''
+
+      return [
+        h('div', {
+          class: 'path',
+          data: { state: 'ok' },
+          text: cacheSwitch.enabled
+            ? `已开启：第二次打开同一个文件不再联网。${cleanup}`
+            : `已关闭：${cacheSwitch.converted} 个缓存文件已清掉（只影响速度）。${cleanup}`,
+        }),
+      ]
+    }
+
+    if (cacheSwitch.kind !== 'failed') return []
+
+    /**
+     * 回滚成功与回滚失败**不是一回事**：前者状态一点没变、用户什么都不用做；后者两侧都
+     * 可能留有文件，必须提示核对。开启方向那句还要更小心一点：那个方向删掉的是永远命不中
+     * 的残留，"回滚成功"指的是**设置没写、缓存里可用的条目一个没少**。
+     */
+    const tail = cacheSwitch.rolledBack
+      ? cacheSwitch.target
+        ? '状态未变，缓存里可用的条目一个都没少。'
+        : '状态未变，缓存文件一个都没少。'
+      : '⚠️ 部分文件可能仍留在暂存区，请核对后再继续使用。'
+
+    return [
+      h('div', {
+        class: 'path',
+        data: { state: 'error' },
+        text: `切换失败：${describeCacheSwitchFailure(cacheSwitch.failure, cacheSwitch.detail)}${tail}`,
+      }),
+    ]
   }
 
   /**
@@ -464,6 +671,17 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     render()
   })
 
+  /**
+   * 缓存切换的进度也是主进程推过来的。只认**维护态**下的推送：确认框还没确认时也可能
+   * 有消息在路上（上一次的、或这一次的早期阶段），而那时界面不该被它推动。
+   */
+  const disposeCacheSwitch = bridge().onCacheConversion((progress) => {
+    if (cacheSwitch.kind !== 'running') return
+
+    cacheSwitch = { kind: 'running', target: progress.target, progress }
+    render()
+  })
+
   return {
     async refresh(): Promise<void> {
       /**
@@ -489,6 +707,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
     dispose(): void {
       disposeMigration()
+      disposeCacheSwitch()
     },
   }
 }
