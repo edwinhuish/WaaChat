@@ -146,7 +146,7 @@ sequenceDiagram
 ## 6. 存储布局
 
 ```
-~/Documents/WhatsApp_files/             # 归档：位置可在设置里改（ADR-0018 / ADR-0023）
+~/Documents/WaaChat_files/             # 归档：位置可在设置里改（ADR-0018 / ADR-0023 / ADR-0032）
 ├── 采购合同.pdf                  # 正文：原文名落盘、只读（ADR-0031）
 │                                 #   同名不同内容 → `采购合同 (a1b2c3d4).pdf`
 └── .index.sqlite                # 归档索引 + FTS5 虚表（存内容哈希与磁盘名）

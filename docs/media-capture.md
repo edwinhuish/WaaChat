@@ -144,16 +144,17 @@ https://<media-host>/v/t62.xxxx.../NNNNNN.enc?ccb=11-4&oh=<签名>&oe=<过期时
 waachat 2>&1 | grep -iE 'download|capture|cache|archive' | tail -40
 
 # 归档：半成品应为 0（进程被 kill 才会留下）
-find "$HOME/Documents/WhatsApp_files" -maxdepth 1 -name '.part-*' | wc -l
+find "$HOME/Documents/WaaChat_files" -maxdepth 1 -name '.part-*' | wc -l
 
 # 正文应当都是只读（0400）—— 列出来的是"可写的正文"，正常为空
-find "$HOME/Documents/WhatsApp_files" -maxdepth 1 -type f ! -name '.*' ! -perm 0400
+find "$HOME/Documents/WaaChat_files" -maxdepth 1 -type f ! -name '.*' ! -perm 0400
 
 # 索引与文件是否对得上：stored_name 就是打开文件时用的磁盘名（ADR-0031）
-sqlite3 "$HOME/Documents/WhatsApp_files/.index.sqlite" 'select stored_name, name from files limit 5'
+sqlite3 "$HOME/Documents/WaaChat_files/.index.sqlite" 'select stored_name, name from files limit 5'
 ```
 
-> 归档位置可在设置里改（默认 `~/Documents/WhatsApp_files`，见 [ADR-0018](decisions.md#adr-0018) /
-> [ADR-0023](decisions.md#adr-0023)），索引就在它的内部。上面的路径要跟着换成实际值。
+> 归档位置可在设置里改（默认 `~/Documents/WaaChat_files`，见 [ADR-0018](decisions.md#adr-0018) /
+> [ADR-0023](decisions.md#adr-0023) / [ADR-0032](decisions.md#adr-0032)），索引就在它的内部。
+> 上面的路径要跟着换成实际值。
 
 日志里**不得**出现文件名全文、会话名、完整路径（见 [`security.md`](security.md)）。调试需要时用哈希前缀代替。

@@ -103,14 +103,14 @@ sudo apt install gnome-shell-extension-appindicator
 | 想找以前打开过的文件 | 在「文件列表」窗口里按文件名搜索（托盘 → 「文件列表」） |
 | 不想让它自动打开 | 在「设置」窗口里改为"只归档，不自动打开" |
 
-**注意**：文件**不会进 `~/Downloads`**，更不会散落在它的根目录里。归档统一收进 `~/Documents/WhatsApp_files/` 这一个子目录，而且**文件名就是聊天里那个名字**（`2026年第三季度采购合同.pdf`）—— 可以直接在文件管理器里看、复制、发出去。这是刻意的：`报告 (1).pdf`、`报告 (2).pdf` 那种堆积正是本项目要消灭的行为，同一个文件被发来两次，归档里仍然只有一份（同内容只占一份磁盘）。
+**注意**：文件**不会进 `~/Downloads`**，更不会散落在它的根目录里。归档统一收进 `~/Documents/WaaChat_files/` 这一个子目录，而且**文件名就是聊天里那个名字**（`2026年第三季度采购合同.pdf`）—— 可以直接在文件管理器里看、复制、发出去。这是刻意的：`报告 (1).pdf`、`报告 (2).pdf` 那种堆积正是本项目要消灭的行为，同一个文件被发来两次，归档里仍然只有一份（同内容只占一份磁盘）。
 
 ## 4. 文件存在哪里
 
-归档的位置**可以改**（默认 `~/Documents/WhatsApp_files`，**首次启动会自动创建**，连 `~/Documents` 不存在时也会一并建好），其余几处固定。**删除后果完全不同**（见 [ADR-0008](decisions.md#adr-0008) / [ADR-0018](decisions.md#adr-0018) / [ADR-0023](decisions.md#adr-0023)）：
+归档的位置**可以改**（默认 `~/Documents/WaaChat_files`，**首次启动会自动创建**，连 `~/Documents` 不存在时也会一并建好），其余几处固定。**删除后果完全不同**（见 [ADR-0008](decisions.md#adr-0008) / [ADR-0018](decisions.md#adr-0018) / [ADR-0023](decisions.md#adr-0023) / [ADR-0032](decisions.md#adr-0032)）：
 
 ```
-~/Documents/WhatsApp_files/            归档：你打开过的文件（位置可在设置里改）
+~/Documents/WaaChat_files/            归档：你打开过的文件（位置可在设置里改）
 ├── 2026年第三季度采购合同.pdf   文件正文：名字就是聊天里的名字，权限 0400（只读）
 ├── 报价单 (a1b2c3d4).pdf        同名但内容不同的另一份：名字后面带一小段哈希
 └── .index.sqlite              归档索引（含"什么时候打开过什么"）
@@ -131,7 +131,7 @@ sudo apt install gnome-shell-extension-appindicator
 | 目录 | 删了会怎样 |
 |---|---|
 | `~/.config/waachat/` | **需要重新扫码链接设备。不要删。** |
-| `~/Documents/WhatsApp_files/`（或你自己设的位置） | 你打开过的文件丢失，且若原链接已过期则无法恢复 |
+| `~/Documents/WaaChat_files/`（或你自己设的位置） | 你打开过的文件丢失，且若原链接已过期则无法恢复 |
 | `~/.local/share/waachat/cache/` | 只影响性能，下次自动重建，随时可删 |
 | `~/.cache/waachat/logs/` | 只是丢失排查线索 |
 | `~/.config/waachat/custom-icon.png` | 图标回到默认值，其余不受影响（也可以在设置里点「恢复默认」） |
@@ -152,7 +152,7 @@ sudo apt install gnome-shell-extension-appindicator
 - 目录权限是 `0700`（仅本人可读），文件 `0400`（**只读**，仅本人可读）。目录已存在但权限更宽时，启动时会被收紧。
   只读防的是"就地改内容"：归档是内容寻址的，文件被改写之后索引里那份哈希就对不上了（症状是"搜得到，但打开后不是当初那份"）。
   它**不**妨碍删除或迁移 —— 两者只依赖目录的写权限（见 [ADR-0031](decisions.md#adr-0031)）。
-- **不要**把归档目录放进任何云同步盘（Dropbox / OneDrive / iCloud / 坚果云 等）。默认位置 `~/Documents/WhatsApp_files` **有可能正落在同步范围里**（有些同步客户端默认就接管 `~/Documents`）—— 如果你的同步盘盖住了它，请**在设置里把保存位置改到同步范围之外**。理由不止是隐私：那会把解密后的明文复制到别处，而且同步客户端通常不保留权限位。
+- **不要**把归档目录放进任何云同步盘（Dropbox / OneDrive / iCloud / 坚果云 等）。默认位置 `~/Documents/WaaChat_files` **有可能正落在同步范围里**（有些同步客户端默认就接管 `~/Documents`）—— 如果你的同步盘盖住了它，请**在设置里把保存位置改到同步范围之外**。理由不止是隐私：那会把解密后的明文复制到别处，而且同步客户端通常不保留权限位。
 - 共享机器上请开启"退出时清除归档"（见下）。
 - 需要更强保护请使用全盘加密，或把归档目录指向加密卷。
 
@@ -163,7 +163,7 @@ sudo apt install gnome-shell-extension-appindicator
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | 应用图标 | 默认图标 | 点「选择图片…」换图标（PNG / JPG / ICO）。窗口与托盘立即生效；启动器 / 任务栏图标要重新登录桌面。见下 |
-| 文件保存位置 | `~/Documents/WhatsApp_files` | 点「更改…」选目录 → 确认后**自动迁移**已有归档；取消则存储位置与数据都不变 |
+| 文件保存位置 | `~/Documents/WaaChat_files` | 点「更改…」选目录 → 确认后**自动迁移**已有归档；取消则存储位置与数据都不变 |
 | 点击文件时自动打开 | 开启 | 关闭后只归档，你自己从「文件列表」窗口打开 |
 | 密文磁盘缓存 | 开启 | 把聊天文件的密文留在本地，第二次打开同一个文件不再联网（不涉及解密，也不保存密钥）。拨动它**不用重启**：会立刻完成一次转换，全部成功才切换（见下）。为什么默认开启见 [ADR-0028](decisions.md#adr-0028) |
 | 禁用 PDF 预览 | 关闭 | 开启后不再在应用内预览 PDF：上游的预览页被挡掉、PDF 一律走下载，交给系统默认 PDF 阅读器（**不用重启**，立刻生效）。受端到端加密所限，触发下载那一步由上游自己的下载入口完成 —— 见「常见问题」。默认关闭的理由见 [ADR-0030](decisions.md#adr-0030) |
@@ -225,6 +225,12 @@ Linux 下"应用图标"其实是三个落点，生效时机并不一样：
 waachat 2>&1 | grep -iE 'download|capture|cache' | tail -40
 ```
 
+### 升级之后「文件列表」是空的（归档去哪了）
+
+如果升级前用的是**默认位置**，会看到这个：归档的默认目录名从 `~/Documents/WhatsApp_files`（[ADR-0023](decisions.md#adr-0023)）改成了 `~/Documents/WaaChat_files`（[ADR-0032](decisions.md#adr-0032)）。设置里的"文件保存位置"空着时等于"用默认位置"，于是应用开始用新目录，而**旧目录里的文件仍在原处** —— 只是界面里看不见了。
+
+**不会自动搬**（迁移必须先经你确认，[ADR-0019](decisions.md#adr-0019)）。两条出路：在设置里点「更改…」选回旧目录，或者自己在文件管理器里把文件搬过来。
+
 ### 点 PDF 没有出现预览 / 想让 PDF 用系统阅读器打开
 
 **默认就是在应用内预览**（上游自己的预览页），这是「禁用 PDF 预览」关闭时的样子。想改用系统默认
@@ -278,7 +284,7 @@ sudo apt remove --purge waachat
 # 手动清除数据（注意：会删除归档与登录态，不可恢复）
 rm -rf ~/.config/waachat ~/.cache/waachat ~/.local/share/waachat
 # 归档目录（若在设置里改过位置，换成你设的那个）
-rm -rf ~/Documents/WhatsApp_files
+rm -rf ~/Documents/WaaChat_files
 # 换过应用图标的话，还有一份用户级启动器条目（系统装的那份由 apt remove 收走）
 rm -f ~/.local/share/applications/io.github.edwinhuish.waachat.desktop
 ```
