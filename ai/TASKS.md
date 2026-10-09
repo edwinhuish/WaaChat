@@ -302,3 +302,28 @@
 - [ ] 测试文件没有 `import ... from 'electron'`
 - [ ] 至少覆盖一个"改坏了会挂"的边界情况
 - [ ] `pnpm run test` 通过
+
+## T11 · 改权限白名单（`src/main/permissions.ts`）
+
+> 这是**安全边界**（[`../docs/security.md`](../docs/security.md) T5）。它失手的方式很安静：
+> 放宽一项既不报错也没有症状 —— 只会让某个第三方页面拿到摄像头，或者少一行
+> `permission denied` 日志。
+
+**步骤**
+
+1. **先取证。** 用户侧报告"某个功能点了没反应"时，日志里会有一条
+   `WARN permission denied {"permission":"…","fromUpstream":true}`。没有这条证据就不要加 ——
+   [`../docs/decisions.md`](../docs/decisions.md#adr-0035) 的 ADR-0035 里有一张取证清单。
+2. 加进 `src/main/permissions.ts` 的白名单，并在那一行写清**它对应上游的哪个功能**。
+   权限名的类型是从 Electron 自己的处理器签名推导的，写错名字是编译错误。
+3. 改断言：`test/unit/permissions.test.ts` 与 `scripts/check-capture.ts` 的"放行的类型恰好 N 项"
+   会先变红 —— 那是刻意的（加一项就必须说清理由）。
+4. 同步 `docs/security.md` T5 的清单、`docs/usage.md` 的常见问题，并追加一条 ADR。
+5. 只对**上游源**生效（`isUpstreamOrigin` 的 origin 精确比对）。
+
+**检查点**
+
+- [ ] 有真机证据（日志里的 `permission denied` + 对应的上游功能）
+- [ ] 来源判据没有被放宽成前缀匹配（`web.whatsapp.com.evil.com` 这类输入必须仍然被拒）
+- [ ] 单向加权限之后，**两个**处理器（request / check）用的都是同一套判据
+- [ ] `pnpm run check` 通过（自检里那一节会拦住"顺手放开"）

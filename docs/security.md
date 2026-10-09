@@ -96,7 +96,14 @@
 
 - 触发条件：为了"少出问题"直接允许所有权限请求。
 - 后果：任何来源的内容都能取用摄像头 / 麦克风 / 通知。
-- 对策：权限按来源与类型**双向白名单**，只允许来自上游页面源的通知与媒体设备请求；默认拒绝其余一切。
+- 对策：权限按来源与类型**双向白名单**（落点在 `src/main/permissions.ts` —— 一个不导入 electron 的纯模块，因此单测与离线自检都能断言它），默认拒绝其余一切。当前放行的**类型**恰好五项，每一项都有理由：
+  - `notifications`：页面自己的消息通知
+  - `media`：麦克风 / 摄像头（通话与语音消息）
+  - `clipboard-sanitized-write`：把文本写进剪贴板。**不含** `clipboard-read` —— DOM 的 `paste` 事件不需要它，需要它的是 `navigator.clipboard.read*`，那才是"静默读用户剪贴板"
+  - `fullscreen`：通话与媒体查看器
+  - `persistent-storage`："这份存储不要被淘汰"。它不授予任何能力，只影响 Chromium 对本分区里该源自己数据的淘汰策略 —— 而那里存着登录态与消息库，拒绝它可能换来一次重新扫码（[ADR-0035](decisions.md#adr-0035)）
+
+  来源判据是 **origin 精确比对**（`shared/upstream.ts` 的 `isUpstreamOrigin`），不是前缀匹配：`https://web.whatsapp.com@evil.com/` 这类输入能以前缀的形式骗过 `startsWith`，后果是把摄像头交给一个第三方页面。**加一项必须带证据**：ADR-0035 里有一张取证清单（哪些权限对应上游的哪个功能、症状是什么、怎么从日志取证）。
 
 ### T6 · 供应链
 

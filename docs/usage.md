@@ -327,6 +327,30 @@ dpkg -l | grep -Ei 'appindicator|appmenu'
 
 这些功能由上游网页版提供。网页版有什么就有什么，网页版没有的本应用也不会有。通话还需要在系统设置里允许应用使用麦克风与摄像头。
 
+> ⚠️ 但**权限**这一层是我们自己把关的：只有通知、麦克风/摄像头、写剪贴板、全屏、以及"存储不要被淘汰"这五项会被放行，其余一律拒绝 —— 见下一条。
+
+### 某个功能点了没反应 / 日志里的 `permission denied`
+
+本应用对**权限**是白名单把关的（[ADR-0035](decisions.md#adr-0035)），因此上游申请的某些权限会被我们**拒绝**，日志里留下一条：
+
+```
+WARN permission denied {"permission":"geolocation","fromUpstream":true}
+```
+
+放行的只有这五项（都只对上游源生效）：
+
+| 权限 | 对应功能 |
+|---|---|
+| `notifications` | 页面自己的消息通知 |
+| `media` | 麦克风 / 摄像头（通话、语音消息） |
+| `clipboard-sanitized-write` | "复制"按钮 |
+| `fullscreen` | 通话与媒体查看器的全屏 |
+| `persistent-storage` | "这份存储不要被淘汰" —— 保住登录态与消息库 |
+
+其余全拒，包括 `clipboard-read`（静默读剪贴板）、`geolocation`（位置）、`display-capture`（屏幕捕获）、`midi*`、`openExternal` 等等。
+
+**如果某个上游功能因此不可用**（例如通话里的"共享屏幕"点了没反应），把日志里那条 `permission denied` 贴出来就行 —— 那正是我们需要的证据，ADR-0035 里列了每一项的取证方式。**不要**为了"先跑起来"去改白名单：那一行是安全边界（`docs/security.md` T5），加它需要一次决策。
+
 ### 怎么彻底卸载
 
 ```bash
