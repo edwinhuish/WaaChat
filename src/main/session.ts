@@ -1,8 +1,8 @@
 /**
  * 会话配置。
  *
- * 两个接管点都挂在这里，因此 `configureSession` **必须**在任何窗口创建之前调用 ——
- * 晚一步就会错过早期的下载与请求。
+ * 两个接管点与 PDF 规则都挂在这里，因此 `configureSession` **必须**在任何窗口创建之前调用
+ * —— 晚一步就会错过早期的下载与请求。
  *
  * 它是**异步**的：密文缓存的启动对账要读写缓存目录（可能有上万个条目），按
  * `ai/CONVENTIONS.md` 的纪律不能拿同步 IO 卡住主进程。
@@ -14,6 +14,7 @@ import type { Settings } from '../shared/types'
 import { isUpstreamOrigin } from '../shared/upstream'
 import { reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
+import { attachPdfHandling } from './capture/pdf'
 import { attachCiphertextCache } from './capture/protocol'
 import { logger } from './logger'
 
@@ -89,6 +90,12 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   if (settings.enableCiphertextCache) {
     attachCiphertextCache(ses)
   }
+
+  // --- PDF：一律交给系统应用 ---------------------------------------------------
+  // 内核的内置 PDF 阅读器**关不掉**（实测见 ADR-0029），因此只能不让 PDF 到达它：挡掉上游
+  // 的文档预览页、把 `application/pdf` 的响应降级成下载（→ 接管点 A → 系统默认应用）。
+  // 它**不随任何设置开关** —— "文件交给系统应用打开"是本应用的契约，不是可选项。
+  attachPdfHandling(ses)
 
   logger.info('session configured', {
     ciphertextCache: settings.enableCiphertextCache,

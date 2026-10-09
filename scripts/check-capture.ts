@@ -26,6 +26,7 @@ import { sanitizeFileName } from '../src/main/archive/naming'
 import { STAGING_DIR_NAME, isEntryName } from '../src/main/capture/cache-files'
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
+import { PDF_DOWNLOAD_MIME, isPdfResponse } from '../src/main/capture/pdf'
 import {
   APP_ICON_SIZE,
   CUSTOM_ICON_FILENAME,
@@ -37,6 +38,7 @@ import {
   isAcceptedIconName,
 } from '../src/shared/appicon'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import { isDocumentPreviewPage } from '../src/shared/upstream'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
   archiveDir,
@@ -377,6 +379,42 @@ check(
 )
 check('暂存区不会被当成缓存条目', !isEntryName(STAGING_DIR_NAME))
 check('暂存区是隐藏目录（对账的"混进来的东西"里不含它）', STAGING_DIR_NAME.startsWith('.'))
+
+// ---------------------------------------------------------------------------
+// 9. PDF 交给系统应用
+// ---------------------------------------------------------------------------
+//
+// 两条纯规则，都属于"改了没人会立刻发现"的那一类（挂点要跑 Electron，这里只锁判据，
+// 见 ADR-0029）：
+//   - 预览页判据放宽一点点，上游的预览页就会重新被加载，应用内又出现内核阅读器的预览；
+//   - MIME 判据漏掉，PDF 就会继续被内核渲染而不是下载 —— 而"下载"是文件落到系统阅读器的
+//     唯一路径（接管点 A）。
+
+section('PDF 交给系统应用')
+
+check(
+  '认得上游的文档预览页',
+  isDocumentPreviewPage('https://webtp.whatsapp.net/pdf-viewer/?locale=zh_CN'),
+)
+check(
+  '同域下的其它路径不算预览页',
+  !isDocumentPreviewPage('https://webtp.whatsapp.net/rsrc.php/x.js'),
+)
+check(
+  '站外的同路径伪装不算',
+  !isDocumentPreviewPage('https://webtp.whatsapp.net.evil.com/pdf-viewer/'),
+)
+check(
+  '预览页判据不限定 host（上游换域时不会静默放行）',
+  isDocumentPreviewPage('https://web.whatsapp.com/pdf-viewer/'),
+)
+check(
+  'PDF 的 MIME 判据认 application/pdf（含带参数），不认 octet-stream',
+  isPdfResponse('application/pdf') &&
+    isPdfResponse('application/pdf; name=x.pdf') &&
+    !isPdfResponse('application/octet-stream'),
+)
+check('降级方向是 octet-stream（内核据此走下载）', PDF_DOWNLOAD_MIME === 'application/octet-stream')
 
 // ---------------------------------------------------------------------------
 

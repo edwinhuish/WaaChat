@@ -14,6 +14,10 @@
  *     会接住该分区的**所有** https 请求，因此直通路径必须是最保守的一条。
  *
  *  3. **幂等键由 cachekey.ts 推导**，那里有它自己的坑（宁可漏命中，不可错命中）。
+ *
+ *  4. **PDF 的一处改写挂在这里**（[ADR-0029]，与缓存无关）：协议处理器返回的响应就是
+ *     最终响应，`webRequest` 改不动它（实测），因此"缓存开着时不让内核内嵌渲染 PDF"
+ *     只有这一个地方能做 —— 见下面的 {@link passthrough}。
  */
 
 import { createHash } from 'node:crypto'
@@ -33,6 +37,7 @@ import { net, type Session } from 'electron'
 import { CACHE_DIR_MODE, CACHE_VERSION, cacheEntryPaths } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
+import { forceDownloadIfPdf } from './pdf'
 import { setCiphertextCacheActive } from './health'
 import { failureReason } from '../errors'
 import { logger } from '../logger'
@@ -80,7 +85,9 @@ export function attachCiphertextCache(ses: Session): void {
     const cached = readCached(bodyPath, metaPath)
     if (cached !== null) {
       logger.debug('capture: ciphertext cache hit')
-      return cached
+      // 这一层返回给页面的响应都要过一遍 PDF 规则：缓存键只认得媒体 CDN（密文），
+      // 理论上不会出现 PDF 条目 —— 但"理论上"不该是安全性的依据（[ADR-0029]）。
+      return forceDownloadIfPdf(cached)
     }
 
     const response = await passthrough(request)
@@ -135,13 +142,14 @@ export function isCiphertextCacheAttached(): boolean {
 }
 
 /**
- * 原样回源。
+ * 原样回源，出口处过一遍 PDF 规则（[ADR-0029]）—— 请求一个字节没动，只有"这份响应能不能
+ * 被内核内嵌显示"被降级成下载。
  *
  * `bypassCustomProtocolHandlers` 是必需的：不带它，`net.fetch` 会再次进入我们
  * 自己的处理器，形成无限递归（表现为请求挂死）。
  */
-function passthrough(request: Request): Promise<Response> {
-  return net.fetch(request, { bypassCustomProtocolHandlers: true })
+async function passthrough(request: Request): Promise<Response> {
+  return forceDownloadIfPdf(await net.fetch(request, { bypassCustomProtocolHandlers: true }))
 }
 
 function readCached(bodyPath: string, metaPath: string): Response | null {

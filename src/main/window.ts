@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { BrowserWindow, app, shell } from 'electron'
 
 import { SESSION_PARTITION, UPSTREAM_URL } from '../shared/constants'
-import { isUpstreamPage } from '../shared/upstream'
+import { isDocumentPreviewPage, isUpstreamPage } from '../shared/upstream'
 import { buildUserAgent } from '../shared/user-agent'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { logger } from './logger'
@@ -119,11 +119,23 @@ export function createMainWindow(): BrowserWindow {
    * 不这样做的话，点一个外部链接会把当前页面导航走 —— 而那个页面承载着登录态。
    *
    * "站内"的判据见 shared/upstream.ts：**不只** `web.whatsapp.com`，还包括
-   * `whatsapp.net` 下的上游自有页（文档预览窗口就在那里）。只放一个源的症状是
-   * 预览窗口被拒（主进程日志里的 `ERR_BLOCKED_BY_RESPONSE`），而我们还会把这个
-   * 需要登录态的地址交给系统浏览器 —— 那边根本没有登录态。
+   * `whatsapp.net` 下的上游自有页。只放一个源的症状是那些页面被拒（主进程日志里的
+   * `ERR_BLOCKED_BY_RESPONSE`），而我们还会把这个需要登录态的地址交给系统浏览器 ——
+   * 那边根本没有登录态。
+   *
+   * **例外是文档预览页**：它的唯一作用是把 PDF 交给内核的**内置阅读器**渲染，而本应用要的
+   * 是"文件交给系统应用打开"（[ADR-0029]）。因此**拒绝**它 —— 并且**不**交给系统浏览器：
+   * 同一个理由，那个地址需要登录态，在别处打开只会得到一个打不开的页面。
+   *
+   * 子框架那一层（预览被嵌进 `web.whatsapp.com` 的 iframe 时）由 `capture/pdf.ts` 的
+   * 请求拦截负责，窗口处理看不到它。
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isDocumentPreviewPage(url)) {
+      logger.warn('window: blocked the upstream document preview window')
+      return { action: 'deny' }
+    }
+
     if (isUpstreamPage(url)) {
       return { action: 'allow' }
     }
