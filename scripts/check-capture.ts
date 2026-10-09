@@ -21,6 +21,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { ARCHIVE_FILE_MODE } from '../src/main/archive/blobs'
 import { isAllowedTarget } from '../src/main/archive/migrate'
 import { sanitizeFileName } from '../src/main/archive/naming'
 import { STAGING_DIR_NAME, isEntryName } from '../src/main/capture/cache-files'
@@ -160,6 +161,10 @@ check(
 )
 check('索引与归档同目录（换位置时一起换）', dirname(indexDbPath()) === archiveDir(), indexDbPath())
 
+// 归档正文的权限是"只读"的硬要求：归档是内容寻址的，就地改一个字节就会让索引里的哈希与
+// 内容不再相符（症状是"搜到但打开后不是当初那份"）。见 ADR-0031。
+check('归档正文的权限是只读（0400）', ARCHIVE_FILE_MODE === 0o400)
+
 // 迁移目标是用户在对话框里选的目录（ADR-0019），选错一个 —— 选到自己的子目录、或
 // 选到上级 —— 会让搬迁变成"自我递归"或"搬完等于没搬"。这条判据是纯字符串比较，
 // 因此能离线断言。
@@ -199,6 +204,24 @@ if (existsSync(archive)) {
     '没有残留的半成品',
     leftovers.length === 0,
     `${leftovers.length} 个 .part-*，下次启动会清掉`,
+  )
+
+  /**
+   * 正文必须只读（ADR-0031）。
+   *
+   * 旧布局的正文是 64 位十六进制名，它们**豁免**这条检查：那种文件由老版本写入，
+   * 本来就不是只读的，而是在被打开时懒收紧。若把它也算进来，一台老机器上这条断言
+   * 会永远变红 —— 一个永远红的检查等于没有检查。
+   */
+  const legacy = (name: string): boolean => /^[0-9a-f]{64}$/.test(name)
+  const writable = blobs.filter(
+    (name) => !legacy(name) && (statSync(join(archive, name)).mode & 0o777) !== ARCHIVE_FILE_MODE,
+  )
+
+  check(
+    '新的正文都是只读的（0400）',
+    writable.length === 0,
+    `${writable.length} 个文件可写：归档被就地改写会让索引里的哈希与内容不再相符`,
   )
 } else {
   note(`归档目录尚未创建（首次接管时才建）：${archive}`)

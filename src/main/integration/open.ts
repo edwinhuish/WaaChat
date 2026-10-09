@@ -26,7 +26,7 @@ import { dirname, join } from 'node:path'
 import { shell } from 'electron'
 
 import type { OpenOutcome, RevealOutcome } from '../../shared/types'
-import { blobPath } from '../archive/blobs'
+import { blobPath, setReadOnly } from '../archive/blobs'
 import { sanitizeFileName } from '../archive/naming'
 import { hashPrefix, logger } from '../logger'
 import { archiveDir } from '../paths'
@@ -101,6 +101,10 @@ export function ensureOpenLink(hash: string, name: string): string | null {
 export async function openPath(hash: string, name: string): Promise<OpenOutcome> {
   const blob = blobPath(hash)
   if (!existsSync(blob)) return { ok: false, reason: 'not-found' }
+
+  // 旧布局（哈希名）的文件在第一次被打开时补上只读：新写入的文件在提交那一刻就已经是
+  // 只读的，而"用户真正用到的旧文件"才是这里值得顺手收紧的那些（[ADR-0031]）。
+  setReadOnly(blob)
 
   return openRaw(ensureOpenLink(hash, name) ?? blob, hash)
 }

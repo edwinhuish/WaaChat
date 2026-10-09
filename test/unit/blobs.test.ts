@@ -15,6 +15,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,6 +24,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
+  ARCHIVE_FILE_MODE,
   blobPath,
   commitFromTemp,
   ensureArchiveDir,
@@ -95,6 +97,20 @@ describe('commitFromTemp', () => {
     const b = await commitFromTemp(staged(`b-${String(Date.now())}`))
 
     expect(a.hash).not.toBe(b.hash)
+  })
+
+  it('落盘即只读，而只读不妨碍删除', async () => {
+    const temp = staged(`read-only-${String(Date.now())}`)
+
+    const result = await commitFromTemp(temp)
+    const path = blobPath(result.hash)
+
+    expect(statSync(path).mode & 0o777).toBe(ARCHIVE_FILE_MODE)
+
+    // 只读挡的是"就地改内容"，不是删除：删除只依赖**目录**的写权限。
+    // 这一条如果坏了，`wipeArchive()` 与淘汰都会在只读文件上失败。
+    expect(() => rmSync(path)).not.toThrow()
+    expect(existsSync(path)).toBe(false)
   })
 })
 

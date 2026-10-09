@@ -39,6 +39,7 @@ import type {
 } from '../../shared/types'
 import { failureReason } from '../errors'
 import { logger } from '../logger'
+import { setReadOnly } from './blobs'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
 const INDEX_PREFIX = '.index.sqlite'
@@ -432,6 +433,10 @@ async function moveEntry(fromDir: string, toDir: string, name: string): Promise<
 
   await rename(staging, to)
   await unlink(from)
+
+  // `rename` 一定保留权限位，跨设备那条 `copyFile` 分支不一定 —— 把"正文只读"补回来
+  // （[ADR-0031]）。幂等，且失败只记日志。
+  setReadOnly(to)
 
   return copied.size
 }

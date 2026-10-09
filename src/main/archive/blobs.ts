@@ -65,6 +65,37 @@ export function blobPath(hash: string): string {
   return join(archiveDir(), hash)
 }
 
+/**
+ * 归档正文的权限位：**只读**（[ADR-0031]）。
+ *
+ * 归档是内容寻址的：一份内容对应多条索引记录，而索引里记着它的哈希。文件被**就地**改一个
+ * 字节，那份哈希就与内容不再相符 —— 症状是"搜索命中，但打开后不是当初那份文件"，而且
+ * 没有任何地方会报错。只读把这条不变量交给文件系统，而不是靠用户自觉。
+ *
+ * 它挡的只是"就地改内容"：**删除与迁移不受影响**（两者只依赖目录的写权限，见 `wipeArchive()`
+ * 与 `archive/migrate.ts`）。`0400` 而不是 `0444`：归档目录本身是 `0700`，两者在暴露面上
+ * 没有区别，而 `0400` 与既有的"仅本人可读"一脉相承。
+ */
+export const ARCHIVE_FILE_MODE = 0o400
+
+/**
+ * 把一份归档正文设为只读。幂等；失败只记日志。
+ *
+ * 失败不阻断任何事：用户可能把归档放在不支持权限位的文件系统上（与 `ensureArchiveDir()`
+ * 同样的处理），而"打不开文件"比"文件可写"严重得多。
+ *
+ * 旧布局（哈希名、非只读）的文件在**它被打开时**补上（`integration/open.ts`），而不是启动时
+ * 对全库做一次 `chmod`：上万条目时那是一次全量 IO，而真正值得收紧的是用户实际用到的那些。
+ */
+export function setReadOnly(path: string): void {
+  try {
+    if ((statSync(path).mode & 0o777) === ARCHIVE_FILE_MODE) return
+    chmodSync(path, ARCHIVE_FILE_MODE)
+  } catch (error) {
+    logger.warn('archive: could not make a file read-only', { reason: (error as Error).name })
+  }
+}
+
 /** 生成一个位于归档目录内的随机临时路径。 */
 export function tempPath(): string {
   const random = Math.random().toString(36).slice(2, 10)
@@ -111,6 +142,11 @@ export async function commitFromTemp(temp: string): Promise<CommitResult> {
   }
 
   renameSync(temp, target)
+
+  // 改名之后再收紧权限：名字在改名那一刻就已经是最终形态，而权限位与内容无关，
+  // 因此中间没有可被观察到的坏状态（[ADR-0031]）。
+  setReadOnly(target)
+
   return { hash, created: true }
 }
 
