@@ -319,16 +319,31 @@ export async function migrateArchive(
   } catch (error) {
     const rolledBack = await rollbackMigration(plan)
     const failure = error instanceof MigrationError ? error.failure : 'write-failed'
-    const detail = error instanceof MigrationError ? error.detail : (error as Error).name
+    const detail = error instanceof MigrationError ? error.detail : failureReason(error)
 
     // ⚠️ 不记 `detail`：它可能包含完整路径（G-3）。界面上会显示它，日志里不会。
     logger.error('archive: migration failed', {
       failure,
       rolledBack,
-      reason: (error as Error).name,
+      reason: failureReason(error),
     })
     return { ok: false, failure, detail, rolledBack }
   }
+}
+
+/**
+ * 一次没有结构化原因的失败，原因是什么。
+ *
+ * 取 `code`（`ENOSPC` / `EACCES` / `ENOENT` / `EXDEV`…）而不是 `name`：fs 错误的
+ * `name` 永远是 `Error`，于是界面上的"写入新位置时失败（Error）"等于什么都没说 ——
+ * 失败原因必须落到用户能行动的那一层（磁盘满 / 位置不可写 / 位置被删）。
+ * 路径不进这个字符串（G-3），因此它可以同时出现在日志与界面上。
+ */
+export function failureReason(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code
+  if (typeof code === 'string' && code !== '') return code
+
+  return error instanceof Error ? error.name : 'unknown'
 }
 
 /**
@@ -363,7 +378,7 @@ export async function rollbackMigration(plan: MigrationPlan): Promise<boolean> {
       await moveEntry(plan.target, plan.source, name)
     } catch (error) {
       complete = false
-      logger.error('archive: could not move an entry back', { reason: (error as Error).name })
+      logger.error('archive: could not move an entry back', { reason: failureReason(error) })
     }
   }
 

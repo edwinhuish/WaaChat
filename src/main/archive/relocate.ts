@@ -22,7 +22,7 @@ import type {
   MigrationSummary,
 } from '../../shared/types'
 import { logger, redactPath } from '../logger'
-import { migrateArchive, rollbackMigration, type MigrationPlan } from './migrate'
+import { failureReason, migrateArchive, rollbackMigration, type MigrationPlan } from './migrate'
 import { applyArchiveDir, closeArchiveStore } from './store'
 
 export type RelocationOutcome =
@@ -67,13 +67,13 @@ export async function relocateArchive(
     const restored = await rollbackMigration(plan)
     logger.error('archive: relocation could not be committed', {
       rolledBack: restored,
-      reason: (error as Error).name,
+      reason: failureReason(error),
     })
 
     return {
       ok: false,
       failure: 'write-failed',
-      detail: (error as Error).name,
+      detail: failureReason(error),
       rolledBack: restored,
     }
   }
