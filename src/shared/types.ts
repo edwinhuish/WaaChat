@@ -75,7 +75,16 @@ export interface Settings {
   readonly archiveMaxBytes: number
   /** 密文缓存容量上限（字节）。 */
   readonly cacheMaxBytes: number
-  /** 是否启用接管点 B（密文缓存）。关闭后行为等同于只有接管点 A。 */
+  /**
+   * 是否启用接管点 B（密文缓存）。关闭后行为等同于只有接管点 A。
+   *
+   * **默认关闭**（[ADR-0026]）：缓存省下的是一次网络往返，代价是在本机留一份可被长期
+   * 留存分析的通信数据（`docs/security.md`）。"我的磁盘上为什么有密文"是需要解释的那一边，
+   * 而"为什么第二次打开还要联网"不需要 —— 界面上的状态标签就写着。
+   *
+   * 改它需要重启：见下面的 {@link RESTART_REQUIRED_SETTINGS}。重启时会把缓存目录对账到
+   * 新状态（关闭 → 清掉已有条目；开启 → 保留可命中的条目）。
+   */
   readonly enableCiphertextCache: boolean
   /** 是否随桌面会话自启动。 */
   readonly launchAtLogin: boolean
@@ -88,7 +97,7 @@ export const DEFAULT_SETTINGS: Settings = {
   archiveDir: '',
   archiveMaxBytes: 0,
   cacheMaxBytes: 2 * 1024 * 1024 * 1024,
-  enableCiphertextCache: true,
+  enableCiphertextCache: false,
   launchAtLogin: false,
 }
 

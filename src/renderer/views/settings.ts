@@ -48,7 +48,7 @@ const TOGGLES: readonly ToggleSpec[] = [
   {
     key: 'enableCiphertextCache',
     label: '密文磁盘缓存',
-    hint: '把聊天文件的密文留在本地，第二次打开不再联网。不涉及解密，也不保存密钥。',
+    hint: '把聊天文件的密文留在本地，第二次打开不再联网。不涉及解密，也不保存密钥。关闭后重启会清掉已有的缓存（只影响速度），开启则继续沿用。',
   },
   {
     key: 'prefetch',

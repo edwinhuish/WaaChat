@@ -25,32 +25,17 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
 import { net, type Session } from 'electron'
 
+import { CACHE_DIR_MODE, CACHE_VERSION, cacheEntryPaths } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
 import { setCiphertextCacheActive } from './health'
 import { logger } from '../logger'
 import { ciphertextCacheDir } from '../paths'
-
-/** 目录权限：缓存里是密文，危害低于归档，但仍不放宽。 */
-const DIR_MODE = 0o700
-
-/** 与正文一起保存的元信息后缀。 */
-const META_SUFFIX = '.meta.json'
-
-/**
- * 缓存条目的格式版本。
- *
- * "回放时要带上哪些响应头"属于**语义**（见 capture/headers.ts 与 ADR-0016）。语义一变就
- * 必须让旧条目失效，否则用户机器上那些按旧语义写下的条目会继续被回放 —— 症状是"只在
- * 老用户那里复现的页面损坏"，最难查的一类问题。版本不符按未命中处理：重新回源即可自愈。
- */
-const CACHE_VERSION = 2
 
 interface CachedMeta {
   readonly version: number
@@ -62,7 +47,7 @@ interface CachedMeta {
 
 export function attachCiphertextCache(ses: Session): void {
   const dir = ciphertextCacheDir()
-  mkdirSync(dir, { recursive: true, mode: DIR_MODE })
+  mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE })
 
   ses.protocol.handle('https', async (request) => {
     const key = deriveCacheKey(request.url)
@@ -80,8 +65,7 @@ export function attachCiphertextCache(ses: Session): void {
     }
 
     const id = createHash('sha256').update(key).digest('hex')
-    const bodyPath = join(dir, `${id}.bin`)
-    const metaPath = join(dir, `${id}${META_SUFFIX}`)
+    const { body: bodyPath, meta: metaPath } = cacheEntryPaths(dir, id)
 
     const cached = readCached(bodyPath, metaPath)
     if (cached !== null) {

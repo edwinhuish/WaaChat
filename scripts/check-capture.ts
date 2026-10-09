@@ -36,6 +36,7 @@ import {
   isAcceptedIconName,
 } from '../src/shared/appicon'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
   archiveDir,
   ciphertextCacheDir,
@@ -353,6 +354,20 @@ if (existsSync(launcherOverride)) {
 } else {
   note(`尚未写用户级启动器条目（设置自定义图标时会写到 ${launcherOverride}）`)
 }
+
+// ---------------------------------------------------------------------------
+// 8. 密文缓存的开关约定
+// ---------------------------------------------------------------------------
+//
+// 这两条都属于"改了没人会立刻发现"的约定：
+//   - 默认值被改回开启，等于让用户在不知情的情况下多一份本地密文副本（ADR-0026）；
+//   - 从"重启后生效"名单里掉出去，界面就不会再显示那个徽标，用户会以为改了没反应 ——
+//     而 scheme 的注册在会话里是一次性的，热切换根本不成立。
+
+section('密文缓存的开关约定')
+
+check('默认不开启', DEFAULT_SETTINGS.enableCiphertextCache === false)
+check('在"重启后生效"名单里', RESTART_REQUIRED_SETTINGS.includes('enableCiphertextCache'))
 
 // ---------------------------------------------------------------------------
 

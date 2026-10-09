@@ -9,6 +9,7 @@ import type { Session } from 'electron'
 
 import type { Settings } from '../shared/types'
 import { isUpstreamOrigin } from '../shared/upstream'
+import { reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
 import { attachCiphertextCache } from './capture/protocol'
 import { logger } from './logger'
@@ -73,6 +74,15 @@ export function configureSession(ses: Session, getSettings: () => Settings): voi
 
   // --- 接管点 B：密文缓存 -----------------------------------------------------
   // 可关闭。关闭后只影响"二次打开是否联网"，不影响正确性。
+  //
+  // 开关在架构上无法热切换（见 shared/types.ts 的 RESTART_REQUIRED_SETTINGS），因此
+  // **每次启动**先把磁盘上的缓存对账到当前设置，再决定挂不挂协议层：关掉就清掉旧密文
+  // （设置说不要留在本机，磁盘上也就不该有），开启则保留可命中的条目、只清不可能命中的
+  // 残留。判据是"目录内容 vs 当前设置"而不是"上次是什么"，所以它幂等、无状态（ADR-0026）。
+  //
+  // 位置也重要：必须早于任何窗口与请求，否则可能出现"把正在写的条目当残留删掉"。
+  reconcileCiphertextCache(settings.enableCiphertextCache)
+
   if (settings.enableCiphertextCache) {
     attachCiphertextCache(ses)
   }
