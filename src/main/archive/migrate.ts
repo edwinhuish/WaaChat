@@ -37,6 +37,7 @@ import type {
   MigrationFailure,
   MigrationSummary,
 } from '../../shared/types'
+import { failureReason } from '../errors'
 import { logger } from '../logger'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
@@ -329,21 +330,6 @@ export async function migrateArchive(
     })
     return { ok: false, failure, detail, rolledBack }
   }
-}
-
-/**
- * 一次没有结构化原因的失败，原因是什么。
- *
- * 取 `code`（`ENOSPC` / `EACCES` / `ENOENT` / `EXDEV`…）而不是 `name`：fs 错误的
- * `name` 永远是 `Error`，于是界面上的"写入新位置时失败（Error）"等于什么都没说 ——
- * 失败原因必须落到用户能行动的那一层（磁盘满 / 位置不可写 / 位置被删）。
- * 路径不进这个字符串（G-3），因此它可以同时出现在日志与界面上。
- */
-export function failureReason(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException).code
-  if (typeof code === 'string' && code !== '') return code
-
-  return error instanceof Error ? error.name : 'unknown'
 }
 
 /**

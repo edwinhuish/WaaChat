@@ -882,7 +882,7 @@ neither relative to project dir ("...")
 **影响**：
 
 - `MigrationPlan.entries` 里的索引部分不再是一份可执行的清单，只是计划时的快照（用于确认框的文件数与回滚兜底）；执行阶段以源目录**当时**的内容为准。
-- 写入失败的原因改为报 errno（`ENOSPC` / `EACCES` / `ENOENT` / `EXDEV`…），界面与日志共用 `archive/migrate.ts` 的 `failureReason()`；`relocate.ts` 的两处失败报告一并改用它。
+- 写入失败的原因改为报 errno（`ENOSPC` / `EACCES` / `ENOENT` / `EXDEV`…），界面与日志共用 `failureReason()`（后来提到 `src/main/errors.ts`，见 [ADR-0026](#adr-0026) 的影响一节）；`relocate.ts` 的两处失败报告一并改用它。
 - 回滚只搬归档自己的名字（内容哈希 / `.index.sqlite*` / `.part-*`）—— 目标目录在计划时被验证为空，但"理论上为空"不能拿来搬用户的东西。
 - 一个残留情形被**有意保留**：迁移窗口里若旧目录被重开出一个空库，它既不覆盖新位置、也不被搬走，于是旧目录不会被删除（`rmdir` 非空即失败）。这比"用空库盖掉真库"安全；界面本来就会提示用户核对两处。
 ---
@@ -969,6 +969,7 @@ neither relative to project dir ("...")
 - `src/shared/types.ts`：默认值改为 `false`。新装用户第一次启动**不会创建 `cache/`** —— 那个目录只有 `attachCiphertextCache()` 会建。
 - 新模块 `src/main/capture/cache-files.ts`：条目形态（`<sha256>.bin` + `<sha256>.meta.json`、`CACHE_VERSION`）、残留判定（纯函数 `orphanEntries()`）、对账（`reconcileCiphertextCache()`）。它**不导入 electron**，因此可单测、也能被离线自检引用；`capture/protocol.ts` 改为从这里取常量，它自己只剩"拦截请求"。
 - `src/main/session.ts`：接管点 B 的分支之前加一次对账（早于任何窗口与请求）。
+- `src/main/errors.ts`：`failureReason()` 从 `archive/migrate.ts` 提出来（现在三处共用：迁移对账、设置落盘失败、缓存对账），[ADR-0024](#adr-0024) 影响一节里对它的定位随之更正。
 - `capture/headers.ts` 的白名单一变，仍然**必须**提升 `CACHE_VERSION`（`ai/TASKS.md` 的要求不变，只是常量换了文件）。
 - `scripts/check-capture.ts`：新增两条断言锁住"默认关闭"与"在重启生效名单里"—— 这两条约定都属于"改动了没人会立刻发现"的那一类。
 - 界面：开关那行的提示补上"关闭会清掉已有缓存、开启则保留"；`密文缓存：关` 成为默认配置下的常见形态（视觉上没有变化，它本来就是中性色）。

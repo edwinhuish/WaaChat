@@ -21,8 +21,9 @@ import type {
   MigrationFailure,
   MigrationSummary,
 } from '../../shared/types'
+import { failureReason } from '../errors'
 import { logger, redactPath } from '../logger'
-import { failureReason, migrateArchive, rollbackMigration, type MigrationPlan } from './migrate'
+import { migrateArchive, rollbackMigration, type MigrationPlan } from './migrate'
 import { applyArchiveDir, closeArchiveStore } from './store'
 
 export type RelocationOutcome =
