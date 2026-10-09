@@ -84,20 +84,23 @@ https://<media-host>/v/t62.xxxx.../NNNNNN.enc?ccb=11-4&oh=<签名>&oe=<过期时
 2. 下载完成（状态为 completed）
    ├─ 非 completed → 删除临时文件，结束，不做任何索引
    └─ completed →
-        3. 计算内容哈希
-        4. 目标路径 = <archive>/<哈希>
-        5. 目标已存在？ → 删除临时文件（去重命中），复用已有文件
-        6. 否则 → 原子改名（同一文件系统内 rename）
-        7. 写入索引（文件名 / 会话 / 时间 / 大小 / 哈希 / MIME）
-        8. shell.openPath(目标路径)
+        3. 计算内容哈希（这份内容的身份，不是文件名 —— ADR-0031）
+        4. 目标路径 = <archive>/<净化后的原名>；同名被占则加一小段哈希（见下）
+        5. 目标已存在且同内容？ → 删除临时文件（去重命中），复用已有文件
+           同一份内容已在归档里、只是叫别的名字？ → 给它挂一个硬链接（不写字节）
+        6. 否则 → 原子改名（同一文件系统内 rename）→ chmod 0400（只读）
+        7. 写入索引（原名 / 磁盘名 / 会话 / 时间 / 大小 / 哈希 / MIME）
+        8. shell.openPath(磁盘上的那个文件)
 ```
 
 要点：
 
-- **第 5 步是去重的全部实现。** 没有"这是不是同一个文件"的判断逻辑，只有哈希相等。
+- **第 5 步是去重的全部实现。** 判据是**内容相同**（先比大小，再比哈希），不是"名字相同"—— 名字只决定它**叫什么**（[ADR-0031](decisions.md#adr-0031)）。文件名上的差异（`报告.pdf` / `报告 (1).pdf`）仍然不产生新的存储。
+- **第 5 步和第 6 步都可能一个字节都不写。** 同内容、同名 → 丢弃临时文件；同内容、不同名 → 挂一个硬链接（因此 `usage()` 的占用统计按 inode 去重）。
 - **第 6 步必须是 rename 而非 copy**，否则大文件会出现可见的中间态。临时文件与目标必须在同一文件系统。
+- **第 6 步落盘之后立刻 chmod 0400**：归档是内容寻址的，就地改写会让索引里的哈希与内容不再相符。删除与迁移不受影响（只依赖目录的写权限）。
 - **索引写入失败不应阻止打开文件。** 用户的诉求是打开文件；索引是增强。顺序上先保证可用性。
-- **启动时清扫**残留的 `.part-*`（进程被 kill 会留下）。
+- **启动时清扫**残留的 `.part-*`（进程被 kill 会留下），并清掉旧版本的 `.open/` 影子目录。
 
 ## 5. 已知脆弱点与判定方法
 
@@ -108,7 +111,7 @@ https://<media-host>/v/t62.xxxx.../NNNNNN.enc?ccb=11-4&oh=<签名>&oe=<过期时
 | 下载不再经由下载事件（例如改为流式播放 / 分片请求） | 文件不落进归档，也没打开 | 复现后看主进程日志有无下载事件；`scripts/check-capture.ts` |
 | 缓存键不再稳定 | 每次点击都联网（回到上游原生行为） | 观察二次点击时是否仍有到媒体 CDN 的请求 |
 | 媒体 CDN 换到 `cdn.whatsapp.net` 之外的域 | 二次点击仍联网（只是不再落缓存，不报错） | 同上；`scripts/check-capture.ts` 的 host 断言会先变红 |
-| 缓存键发生碰撞 | 解密失败、文件打不开 | 归档中同一哈希对应不同原始文件名；或打开报错 |
+| 缓存键发生碰撞 | 解密失败、文件打不开（MAC 校验不过） | 直接看是否复现"打开报错"。⚠️ **不要**再用"同一哈希对应多个名字"判断 —— 那在 [ADR-0031](decisions.md#adr-0031) 之后是正常的（同一份内容被转发） |
 | 回放的响应头与原响应语义不一致（漏带 COEP / COOP / CSP 之类） | **只在缓存命中时**出现：页面局部坏掉，例如文档预览报 `ERR_BLOCKED_BY_RESPONSE` | `scripts/check-capture.ts` 的响应头断言；改 `capture/headers.ts` 白名单时**必须**提升 `CACHE_VERSION` 让旧条目失效（[ADR-0016](decisions.md#adr-0016)） |
 | 上游把 PDF 换到别的路径 / 别的域交给内置阅读器渲染 | 应用内又出现 PDF 预览（**看得见**，但没人会想到是我们放的） | 观察点 PDF 时是否出现应用内预览；`scripts/check-capture.ts` 的预览页判据断言会先变红 |
 | 页面拒绝在内置内核中运行 | 出现"浏览器不受支持" | 检查 UA 设置是否被上游新的检测绕过 |
@@ -140,11 +143,14 @@ https://<media-host>/v/t62.xxxx.../NNNNNN.enc?ccb=11-4&oh=<签名>&oe=<过期时
 # 主进程日志，只看接管相关
 waachat 2>&1 | grep -iE 'download|capture|cache|archive' | tail -40
 
-# 归档目录一致性：数量、大小、是否有残留半成品
-find "$HOME/Documents/WhatsApp_files" -name '.part-*' -o -type f | wc -l
+# 归档：半成品应为 0（进程被 kill 才会留下）
+find "$HOME/Documents/WhatsApp_files" -maxdepth 1 -name '.part-*' | wc -l
 
-# 索引与文件是否对得上（是否存在"有记录无文件"）
-sqlite3 "$HOME/Documents/WhatsApp_files/.index.sqlite" 'select count(*) from files'
+# 正文应当都是只读（0400）—— 列出来的是"可写的正文"，正常为空
+find "$HOME/Documents/WhatsApp_files" -maxdepth 1 -type f ! -name '.*' ! -perm 0400
+
+# 索引与文件是否对得上：stored_name 就是打开文件时用的磁盘名（ADR-0031）
+sqlite3 "$HOME/Documents/WhatsApp_files/.index.sqlite" 'select stored_name, name from files limit 5'
 ```
 
 > 归档位置可在设置里改（默认 `~/Documents/WhatsApp_files`，见 [ADR-0018](decisions.md#adr-0018) /
