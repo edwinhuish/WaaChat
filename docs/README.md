@@ -99,7 +99,8 @@ waachat/
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
 │   │   ├── capture/                ★ 核心：内核层接管
 │   │   │   ├── cachekey.ts         幂等键推导（纯函数，可单测）
-│   │   │   ├── cache-files.ts      缓存条目形态 + 启动时与设置对账（不导入 electron）
+│   │   │   ├── cache-files.ts      缓存条目形态 + 转换/暂存区/启动对账（不导入 electron）
+│   │   │   ├── cache-switch.ts     切换开关的事务编排：转换 → 提交 → 收尾，失败回退
 │   │   │   ├── download.ts         下载事件接管 → 归档 + 打开
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
 │   │   │   └── health.ts           接管状态的唯一事实源（界面据此显示）
