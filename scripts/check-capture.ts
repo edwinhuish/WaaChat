@@ -45,6 +45,7 @@ import {
   isAcceptedIconName,
 } from '../src/shared/appicon'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import { ALLOWED_PERMISSIONS, isPermissionAllowed } from '../src/main/permissions'
 import { isDocumentPreviewPage } from '../src/shared/upstream'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
@@ -507,6 +508,44 @@ check(
   MAX_ATTEMPTS === 3,
 )
 check('退避带抖动且有上界', nextDelayMs(1, () => 1) <= 400 && nextDelayMs(2, () => 1) <= 1200)
+
+// ---------------------------------------------------------------------------
+// 11. 权限白名单（安全关键）
+// ---------------------------------------------------------------------------
+//
+// 判据在 `src/main/permissions.ts`（不导入 electron，因此这里能直接断言它）。
+// 它的失手方式很安静：放宽一项既不报错也没有症状 —— 只会让某个第三方页面拿到摄像头，
+// 或者少一行 `permission denied` 日志（见 ADR-0035 与 docs/security.md T5）。
+
+section('权限白名单')
+
+check(
+  '上游源可以申请放行的那几项',
+  isPermissionAllowed('media', 'https://web.whatsapp.com/') &&
+    isPermissionAllowed('notifications', 'https://web.whatsapp.com/') &&
+    // 它不授予任何能力，只影响本分区数据的淘汰策略；拒绝它可能换来一次重新扫码。
+    isPermissionAllowed('persistent-storage', 'https://web.whatsapp.com/'),
+)
+check(
+  '来源错了就拒绝（前缀骗术不算同一个源）',
+  !isPermissionAllowed('media', 'https://web.whatsapp.com.evil.com/') &&
+    !isPermissionAllowed('media', 'https://web.whatsapp.com@evil.com/') &&
+    !isPermissionAllowed('media', ''),
+)
+check(
+  '读剪贴板 / 位置 / 屏幕捕获一律拒绝',
+  !isPermissionAllowed('clipboard-read', 'https://web.whatsapp.com/') &&
+    !isPermissionAllowed('geolocation', 'https://web.whatsapp.com/') &&
+    !isPermissionAllowed('display-capture', 'https://web.whatsapp.com/'),
+)
+check(
+  '未知权限默认拒绝（白名单的意义）',
+  !isPermissionAllowed('some-future-permission', 'https://web.whatsapp.com/'),
+)
+check(
+  `放行的类型恰好 ${String(ALLOWED_PERMISSIONS.size)} 项（加一项要改断言，也就必须说清理由）`,
+  ALLOWED_PERMISSIONS.size === 5,
+)
 
 // ---------------------------------------------------------------------------
 

@@ -17,23 +17,7 @@ import { attachDownloadCapture } from './capture/download'
 import { attachPdfHandling } from './capture/pdf'
 import { attachCiphertextCache } from './capture/protocol'
 import { logger } from './logger'
-
-/**
- * 允许上游页面申请的权限。
- *
- * 白名单而非黑名单：将来上游申请一个新权限时，默认结果是"拒绝"，而不是
- * 静默放行。**同时校验来源**，因为同一个分区里还有我们自己的本地界面窗口。
- *
- * 来源判据用 {@link isUpstreamOrigin} 做 origin 精确比对 —— 不能写前缀匹配：
- * `https://web.whatsapp.com@evil.com/` 也会以前缀的形式通过，于是摄像头 /
- * 麦克风权限被交给一个第三方页面（docs/security.md T5）。
- */
-const ALLOWED_PERMISSIONS = new Set([
-  'notifications',
-  'media', // 麦克风 / 摄像头：通话与语音消息需要
-  'clipboard-sanitized-write',
-  'fullscreen',
-])
+import { isPermissionAllowed } from './permissions'
 
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
@@ -41,18 +25,25 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   const settings = getSettings()
 
   // --- 权限 -----------------------------------------------------------------
+  // 判据在 `permissions.ts`：**来源 + 类型**双向白名单，不导入 electron，因此单测与离线自检
+  // 都能断言"哪些权限被放行"（[ADR-0035]）。这一层只负责把它接到会话上，并在拒绝时留痕 ——
+  // 一条 `permission denied` 日志是用户能自己判断"这个功能没反应是不是被我们拒了"的唯一线索。
   ses.setPermissionRequestHandler((contents, permission, callback) => {
     const fromUpstream = isUpstreamOrigin(contents.getURL())
-    const allowed = fromUpstream && ALLOWED_PERMISSIONS.has(permission)
+    const allowed = isPermissionAllowed(permission, contents.getURL())
+
     if (!allowed) {
       logger.warn('permission denied', { permission, fromUpstream })
     }
+
     callback(allowed)
   })
 
-  ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) => {
-    return isUpstreamOrigin(requestingOrigin) && ALLOWED_PERMISSIONS.has(permission)
-  })
+  // 有些 Web API 只做权限**检查**（不发起请求），因此两个处理器必须用同一套判据 ——
+  // 只接一边的症状是"检查通过、请求被拒"或反过来。
+  ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) =>
+    isPermissionAllowed(permission, requestingOrigin),
+  )
 
   /**
    * 屏幕共享。
