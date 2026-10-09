@@ -1,0 +1,312 @@
+/*
+ * 界面样式。
+ *
+ * 三条约束：
+ *  1. **只用系统字体**，不打包字体文件。缺字形的中文界面会显示方块，而随包带字体
+ *     意味着几 MB 的体积与一份授权声明 —— 系统字体栈已经够好。
+ *  2. **不引入 CSS 框架**。这里的界面是三个列表加一个表单。
+ *  3. 颜色全部走 CSS 变量，且跟随 `prefers-color-scheme`。理由不是"好看"，而是
+ *     GNOME 的深色模式是系统级的：一个纯白窗口在深色桌面上会刺眼。
+ */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e3e6ea;
+  --text: #1b1f24;
+  --muted: #6b7280;
+  --accent: #0a7cff;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --danger: #b42318;
+  --radius: 8px;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --surface: #1e2126;
+    --border: #2e3238;
+    --text: #e7e9ee;
+    --muted: #9aa2ad;
+    --accent: #4a9eff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Noto Sans CJK SC',
+    'Source Han Sans SC',
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* --- 顶栏 ---------------------------------------------------------------- */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+nav {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+nav button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font: inherit;
+}
+
+nav button[aria-selected='true'] {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* 接管状态常驻在顶栏右侧：它是用户可见的状态，不该藏进设置页。 */
+.status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pill {
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pill[data-state='ok'] {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+
+.pill[data-state='warn'] {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.pill[data-state='error'] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+/* --- 主体 ---------------------------------------------------------------- */
+
+main {
+  padding: 16px;
+  max-width: 960px;
+}
+
+section[hidden] {
+  display: none;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+input[type='search'],
+input[type='number'] {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+input[type='search'] {
+  flex: 1;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button.action {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+button.action:hover:not([disabled]) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.action[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- 归档列表 ------------------------------------------------------------ */
+
+ul.archive {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+ul.archive li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+ul.archive li:last-child {
+  border-bottom: none;
+}
+
+.meta {
+  min-width: 0;
+  flex: 1;
+}
+
+/* 文件名可能很长（尤其是中文合同），必须能省略而不是把按钮挤出窗口。 */
+.meta .name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta .sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.empty {
+  padding: 32px 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* --- 设置 ---------------------------------------------------------------- */
+
+.setting {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+
+.setting input[type='checkbox'] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.setting .label {
+  font-weight: 500;
+}
+
+.setting .hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 归档位置这类"具体值"：等宽 + 可在任意处断行，长路径不能把整行撑破。 */
+.setting .path {
+  margin-top: 2px;
+  font-family: ui-monospace, 'Noto Sans Mono CJK SC', monospace;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* 迁移的过程与结果。三类结果必须一眼分得开 —— 尤其是"回滚失败，需要人工核对"那一类。 */
+.setting .path[data-state='running'] {
+  color: var(--accent);
+}
+
+.setting .path[data-state='ok'] {
+  color: var(--ok);
+}
+
+.setting .path[data-state='error'] {
+  color: var(--danger);
+}
+
+/* 按钮不参与拉伸，避免它被 flex 分配到与复选框不同的占位。 */
+.setting > button.action {
+  flex: 0 0 auto;
+}
+
+.setting[data-pending='true'] {
+  opacity: 0.65;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  vertical-align: 1px;
+}
+
+footer.hint {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
