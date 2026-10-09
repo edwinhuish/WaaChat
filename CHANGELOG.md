@@ -1,0 +1,64 @@
+# 更新日志
+
+本文件记录所有值得用户注意的变更。
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [1.0.0] - 2026-10-09
+
+### 新增
+
+- **点击聊天里的文件直接打开**：内核层接管下载事件，文件解密后归档到本地，交给系统默认
+  应用打开，不需要先下载再去 `~/Downloads` 里找。
+- **归档层**：内容寻址存储（同一个文件被转发到多个会话也只存一份）+ SQLite/FTS5 索引，
+  支持按文件名搜索与去重。
+- **文件保存位置可配置**：设置里可以直接选保存目录，归档索引跟着归档目录走。
+- **更换保存位置时会迁移数据**：选完目录先弹确认框（从哪搬到哪、多少个文件、多大），
+  确认后自动迁移并显示进度；取消则存储位置与数据一点都不变；失败会把已搬走的文件搬回
+  原位，界面会明确告知回滚是否成功。
+  > 迁移期间请不要退出应用。
+- **归档默认位置 `~/Downloads/WaaChat_files`，首次启动自动创建**（连 `~/Downloads` 不存在
+  时也会一并建好）。
+- **密文磁盘缓存**：第二次打开同一个文件不再联网（接管点 B）。
+- **打包**：`deb` 与 `AppImage` 双目标；AppImage 使用静态 runtime 工具链（不依赖 FUSE2）。
+- **CI**：PR 校验工作流与打标签发布工作流；产物校验脚本断言 `.desktop`、图标、依赖与
+  沙箱可用性。
+- **离线接管自检**（`pnpm run selfcheck`）：不联网、不启动 Electron，验证缓存键推导、
+  UA 是否干净与归档目录权限。
+- **文档体系**：用户文档、开发者文档、决策记录（ADR）、AI 协作文档。
+- **ESLint 规则中固化的架构不变量**（禁止页面注入、禁止协议重实现）。
+
+### 变更
+
+- **项目名与全部身份标识统一为 `WaaChat`**：包名、可执行文件名、`appId`、桌面条目、
+  AppArmor profile、会话分区与 preload 暴露的全局名一并使用该名称。名称不含服务方名称；
+  "与官方无关"的声明义务保留。会话分区为 `persist:waachat`，配置与登录态在 `~/.config/waachat`。
+- **README 顶部加入非官方声明**："个人自用封装 · 非官方应用 · 与任何官方组织无关"。
+  同一条声明也带进**安装产物**（deb 的 synopsis 与 description、`.desktop` 的 Comment）。
+- **归档默认位置改为 `~/Downloads/WaaChat_files`**，首次启动自动创建。已有归档不会自动搬
+  过去 —— 用设置里的「更改…」可以迁移。
+- **取消"文件已归档"的桌面通知**：归档动作总是紧跟在用户自己的点击之后，通知里没有用户
+  还不知道的信息，却会把文件名暴露到锁屏与通知中心。上游网页版自己的消息通知不受影响。
+- **密文缓存的接管范围收窄到媒体 CDN 域**（`*.cdn.whatsapp.net` 与 `mmg.whatsapp.net`）：
+  不再把网页自身的明文资源写进密文缓存。
+- **缓存回放的响应头改为显式白名单**（`capture/headers.ts`）；清单变化必须提升
+  `CACHE_VERSION`，让按旧语义写下的条目按未命中处理，避免漏带 COEP/CSP 只在缓存命中时
+  损坏页面。
+- **包管理器改为 pnpm**（`package.json` 里 `packageManager: pnpm@12.10.1` 钉死版本）：
+  `pnpm-workspace.yaml` 承载 `allowBuilds`；`postinstall` 显式调用 `install-electron`
+  （Electron 44 起该包不再自带 `postinstall`）；`electron-builder.yml` 显式设
+  `npmRebuild: false`（`better-sqlite3@13` 是 Node-API 模块，无需按 ABI 重建）。
+- **开发与 CI 的 Node 版本为 `24.21.0`**（LTS）。
+- **不变量 `INV-4` 收敛为"绝不使用服务方的**视觉**标识资产"**：名称按指称性合理使用，
+  但非官方声明仍必须同时出现在 `README.md`、`DISCLAIMER.md` 与安装产物中。
+- **发版交给 `pnpm run release`**（`bumpp`：提升版本 → 提交 → 打 `v<版本>` 标签 → 推送）。
+- **发布流程自动创建并发布 GitHub Release**：`electron-builder.yml` 设
+  `publish.releaseType: release`（默认 `draft` 会让自动更新静默失效）；发布说明由 release
+  工作流用 `gh release edit --notes-file` 写入，并在工作流结束前断言 Release 非草稿、
+  发布说明非空、四个产物齐全。
+
+### 移除
+
+- `Taskfile.yml`：任务全部下沉到 `package.json` 的 `scripts`，只留一个入口。
+- `package-lock.json`：由 `pnpm-lock.yaml` 取代。
+
+[1.0.0]: https://github.com/edwinhuish/waachat/releases/tag/v1.0.0
