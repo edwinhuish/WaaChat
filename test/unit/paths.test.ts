@@ -60,7 +60,7 @@ describe('normalizeArchiveDir', () => {
 
 describe('archiveDir', () => {
   it('默认落在文档目录下', () => {
-    expect(archiveDir()).toBe(join(homedir(), 'Documents', 'WhatsApp_files'))
+    expect(archiveDir()).toBe(join(homedir(), 'Documents', 'WaaChat_files'))
     expect(archiveDir()).toBe(defaultArchiveDir())
   })
 

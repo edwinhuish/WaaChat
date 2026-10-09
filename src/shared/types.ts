@@ -78,7 +78,7 @@ export interface Settings {
   /**
    * 归档文件的保存位置。
    *
-   * 空串表示"用默认位置"（`~/Documents/WhatsApp_files`）—— 默认值刻意不写死成绝对
+   * 空串表示"用默认位置"（`~/Documents/WaaChat_files`）—— 默认值刻意不写死成绝对
    * 路径：`Settings` 是渲染进程也要编译的数据形状，而 `~/` 的展开只有主进程能做
    * （`shared/` 不得访问文件系统，见 ai/CONVENTIONS.md 第 2 节）。
    */
