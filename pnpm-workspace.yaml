@@ -1,0 +1,32 @@
+# pnpm 工作区 / 项目级设置。
+#
+# 这是**单包**仓库：不声明 `packages:`，仓库根目录就是唯一项目。
+# 这个文件存在的唯一理由是承载 pnpm 的 settings —— 主要是下面的 `allowBuilds`。
+#
+# 为什么不写进 .npmrc 或 package.json：
+#   pnpm 11 起，`onlyBuiltDependencies` / `onlyBuiltDependenciesFile` /
+#   `neverBuiltDependencies` / `ignoredBuiltDependencies` 被 `allowBuilds` 取代
+#   （pnpm 在 ≥11 里把旧键当作未知配置**静默忽略**，迁移过来的仓库会以为它还生效）。
+#   而 `allowBuilds` 只认 pnpm-workspace.yaml。
+#
+# 为什么必须有这份白名单：
+#   依赖的 build script 默认被拦下。pnpm 12 把"有依赖被拦"视作**硬错误**
+#   ERR_PNPM_IGNORED_BUILDS（非零退出）。也就是说 CI 里 `pnpm install --frozen-lockfile`
+#   会直接失败，而不是打个警告继续跑。所以每个带 build script 的依赖都必须在这里表态。
+#
+# 怎么复核：`pnpm install` 结束后不应再出现 ERR_PNPM_IGNORED_BUILDS。
+# 想重新决策时用 `pnpm approve-builds`。
+allowBuilds:
+  # esbuild 是 vite / electron-vite 的打包器。它的 postinstall（node install.js）
+  # 负责把平台二进制（@esbuild/linux-x64 里的可执行文件）落到自己的 lib 目录。
+  # 不批准 ⇒ esbuild 找不到二进制 ⇒ `pnpm run build` 直接失败。必须为 true。
+  # 树里有两个实例：0.25.12（vitest 链）与 0.28.2（vite 链），同一条规则覆盖两者。
+  esbuild: true
+
+  # electron-winstaller 是 electron-builder 的**传递依赖**，只服务于 Windows 打包目标
+  # （Squirrel.Windows / NSIS 的 7z 架构选择，install script = script/select-7z-arch.js）。
+  # 本仓库是 Linux-only：electron-builder.yml 只出 deb + AppImage，CI/release 全在
+  # ubuntu-24.04 上跑，永远走不到它。
+  # 显式 false = "知道它存在、明确不需要"，既堵住 ERR_PNPM_IGNORED_BUILDS，
+  # 也不给供应链多开一个执行点。将来若真要加 Windows 目标，把它改成 true 即可。
+  electron-winstaller: false

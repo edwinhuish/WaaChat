@@ -1,0 +1,76 @@
+{
+  "name": "waachat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Linux desktop shell for web messaging with a local media vault: click a file in chat and it opens instantly, without re-downloading.",
+  "license": "MIT",
+  "author": {
+    "name": "Edwin Huish",
+    "email": "edwinhuish@gmail.com"
+  },
+  "homepage": "https://github.com/edwinhuish/waachat",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edwinhuish/waachat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/edwinhuish/waachat/issues"
+  },
+  "main": "out/main/index.js",
+  "desktopName": "io.github.edwinhuish.waachat",
+  "packageManager": "pnpm@12.10.1",
+  "engines": {
+    "node": ">=24.21.0",
+    "pnpm": ">=12.0.0"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "pnpm run typecheck && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "selfcheck": "tsx scripts/check-capture.ts",
+    "check": "pnpm run lint && pnpm run format:check && pnpm run typecheck && pnpm run test && pnpm run selfcheck",
+    "icons": "bash scripts/make-icons.sh",
+    "clean": "node scripts/clean.mjs",
+    "pack:dir": "pnpm run build && electron-builder --linux dir --publish never",
+    "pack:deb": "pnpm run build && electron-builder --linux deb --publish never",
+    "pack:appimage": "pnpm run build && electron-builder --linux AppImage --publish never",
+    "pack": "pnpm run build && electron-builder --linux deb AppImage --publish never",
+    "pack:publish": "pnpm run build && electron-builder --linux deb AppImage --publish always",
+    "verify:package": "bash scripts/verify-package.sh dist",
+    "verify": "pnpm run pack && pnpm run verify:package",
+    "ci": "pnpm run check && pnpm run verify",
+    "release": "bumpp",
+    "postinstall": "install-electron"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.4",
+    "bumpp": "^12.3.0",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-flat-config-utils": "^3.2.0",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^7.3.7",
+    "vitest": "^5.0.3"
+  }
+}

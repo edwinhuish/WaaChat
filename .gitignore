@@ -1,0 +1,48 @@
+# dependencies
+node_modules/
+
+# build output
+out/
+dist/
+*.tsbuildinfo
+
+# local runtime state (never commit a developer's archive or session)
+.data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# generated release notes (written by .github/scripts/generate-changelog.sh, read by
+# electron-builder's releaseInfo.releaseNotesFile — must not be committed, or bumpp's
+# "worktree must be clean" check fails)
+release-notes.md
+
+# logs & reports
+*.log
+npm-debug.log*
+coverage/
+.vitest/
+.vitest-out.txt
+
+# scratch TMPDIR (used when /tmp is a small tmpfs: TMPDIR=$PWD/.tmp)
+.tmp/
+
+# editors / OS
+.DS_Store
+.idea/
+*.swp
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# secrets (never commit signing keys or notarisation credentials)
+*.pem
+*.p12
+.env
+.env.*
+!.env.example
+
+# agent / workspace scratch space — must never reach the published repo
+.workbuddy/
+.agents/
