@@ -1,0 +1,37 @@
+# 参考用样本 —— **不是**输入文件。
+#
+# ⚠️ electron-builder 不使用这个文件。真正的 .desktop 由它依据 electron-builder.yml
+# 的 `linux.*` 生成，然后装到 /usr/share/applications/<desktopName>.desktop
+# （见 electron-builder.yml 的 `syncDesktopName` 注释）。
+#
+# 这个文件存在的唯一理由：让"产物里应该长什么样"有一个可以直接逐行对照的样本。
+# 排查"图标不合并 / 显示占位图标"时，拿它和
+#   dpkg-deb --fsys-tarfile <deb> | tar -xO -f - ./usr/share/applications/<desktopName>.desktop
+# 比一行。
+#
+# 下面的内容是从一份真实 deb 产物里原样抄出来的，**不要凭想象修改** ——
+# 内容对不上就失去了对照的意义。要更新它，就重新抄一份真实产物。
+#
+# ⚠️ 本次改名（ADR-0020）后它**尚未**用真实产物重抄：`Name` / `Exec` / `Icon` /
+# `StartupWMClass` / `Comment` 是按当前 electron-builder.yml 推导出来的。下一次
+# `pnpm run verify` 之后请从新产物里重抄一遍，把推导值换成实测值。
+#
+# 注意两处与直觉不符、但确实如此的地方：
+#   · `Exec` 是**绝对路径**（`/opt/WaaChat/waachat`），不是裸可执行名。
+#     路径由 electron-builder 的 installPrefix(/opt) + productName 拼出。
+#   · 没有 `GenericName` / `Version` / `StartupNotify`；electron-builder 的模板不写这些。
+#     想要它们得在 electron-builder.yml 的 `linux.desktop.entry` 下显式声明。
+#
+# scripts/verify-package.sh 断言的是其中的**文件名**与 `StartupWMClass` 两项 ——
+# 两者都必须等于 appId，理由见 docs/packaging.md 第 2 节。
+
+[Desktop Entry]
+Name=WaaChat
+Exec=/opt/WaaChat/waachat %U
+Terminal=false
+Type=Application
+Icon=waachat
+StartupWMClass=io.github.edwinhuish.waachat
+Comment=Unofficial personal-use chat shell with a local media vault
+Categories=Network;InstantMessaging;
+Keywords=chat;messenger;media;archive;

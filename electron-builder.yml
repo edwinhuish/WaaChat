@@ -1,0 +1,181 @@
+appId: io.github.edwinhuish.waachat
+productName: WaaChat
+copyright: Copyright © 2026 Edwin Huish
+
+directories:
+  output: dist
+  buildResources: build
+
+# Only the compiled bundles ship. Sources, tests, docs and config stay in git.
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/*.ts'
+
+asar: true
+
+# 托盘图标必须在运行时可按路径读取，因此不能只留在 build/ 里 —— 那里是构建期资源，
+# 不会进入安装包。放 extraResources 后可通过 process.resourcesPath 访问（见 integration/tray.ts）。
+#
+# AppArmor profile 同理，而且更需要跟着包走：用户装完之后要把它复制到 /etc/apparmor.d，
+# 而"从仓库里拿"对只下载了 deb 的用户不成立。落点是 <安装目录>/resources/apparmor/。
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+  # ⚠️ 这份 profile **不是** deb 用的那份。
+  #
+  # deb 的 AppArmor 由 electron-builder 内建处理：它自己生成一个只覆盖
+  # `/opt/WaaChat/waachat` 的 profile 放到 `resources/apparmor-profile`，并在生成的
+  # postinst 里安装它。把文件命名为 `build/apparmor-profile` 试图覆盖它是**无效**的
+  # —— electron-builder 忽略用户提供的内容，仍然写自己的模板（实测：提交 1480 字节的
+  # 文件，产物里是 217 字节的模板）。
+  #
+  # 内建那份不含 AppImage 的挂载路径 `/tmp/.mount_*/waachat`，所以这里另附一份
+  # 覆盖两条路径的完整版，供 AppImage 用户手动安装（deb 用户不需要它）。
+  # scripts/verify-package.sh 会分别断言两者，并断言 postinst 引用的路径确实存在。
+  - from: build/apparmor
+    to: apparmor
+    filter:
+      - '**/*'
+
+# ⚠️ 必须为 false：better-sqlite3 是 Node-API 模块，**不需要**按 Electron 的 ABI 重建。
+#
+# 为什么可以跳过（三层证据）：
+#   1. `prebuilds/` 里的文件名**不带 ABI 号**（`linux-x64.node`，而不是
+#      `node-v127-linux-x64.node`）—— 这正是 Node-API 的判据；同一份二进制在
+#      Node（ABI 127）与 Electron（ABI 149）下都能加载。
+#   2. 13.x 的加载顺序本身就是"先找 prebuild"：`lib/binding.js` 的 `getBinding()`
+#      先调 `getPrebuildPath()`（即 `prebuilds/<platform>-<arch>.node`），只有找不到
+#      时才回退到 `build/Debug|Release/better_sqlite3.node`。所以编译产物那条路根本没走。
+#   3. 包自身 `gypfile: false`、且不带 install/build script（因此它**不**出现在
+#      `pnpm-workspace.yaml` 的 `allowBuilds` 里）。
+#
+# 为什么必须**显式**关掉：electron-builder 默认（`npmRebuild: true`）会无条件对原生
+# 模块跑 `@electron/rebuild` → `node-gyp` → `make`。即使它已探测到 prebuild、日志写着
+# `buildFromSource=false`，node-gyp 那条链路**仍然会被执行**。后果是打包机必须具备
+# gcc / make / python3 —— 对一个只用 N-API 预编译二进制的项目，这是纯粹多出来的环境
+# 依赖，而且失败信息完全指不到根因（实测踩过：node-gyp 去 unlink 它自己造的
+# `build/node_gyp_bins/python3` 时 EPERM，最终只报一句 "node-gyp failed to rebuild"）。
+#
+# ⚠️ 代价与前提：将来若引入**非** N-API 的原生依赖（带 ABI 号的 prebuild、或依赖
+# `node-gyp-build` 现场编译），这条必须改回 `true`，否则会打出一个在 Electron 下加载
+# 失败的原生模块。判据见上面第 1 条。
+npmRebuild: false
+
+linux:
+  target:
+    - target: deb
+      arch: [x64]
+    - target: AppImage
+      arch: [x64]
+  category: Network;InstantMessaging
+  # synopsis / description / .desktop 的 Comment 都要带上"非官方"，因为这是
+  # INV-4 要求的"安装产物中的声明"：用户装完之后可能永远不看 README，但一定会看到
+  # 包管理器里的描述与启动器里的条目。
+  synopsis: Unofficial personal-use chat shell with a local media vault
+  description: >-
+    An unofficial, personal-use desktop shell around the official web messenger,
+    plus a local media vault. Not affiliated with, endorsed by, or sponsored by
+    any official organization. A file you open from a chat is decrypted once,
+    archived on disk by content hash, and handed straight to your default
+    application. No manual download step, no duplicate copies piling up in
+    ~/Downloads, and it still opens after the provider's CDN link has expired.
+  executableName: waachat
+  icon: build/icon.png
+
+  # ⚠️ 必须开启，否则桌面集成会**静默**坏掉。
+  #
+  # 默认 false 时，electron-builder 把装到 /usr/share/applications 的文件名取成
+  # `executableName`，即 `waachat.desktop`。而 Electron 的 app_id 来自
+  # `app.setDesktopName(DESKTOP_FILE_NAME)`，是 `io.github.edwinhuish.waachat`。
+  # 两者对不上 ⇒ GNOME 按 app_id 找不到同名 .desktop ⇒ Dock 显示占位图标、
+  # 启动器不与运行窗口合并。
+  #
+  # 失败之所以静默：`StartupWMClass` 此时是正确的，所以"只断言 WMClass"的校验
+  # 抓不到它 —— 这正是本仓库最想拦住的那类问题。
+  #
+  # 依据（electron-builder 26.15.3，packages/app-builder-lib 的 LinuxTargetHelper）：
+  #   getDesktopFileName(fallback = executableName) {
+  #     if (!platformSpecificBuildOptions.syncDesktopName) return fallback
+  #     return metadata.desktopName.replace(/\.desktop$/, '')
+  #   }
+  # 官方 schema 原话："derived from `desktopName` in `package.json` (minus the
+  # `.desktop` suffix) so that it matches `StartupWMClass` and Electron's `app_id`"。
+  # 该开关在 v27 里默认就会变成 true（electron-builder#9103），这里先显式钉住。
+  #
+  # 于是四处必须同源：本开关 + package.json 的 desktopName + 下面的 StartupWMClass
+  # + src/shared/constants.ts 的 DESKTOP_FILE_NAME。
+  # scripts/verify-package.sh 会断言产物里的文件名确实是 `<desktopName>.desktop`。
+  syncDesktopName: true
+
+  desktop:
+    entry:
+      Name: WaaChat
+      Comment: Unofficial personal-use chat shell with a local media vault
+      Categories: Network;InstantMessaging;
+      Keywords: chat;messenger;media;archive;
+      # MUST match the value handed to app.setDesktopName() in src/main/index.ts.
+      # If these drift, GNOME shows a generic placeholder icon in the dock and the
+      # launcher never merges with the running window. scripts/verify-package.sh
+      # asserts this after every build.
+      StartupWMClass: io.github.edwinhuish.waachat
+      Terminal: false
+      Type: Application
+
+deb:
+  # Deliberately NOT overriding `depends`: electron-builder already ships a
+  # dependency list that is correct for the pinned Electron version, and hand-
+  # maintained lists rot fast (Ubuntu's time_t transition renamed several of these
+  # libraries to *t64). See docs/packaging.md before adding entries here.
+  recommends:
+    # Tray icon. Without it the app still runs; only the indicator is missing.
+    - libayatana-appindicator3-1
+  packageCategory: net
+  priority: optional
+
+appImage:
+  compression: zstd
+
+# AppImage runtime 1.0.3 bundles a static runtime and drops the FUSE2 dependency
+# entirely, so the artifact runs on a stock Ubuntu 24.04+ without libfuse2t64.
+# v27 of electron-builder makes this the default; pin it now so the behaviour
+# does not silently change under us.
+toolsets:
+  appimage: '1.0.3'
+
+# ⚠️ 这里**不要**设 `releaseInfo.releaseNotesFile`。
+#
+# 直觉上它正是"把生成的发布说明交给 Release"的开关，但显式点名的资源在文件不存在时
+# 是**抛错**而不是跳过。app-builder-lib 26.15.3 的 `getResource(custom, ...names)`
+# （out/platformPackager.js）分两条路：
+#
+#   custom === undefined  → 依次试 `release-notes-<platform>.md`…`release-notes.md`，
+#                           都找不到就返回 null（安全）
+#   custom 显式给了       → build resources 与 projectDir 各找一次，仍找不到则
+#                           `throw InvalidConfigurationError: cannot find specified
+#                           resource "release-notes.md"…`
+#
+# 而读取它的 `getReleaseInfo()`（out/publish/updateInfoBuilder.js）属于
+# `createUpdateInfoTasks` —— **每次构建**生成 `latest*.yml` 时都会跑到，与
+# `--publish never` 无关。于是本地 `pnpm run pack` 与 CI 的 `pnpm run verify` 会直接失败
+# （实测踩过：Release 工作流的「构建并校验产物」从加了这个键起必红）。
+#
+# 不设它时的行为正是我们要的：`release-notes.md` 仍在隐式候选列表里，存在就被读走，
+# 不存在就安静地什么都不写。发布说明由 release 工作流用 `gh release edit --notes-file`
+# 显式写入 Release，不依赖这条隐式路径。理由见 docs/decisions.md ADR-0014。
+
+publish:
+  provider: github
+  owner: edwinhuish
+  repo: waachat
+
+  # ⚠️ 必须显式指定，默认值是 `draft`。草稿 Release 在 Releases 页面上看不到，
+  # electron-updater 通过 GitHub API 也认不出它是"最新版本"（草稿不算）——
+  # 自动更新因此**静默失效**，而 CI 是绿的。发布说明见 ADR-0013。
+  #
+  # ⚠️ 还有一个只在日志里体现的差异：若同名标签的 Release 已存在且**已发布**，而本次
+  # 发布类型是 `draft`，electron-builder 既不复用它也不报错，只打一条
+  # "GitHub release not created" 的 warn 就跳过上传（构建仍然是绿的）。
+  # release.yml 的最后一步会断言 Release 处于已发布状态且四个文件都在，专门拦这一类。
+  releaseType: release

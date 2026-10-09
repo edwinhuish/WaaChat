@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="WaaChat">
+  <!--
+    图标是**唯一事实源**：build/icon.png 由本文件生成（scripts/make-icons.sh），
+    不要直接改 PNG。
+
+    设计约束（都是为了在 GNOME 的 16px 图标位里还认得出）：
+      - 满幅圆角方块：图标位按正方形裁切，留白会在小尺寸下变成"缩水"
+      - 只有三条线：低于 24px 时细节会糊成一团，所以不放文字、不放阴影、不放装饰
+      - 线粗 26px @512：缩到 16px 后仍有约 1px 可见宽度
+      - 钩子的竖直跨度 60px < 行距 80px：**这是硬约束**，否则三条线的钩会叠在一起
+        （第一版就是 88px 跨度叠加 80px 行距，渲染出来是一团）
+      - 起笔（三条线的左端）对齐在 x=146，形成一块可读的"左边缘"
+
+    图形是三条流动的线：每一段代表一份文件从对话里直接落到本地，中间的钩是"转向"——
+    不再经过浏览器下载目录。图形刻意与名称无关，因此改名不会让图标失去意义。
+
+    ⚠️ [INV-4] 这份图标必须始终是自绘的抽象图形：不得改用服务方的 Logo、图标、
+    字体或官方配色。见 docs/decisions.md ADR-0011。
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f6df6" />
+      <stop offset="1" stop-color="#17b3a3" />
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角半径 112 ≈ 22%，与 GNOME 的图标网格接近 -->
+  <rect x="0" y="0" width="512" height="512" rx="112" ry="112" fill="url(#bg)" />
+
+  <!--
+    每条线 = 一段水平线 + 一个向右鼓出的半圆钩（半径 30）。
+    `a30 30 0 0 1 0 60` 的终点在起点正下方 60px，即半圆正好跨 60px。
+  -->
+  <g fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round">
+    <path d="M146 146 H230 a30 30 0 0 1 0 60" />
+    <path d="M146 226 H310 a30 30 0 0 1 0 60" />
+    <path d="M146 306 H240 a30 30 0 0 1 0 60" />
+  </g>
+</svg>

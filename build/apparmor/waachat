@@ -1,0 +1,58 @@
+# AppArmor profile —— 只为放行非特权 user namespace。
+#
+# 为什么需要它：Ubuntu 24.04 起默认限制非特权 user namespace，而 Chromium 的
+# 进程沙箱依赖它。症状极具误导性：
+#
+#   从文件管理器**双击没有任何反应**，从终端运行却一切正常。
+#
+# 这个 profile 只影响本应用，因此比下面两种做法都好：
+#   - 全局关闭限制（sysctl kernel.apparmor_restrict_unprivileged_userns=0）：影响整机
+#   - 在 .desktop 里加 --no-sandbox：等于关掉进程隔离，且用户看不出区别
+#
+# 形态与 Ubuntu 官方为 VS Code 等应用提供的 profile 一致（`flags=(unconfined)`
+# 只放行 userns，不改变其它权限）。
+#
+# ---------------------------------------------------------------------------
+# 这份文件是「手动安装版」，覆盖 deb 与 AppImage 两条挂载路径。
+#
+#   deb 用户      **不需要它**。electron-builder 会内建生成一份只覆盖
+#                 /opt/WaaChat/waachat 的 profile（落点
+#                 resources/apparmor-profile），由安装包的 postinst 自动装到
+#                 /etc/apparmor.d/waachat。
+#   AppImage 用户 需要自己装。AppImage 没有安装脚本，而内建那份不含挂载路径。
+#
+#   sudo cp <安装目录或解包目录>/resources/apparmor/waachat /etc/apparmor.d/
+#   sudo apparmor_parser -r /etc/apparmor.d/waachat
+#
+# 文件名必须是 `waachat`：它与下面 profile 声明的名字、以及 deb postinst 的
+# 目标路径三者同源。AppArmor 以文件内声明为准，但一旦名字不一致，同一份 profile
+# 就会以两个身份出现，`apparmor_parser` 加载时相互冲突。
+#
+# ⚠️ 挂载路径为什么用通配符：AppImage runtime 把挂载点拼成
+#
+#     ${TMPDIR:-/tmp}/.mount_<AppImage 文件名的前 6 个字符>XXXXXX
+#
+# （格式串来自 runtime 二进制的 `%s/.mount_%.*sXXXXXX`，精度是 `min(6, 文件名长度)`）。
+# 文件名由 productName + 版本号拼出，改一次 `artifactName` 就会变 ——
+# 本项目当前是 `WaaChat-1.0.0.AppImage`，前 6 个字符是 `WaaCha`。
+# 把 `WaaCha` 写死等于给未来埋一个"改了打包参数、profile 静默失效"的坑。
+# 通配只放宽了目录名这一层，第二段仍然必须是本应用的可执行文件名。
+#
+# ⚠️ 若你设了 TMPDIR，挂载点会跟着挪出 /tmp —— 那种情况下需要为你的 TMPDIR
+# 再加一条同样的路径规则。默认（未设 TMPDIR）就是下面写的 /tmp。
+#
+# ⚠️ `abi <abi/4.0>` 与 `userns` 规则需要 AppArmor 4.0（Ubuntu 24.04+）。
+# 在更早的系统上本文件不需要 —— 那些系统还没有这个限制。
+
+abi <abi/4.0>,
+include <tunables/global>
+
+# 两条挂载路径：
+#   /opt/WaaChat/waachat   deb 安装的可执行文件
+#   /tmp/.mount_*/waachat         AppImage 挂载出来的临时路径（后缀随机）
+profile waachat /opt/WaaChat/waachat /tmp/.mount_*/waachat flags=(unconfined) {
+  userns,
+
+  # 本机管理员想要更严的规则时，放 /etc/apparmor.d/local/waachat。
+  include if exists <local/waachat>
+}
