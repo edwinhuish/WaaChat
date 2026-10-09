@@ -180,6 +180,112 @@ describe('migrateArchive', () => {
     await expect(rollbackMigration(plan())).resolves.toBe(true)
     expect(existsSync(join(source, BLOB_A))).toBe(true)
   })
+
+  it('写入失败的原因报 errno，而不是一个永远为 Error 的 name', async () => {
+    seedSource()
+
+    const result = await migrateArchive(plan(), () => undefined, {
+      afterEntry: () => {
+        // 真实的磁盘满长这样：errno 在 `code` 上，`name` 仍然是 `Error`。
+        throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' })
+      },
+    })
+
+    // 界面拿它拼「写入新位置时失败（ENOSPC）」，用户于是知道该去清磁盘还是改权限。
+    expect(result).toMatchObject({
+      ok: false,
+      failure: 'write-failed',
+      detail: 'ENOSPC',
+      rolledBack: true,
+    })
+  })
+
+  it('收尾阶段补搬的迟到正文，也会被回滚搬回原位', async () => {
+    seedSource()
+    const planned = plan()
+    const late = 'c'.repeat(64)
+
+    const result = await migrateArchive(planned, () => undefined, {
+      afterEntry: (_name, index) => {
+        // 迁移期间又冒出一个正文 —— 它不在计划里，只有收尾的多轮扫描会看到它。
+        if (index === 0) writeFileSync(join(source, late), 'late arrival')
+
+        // 它刚被搬过去就失败：回滚的清单必须是"目标目录里实际有什么"，而不是计划快照。
+        if (index === planned.entries.length) throw new Error('boom')
+      },
+    })
+
+    expect(result).toMatchObject({ ok: false, failure: 'write-failed', rolledBack: true })
+    expect(existsSync(join(target, late))).toBe(false)
+    expect(readFileSync(join(source, late), 'utf8')).toBe('late arrival')
+
+    // 正文与索引一个都不能少。派生物（`.open/`、`.part-*`）不在此列：它们已经在收尾
+    // 阶段被按计划删掉了，而它们是可重建的 —— 回滚的纪律是"不丢正文"，不是"恢复一切"。
+    expect(readdirSync(source).sort()).toEqual(
+      [BLOB_A, BLOB_B, late, '.index.sqlite'].sort(),
+    )
+  })
+})
+
+/**
+ * 索引在迁移里的特殊之处：计划是在连接**还开着**的时候算出来的，而执行的第一步
+ * （`closeArchiveStore()`，ADR-0019 理由 3）会做 checkpoint 并把 `.index.sqlite-wal`
+ * / `-shm` 删掉、或者相反地在窗口里被另一个连接重新建出来。因此索引的清单只能取
+ * **执行时**的目录内容 —— 下面三条覆盖"快照过期"的三种后果。
+ */
+describe('migrateArchive（索引清单）', () => {
+  it('计划里的索引附属文件在执行前消失时，迁移照样成功', async () => {
+    seedSource()
+    // 连接还开着的那一刻算计划：`-wal` / `-shm` 都在清单里。
+    writeFileSync(join(source, '.index.sqlite-wal'), 'wal')
+    writeFileSync(join(source, '.index.sqlite-shm'), 'shm')
+    const planned = plan()
+    expect(planned.entries).toContain('.index.sqlite-wal')
+
+    // 干净地关掉连接：SQLite 做完 checkpoint 就把这两个文件回收了，清单随即过期。
+    // v1.0.1 就是照这份清单去 rename 一个已经不存在的名字，拿到 ENOENT，
+    // 然后告诉用户"磁盘可能已满，或该位置不可写"。
+    rmSync(join(source, '.index.sqlite-wal'))
+    rmSync(join(source, '.index.sqlite-shm'))
+
+    await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })
+
+    expect(readdirSync(target).sort()).toEqual([BLOB_A, BLOB_B, '.index.sqlite'].sort())
+    expect(existsSync(source)).toBe(false)
+  })
+
+  it('计划之后才出现的索引附属文件也一起搬走，不留在旧目录', async () => {
+    seedSource()
+    const planned = plan()
+
+    // 迁移窗口里索引被重新打开过（例如用户在确认框之前切到了「归档」标签页）。
+    writeFileSync(join(source, '.index.sqlite-wal'), 'late wal')
+
+    await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })
+
+    // 留下来就是一个"看起来像库、其实没被任何东西引用"的残留，而且旧目录删不掉。
+    expect(readdirSync(target).sort()).toEqual(
+      [BLOB_A, BLOB_B, '.index.sqlite', '.index.sqlite-wal'].sort(),
+    )
+    expect(existsSync(source)).toBe(false)
+  })
+
+  it('目标里已有同名索引时绝不覆盖：宁可让旧位置留下那一份', async () => {
+    seedSource()
+    const planned = plan()
+
+    // 真库已经搬过去了，而迁移窗口里旧目录又被重开出一个空库。
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, '.index.sqlite'), 'the real index')
+    writeFileSync(join(source, '.index.sqlite'), 'a brand new empty database')
+
+    await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })
+
+    // 遍历顺序无关紧要：无论如何都不能用空库盖掉真库。归档不做索引合并（ADR-0019），
+    // 两害相权取其轻 —— 旧位置多一个空目录，用户可以在界面提示下自己核对。
+    expect(readFileSync(join(target, '.index.sqlite'), 'utf8')).toBe('the real index')
+    expect(readFileSync(join(source, '.index.sqlite'), 'utf8')).toBe('a brand new empty database')
+  })
 })
 
 /**
