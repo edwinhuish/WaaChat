@@ -94,6 +94,15 @@
 漏掉运行期生成的那份用户级启动器条目（ADR-0022）；
 只看本地机器（本地往往已经缓存了旧图标）。
 
+**启动期的 Linux 平台开关只有一处**：`src/main/linux-gpu.ts`（走 Wayland 时不请求 Vulkan，
+见 [ADR-0036](../docs/decisions.md#adr-0036)）。往那里加开关之前先读它的三条边界，尤其：
+
+- **不要**用 `appendSwitch` 覆盖用户已有的同名开关（同名以最后一次为准，那是静默改用户意图）
+  —— 要**合并**；
+- **不要**为了消一行日志去关 GPU 加速（`--disable-gpu` 之类），也不要强制
+  `--ozone-platform=x11`：那会丢掉原生 Wayland；
+- 判据必须是**生效的平台**，不是发行版或 `XDG_SESSION_TYPE` 本身。
+
 ---
 
 ## T4 · 升级 Electron（或其它核心依赖）

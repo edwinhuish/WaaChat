@@ -315,6 +315,26 @@ dpkg -l | grep -Ei 'appindicator|appmenu'
 
 > 想把它从输出里去掉：`waachat --log-level=3`（只留致命错误）。**不推荐** —— 它会把网络握手失败、`capture: giving up on a flaky connection` 这些真正有用的诊断一并盖掉（见上面「资源加载不出来」那条）。
 
+### 启动时的 `'--ozone-platform=wayland' is not compatible with Vulkan`
+
+```
+ERROR:ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc:249]
+  '--ozone-platform=wayland' is not compatible with Vulkan.
+  Consider switching to '--ozone-platform=x11' or disabling Vulkan
+```
+
+这是 Chromium 在说：**Wayland 的渲染路径不支持 Vulkan**。它默认会去试一次，拿不到 surface 就回退到 GL —— 也就是说这行描述的是一次**注定失败**的尝试，而不是"你的显卡有问题"。
+
+本应用现在**走 Wayland 时不再请求 Vulkan**（[ADR-0036](decisions.md#adr-0036)），所以默认情况你不会再看到它。三条边界：X11 会话下**一个开关都不动**（那边的 Vulkan 可能是好的）；你自己传的 `--disable-features=…` 会被**合并**而不是覆盖；你要是**显式**传了 `--enable-features=Vulkan`，我们就不插手。
+
+```bash
+waachat 2>&1 | grep -i vulkan   # 应当只看到 linux: not requesting Vulkan (…)
+```
+
+> 如果同一行出现在**别的**应用里（浏览器、别的 Electron 应用），那与本应用无关 —— 那是它们自己的进程。
+>
+> 想自己验证这不是显卡问题：`waachat --ozone-platform=x11`（Chromium 给的另一条建议）。我们**不**默认这么做 —— 它会把原生 Wayland 一起丢掉（窗口图标靠 `app_id`、缩放、分数缩放）。
+
 ### 「浏览器不受支持」
 
 上游的检测变化。请提 issue 并附上系统信息。
