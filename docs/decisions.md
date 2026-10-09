@@ -43,6 +43,7 @@
 | [0033](#adr-0033) | 拦截来的请求**发回它所属的分区会话**（不再用默认会话），并对**我们自己发起**的请求做有限重试（幂等 + 连接层错误 + 有上限） | 已生效 |
 | [0034](#adr-0034) | GLib 的 `has no handler with id` 是外部 GTK 模块的噪音：不追、不静默日志；**不**用"重建托盘"刷新图标；"没有托盘"**不可检测**（无指示器宿主时 `new Tray()` 依然成功） | 已生效 |
 | [0035](#adr-0035) | 权限白名单加入 `persistent-storage`（**仅上游源**）：它不授予任何能力，只影响本分区数据的淘汰策略；拒绝它的代价可能是"消息重新同步"甚至"重新扫码" | 已生效 |
+| [0036](#adr-0036) | 走 Wayland 的 Ozone 路径时**不请求 Vulkan**（Chromium 自己说这个组合不支持）：与用户已有的 `--disable-features` 合并，X11 与用户的显式选择一律不碰 | 已生效 |
 
 ---
 
@@ -1457,5 +1458,62 @@ WARN permission denied {"permission":"persistent-storage","fromUpstream":true}
 
 - 白名单是**双向**的，两半都必须对：来源（`isUpstreamOrigin` 精确比对 origin，不是前缀匹配）与类型。只改一半会留下一扇对着第三方页面的窗（`https://web.whatsapp.com@evil.com/` 这类前缀骗术在 `shared/upstream.ts` 里有单测）。
 - `persistent-storage` 被允许**不等于**存储一定不会被清：用户磁盘极度紧张、或用户自己清了 profile，Chromium 仍可能回收。它只是把"可以被淘汰"改成"优先保留"。
+
+---
+
+## ADR-0036
+
+**决定**：**在走 Wayland 的 Ozone 路径时**，于启动最早期（`app.whenReady()` 之前、GPU 进程启动之前）追加
+`--disable-features=Vulkan,DefaultANGLEVulkan,VulkanFromANGLE`，并与用户已有的 `--disable-features` **合并**（不覆盖）。
+此外：
+
+- **X11 路径一个开关都不动**（Vulkan 在 X11 上可能真的可用）；
+- 用户**显式**要求 Vulkan（`--enable-features` 里含 `Vulkan`）时**完全不动** —— 显式选择优先；
+- 不强制 `--ozone-platform=x11`。
+
+**状态**：已生效
+
+**背景**：用户启动时看到
+
+```
+ERROR:ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc:249]
+  '--ozone-platform=wayland' is not compatible with Vulkan.
+  Consider switching to '--ozone-platform=x11' or disabling Vulkan
+```
+
+这句话是 **Chromium 自己**在说：Wayland 的 surface factory 不支持 Vulkan。核查过的两件事：
+
+- **我们没有传过任何相关开关。** `src/` 里没有一处 `appendSwitch` / `commandLine`；桌面条目的 `Exec` 只有 `<可执行文件> %U`（`buildDesktopEntry`）。也就是说 `--ozone-platform=wayland` 是 Chromium 的 ozone **自动选择**结果（那串字是**生效**平台，不是我们传的），Vulkan 一侧来自 Chromium 自己默认开启的 Vulkan 相关 feature。
+- **那三个 feature 名与这行报错串都在二进制里**（`strings` 核对：`Vulkan`、`DefaultANGLEVulkan`、`VulkanFromANGLE`、`is not compatible with Vulkan`），因此关掉它们是有依据的，不是照着猜测写开关。
+
+**理由**：
+
+1. **在 Wayland 上这是一个不可能满足的请求。** Chromium 每次启动都会尝试 Vulkan → 拿不到 surface → 回退到 GL，并在日志里留一行 ERROR。我们做的只是"不再请求它"：**功能上零损失**（那条路径上本来就没有 Vulkan 可用），换来每次启动少一次注定失败的 GPU 初始化、少一行会被当成故障的报错。
+2. **不在 X11 上动它。** 同一个二进制在 X11 会话下 Vulkan 可能**真的**可用（X11 的 surface factory 支持它）。因此判据必须是"**生效的**臭氧平台"，而不是"发行版"或"会话类型"。
+3. **三个 feature 一起关。** 它们都指向 Vulkan（原生 Vulkan、ANGLE 的 Vulkan 后端、"ANGLE 默认用 Vulkan"），在 Wayland 上它们会落到同一个不支持的 surface factory。**哪一个当前是默认开启的取决于 Chromium 版本，我们没有逐个验证** —— 而"禁用一个本来就没开的 feature"是无害的，这比挑一个来猜更稳。
+4. **合并而不是覆盖 `--disable-features`。** `appendSwitch` 是同名开关以最后一次为准，直接写会把用户自己的列表**静默抹掉** —— 那是在改用户的意图，而它不会有任何提示。
+5. **用户的显式选择优先。** 有人可能就是要试 `--enable-features=Vulkan`（例如将来的 Chromium 真支持了 Wayland+Vulkan）。我们不去赢这场争论：检测到显式要求就不动作。
+
+**被否决的替代方案**：
+
+- **按 Chromium 那行报错的另一个建议强制 `--ozone-platform=x11`**：会丢掉原生 Wayland（窗口图标靠 `app_id`、缩放与分数缩放），对这个"要看起来像原生应用"的壳是倒退；纯 Wayland 会话下没有 XWayland 时更是直接跑不起来。
+- **全平台关掉 Vulkan**：见理由 2。
+- **什么都不做，只在文档里解释"这是无害噪音"**：那行描述的是一次**真实的失败尝试**（不是纯提示），而且每次启动都发生 —— 它是确定性的、完全能避免的组合。文档照旧要写（用户在别处也可能看到同类报错），但"不去动它"等于把一个可消除的失败留给用户。
+- **`--disable-gpu` / 强制 SwiftShader 软件渲染**：因噎废食 —— 为了消一行日志把整个 GPU 加速关掉。
+- **用更底层的 `--disable-vulkan-surface` / `--use-vulkan=…`**：语义更窄也更难解释。我们不是在调 Vulkan 的内部行为，而是决定"在这个平台上不请求它"。
+- **把它做成设置项**：用户没有"我想在这台机器上用 Wayland 上的 Vulkan"这个需求（它不成立），能提供的只有"更多的选择"和"更多的解释成本"。
+
+**影响**：
+
+- 新模块 `src/main/linux-gpu.ts`：`usesWaylandOzone()` / `userRequestedVulkan()` / `applyLinuxGpuSwitches()`。纯函数 + 可注入的命令行接口（与 `app.commandLine` 同形），因此能单测，不必真的启动 GPU 进程。
+- `src/main/index.ts`：在 `configureLogger()` 之后调用一次（必须在 `ready` 与 GPU 进程启动之前），动过命令行就记一条 `info`。
+- 测试：`test/unit/linux-gpu.test.ts`（Wayland 才动、X11 不动、显式开关优先、与已有列表**合并**）；`scripts/check-capture.ts` 新增一节把这四条锁住。
+- 文档：`docs/usage.md` 常见问题新增一条（那行是什么、我们做了什么、仍然看到时怎么覆盖）。
+
+**已知限制**：
+
+- **没有在真实 Wayland + GPU 的机器上验证过"关掉之后那行就消失"**（本机是 X11）。可验证的推理是：那行只在 Wayland × Vulkan 的组合下出现，而我们现在在这个组合下不请求 Vulkan。真机确认留给用户。
+- 如果将来 Chromium 支持了 Wayland+Vulkan，我们会在 Wayland 上**白关一次**（代价是拿不到 Vulkan 加速）。届时的正确动作是**删掉这个开关**，而不是再加开关绕它 —— 这也是把这条写在这里的原因。
+- 只影响**我们自己的进程**：用户从浏览器或别的 Electron 应用里看到的同类报错与本 ADR 无关。
 
 
