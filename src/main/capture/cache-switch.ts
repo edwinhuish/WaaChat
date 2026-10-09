@@ -2,6 +2,9 @@
  * 一次"密文缓存开关"的切换：把**转换文件**、**切协议层**、**落设置**绑成一次
  * 要么全成、要么全不成的操作（[ADR-0027]）。
  *
+ * 整个切换是**静默**的：没有确认框、也没有维护界面（[ADR-0028]），界面只在开关那一行
+ * 显示进行态与结果。去掉的是仪式，不是确定性 —— 下面的次序与回退语义一条都没变。
+ *
  * 与 `archive/relocate.ts` 守着同一条约束：文件在文件系统里、状态在 `settings.json` 里，
  * 两者没有共同的提交点，因此只能规定一个方向 —— **先转换，再落设置**，任何一边失败都把
  * 另一边撤销回去。
@@ -22,7 +25,6 @@
 
 import type { Session } from 'electron'
 
-import type { CacheConversionPhase, CacheConversionProgress } from '../../shared/types'
 import { failureReason } from '../errors'
 import { logger } from '../logger'
 import { convertCache, purgeStaging, restoreStaging, type CacheConversionPlan } from './cache-files'
@@ -52,20 +54,9 @@ export type CacheSwitchOutcome =
 export async function switchCiphertextCache(
   plan: CacheConversionPlan,
   ses: Session,
-  onProgress: (progress: CacheConversionProgress) => void,
   commit: () => void,
 ): Promise<CacheSwitchOutcome> {
   const target = plan.target
-  const report = (phase: CacheConversionPhase, done: number, bytesDone: number): void => {
-    onProgress({
-      target,
-      phase,
-      done,
-      total: plan.entries,
-      bytesDone,
-      bytesTotal: plan.bytes,
-    })
-  }
 
   /**
    * 协议层的原状。切换前它应当是"老状态那一侧"，但**以实际挂着没有为准** ——
@@ -97,8 +88,7 @@ export async function switchCiphertextCache(
   }
 
   // 2. 转换文件。convertCache 自己负责失败时的回滚。
-  report('converting', 0, 0)
-  const converted = await convertCache(plan, (done, bytes) => report('converting', done, bytes))
+  const converted = await convertCache(plan)
 
   if (!converted.ok) {
     restoreLayer()
@@ -112,8 +102,6 @@ export async function switchCiphertextCache(
   }
 
   // 3. 落设置 —— 提交点。到这一步文件已经全部转换完，用户再也看不到"半截"。
-  report('committing', converted.converted, converted.bytes)
-
   try {
     commit()
   } catch (error) {
@@ -133,7 +121,6 @@ export async function switchCiphertextCache(
   let pendingCleanup = 0
 
   if (!target) {
-    report('cleaning', converted.converted, converted.bytes)
     pendingCleanup = await purgeStaging()
   }
 

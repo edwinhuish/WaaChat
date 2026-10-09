@@ -27,7 +27,6 @@ import {
 
 import { ICON_DIALOG_EXTENSIONS } from '../../shared/appicon'
 import type { ArchiveIdInput } from '../../shared/bridge'
-import { describeCacheSwitchFailure, describeCacheSwitchScope } from '../../shared/cache-conversion'
 import { SESSION_PARTITION } from '../../shared/constants'
 import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure } from '../../shared/migration'
@@ -152,9 +151,10 @@ function presentSettings(settings: Settings): Settings {
 /**
  * 密文缓存的切换正在跑（[ADR-0027]）。
  *
- * 界面在维护期间根本不渲染设置列表，因此正常路径下没人能在这个窗口里改到东西；
- * 这个标志是**兜底**：挡住"界面还没来得及换、用户已经点到了"这类窗口，以及将来
- * 可能出现的别的调用方。同一时刻只允许一次切换。
+ * 它只守**这一条通道**：界面会在转换期间禁用那个开关，因此正常路径下没人能再发起一次；
+ * 这个标志是兜底，挡住"界面还没来得及重画、用户已经点到了"这类窗口，以及将来可能出现的
+ * 别的调用方。它**不**冻结其它设置 —— 转换在后台进行，没有理由连带挡住别的开关
+ * （`updateSettings` 本身是同步落盘的，不存在交叉写入）。
  */
 let cacheSwitchInProgress = false
 
@@ -175,21 +175,12 @@ function applySettings(value: unknown): Settings {
   }
 
   /**
-   * 密文缓存的开关同理，而且更严格：它必须走事务式维护流程（确认 → 转换 → 提交，
-   * 见 [ADR-0027]）。从这里直接改它的后果不是"半截状态"，而是"设置说关闭、磁盘上却
-   * 还留着缓存" —— 也就是"状态不一致"本身。界面侧也不走这条路，两边都拦。
+   * 密文缓存的开关同理：它必须伴随一次真实的文件转换与协议层的挂/摘（[ADR-0027]）。
+   * 从这里直接改它的后果不是"半截状态"，而是"设置说关闭、磁盘上却还留着缓存" ——
+   * 也就是"状态不一致"本身。界面侧也不走这条路，两边都拦。
    */
   if ('enableCiphertextCache' in patch) {
     throw new Error(`ipc: ${CHANNELS.cacheSwitch} is the only way to change the ciphertext cache`)
-  }
-
-  /**
-   * 切换进行中不许改别的设置。界面侧已经不在渲染设置列表了（维护界面换了一屏），
-   * 这里是**兜底**：挡住"界面还没来得及换、用户已经点到了"这类窗口，以及将来可能
-   * 出现的新调用方。见 ADR-0027。
-   */
-  if (cacheSwitchInProgress) {
-    throw new Error('ipc: a ciphertext cache switch is in progress')
   }
 
   const next = updateSettings(patch)
@@ -406,10 +397,10 @@ export function registerIpcHandlers(): void {
   })
 
   /**
-   * 切换密文磁盘缓存（[ADR-0027]）。
+   * 切换密文磁盘缓存（[ADR-0027] / [ADR-0028]）。
    *
-   * 流程全在主进程：算规模 → 确认框 → 转换 → 提交。界面只显示进度与结果，它连"从哪一步
-   * 开始"都不知道 —— 因此不存在"界面以为成功了、主进程其实没提交"这种可能。
+   * 流程全在主进程：算规模 → 转换 → 提交，**没有确认框也没有进度推送** —— 界面只是发起
+   * 一次调用、等它返回。这样"界面以为成功了、主进程其实没提交"不可能发生。
    *
    * 参数只有一个布尔值：这一层没有可被滥用的路径或标识，它只会清掉**我们自己的**缓存目录
    * 里的派生数据，并且必须伴随一次真实转换（`settings:set` 改不动它）。
@@ -430,60 +421,24 @@ export function registerIpcHandlers(): void {
       settings: presentSettings(getSettings()),
     })
 
-    // 已经是目标状态：不弹框、不动文件。界面按设置渲染开关，正常不会走到这里。
+    // 已经是目标状态：不动文件。界面按设置渲染开关，正常不会走到这里。
     if (input === getSettings().enableCiphertextCache) return null
 
     if (cacheSwitchInProgress) return failed('busy', '', true)
 
     /**
-     * 先算规模、再弹框：确认框要写清楚"将清掉 N 个文件（X）"，而不是先让用户确认、
-     * 再告诉他规模。读不到目录时连框都不该答应 —— 直接说清楚并放弃。
+     * 先算规模、再动手。读不到目录时**不开始转换** —— 报告成一次普通的失败，由开关那一行
+     * 说明（这里曾经弹一个错误框；确认框去掉之后，它跟着回到与其它失败同一条路上）。
      */
     const planned = planCacheConversion(input)
-    if (!planned.ok) {
-      await showBox({
-        type: 'error',
-        title: '无法切换密文磁盘缓存',
-        message: describeCacheSwitchFailure('unreadable', planned.detail),
-        buttons: ['知道了'],
-      })
-      return null
-    }
-
-    const { plan } = planned
-    const confirmed = await showBox({
-      type: 'question',
-      title: input ? '开启密文磁盘缓存' : '关闭密文磁盘缓存',
-      message: input ? '开启密文磁盘缓存？' : '关闭密文磁盘缓存，并清掉已有缓存？',
-      detail: [
-        describeCacheSwitchScope(input, plan.entries, plan.bytes),
-        '',
-        '转换期间不能进行其他操作。全部文件转换成功后才会切换；任何一步失败都会回到现在的状态。',
-        input
-          ? '开启后，第二次打开同一个文件不再联网。'
-          : '关闭后，每次打开都会重新从 CDN 取一遍。',
-      ].join('\n'),
-      buttons: [input ? '开启' : '关闭', '取消'],
-      // 默认落在"取消"上：这一步会真的处理磁盘上的文件，不该被一次回车误触发。
-      defaultId: 1,
-      cancelId: 1,
-    })
-
-    // 取消不是错误：返回 null，界面不留下任何痕迹，状态一点都不变。
-    if (confirmed.response !== 0) return null
+    if (!planned.ok) return failed('unreadable', planned.detail, true)
 
     cacheSwitchInProgress = true
 
     try {
       const outcome = await switchCiphertextCache(
-        plan,
+        planned.plan,
         session.fromPartition(SESSION_PARTITION),
-        (progress) => {
-          // 与迁移进度同理：只有设置窗口有它的宿主（ADR-0025 / ADR-0027）。
-          const window = getSettingsWindow()
-          if (window === null || window.isDestroyed()) return
-          window.webContents.send(CHANNELS.cacheConversion, progress)
-        },
         () => {
           updateSettings({ enableCiphertextCache: input })
         },

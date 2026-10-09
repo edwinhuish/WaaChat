@@ -1064,7 +1064,7 @@ neither relative to project dir ("...")
 
 - `src/shared/types.ts`：`DEFAULT_SETTINGS.enableCiphertextCache` 改为 `true`；删除 `CacheConversionPhase` / `CacheConversionProgress`（没有进度界面，也就没有进度推送）。
 - IPC：`settings:switch-ciphertext-cache` 保留（事务编排与"切换进行中"的闸门不变），但去掉确认框与进度推送；删除 `settings:cache-conversion` 通道、preload 的 `onCacheConversion()` 与 `bridge` 里的对应声明。`settings:set` 仍然**拒绝**这个键（理由不变：它必须伴随一次真实的文件转换）。
-- `src/main/capture/cache-switch.ts`：`switchCiphertextCache()` 去掉 `onProgress` 参数。`cache-files.ts` 的 `planCacheConversion()` / `convertCache()` / 暂存区与回退逻辑**一律不变** —— 本次是去界面，不是去事务。
+- `src/main/capture/cache-switch.ts`：`switchCiphertextCache()` 去掉 `onProgress` 参数。`cache-files.ts` 的 `planCacheConversion()` / 暂存区与回退逻辑**一律不变**；`convertCache()` 只是不再对外报进度（那一屏没有了，进度就没有去处）—— 它与 `planCacheConversion()` 的分工、`afterEntry` 钩子、失败时的搬回行为都不变。
 - `src/shared/cache-conversion.ts`：只剩 `describeCacheSwitchFailure()`；`describeCacheSwitchScope()` 与 `describeCacheConversionProgress()` 随确认框与维护界面一起删。
 - `src/renderer/views/settings.ts`：删除维护界面（`maintenanceScreen()`）与整屏切换；开关行在转换期间禁用自己并显示一行进行态，结束后显示结果行。
 - `scripts/check-capture.ts`：'默认不开启' 的断言改为 '默认开启'；暂存区那两条断言不变（暂存区仍然存在）。

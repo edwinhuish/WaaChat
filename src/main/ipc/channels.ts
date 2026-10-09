@@ -38,10 +38,10 @@ export const CHANNELS = {
    * 参数是一个布尔值 —— 这里唯一接受的"值"参数：它没有任何路径或标识可用，
    * 只会清掉**我们自己的**缓存目录里的派生数据，并且必须伴随一次真实转换（[ADR-0027]）。
    * `settings:set` 改不动这个开关。
+   *
+   * 没有配套的进度推送通道：切换是瞬时的、界面也不再有进度屏（[ADR-0028]）。
    */
   cacheSwitch: 'settings:switch-ciphertext-cache',
-  /** 密文缓存切换的进度（主进程 → 渲染进程的单向推送）。 */
-  cacheConversion: 'settings:cache-conversion',
 
   /** 读取自定义图标状态（是否启用、预览、启动器条目）。 */
   appIconGet: 'appicon:get',

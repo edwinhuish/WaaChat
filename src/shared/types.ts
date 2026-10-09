@@ -189,39 +189,14 @@ export type ArchiveMigrationResult =
     }
 
 // ---------------------------------------------------------------------------
-// 密文缓存的切换（事务式维护流程，见 ADR-0027）
+// 密文缓存的切换（静默转换，见 ADR-0027 / ADR-0028）
 // ---------------------------------------------------------------------------
-
-/**
- * 切换过程中的阶段。
- *
- * 顺序是固定的：先转换文件，再提交设置，最后清理。**提交是分界线** —— 提交之前失败会
- * 回退（设置一个字节都不写），提交之后只剩清理（失败也不回退，见 ADR-0027 的影响一节）。
- */
-export type CacheConversionPhase =
-  /** 搬条目进暂存区（关闭）或清掉不可能命中的残留（开启）。 */
-  | 'converting'
-  /** 写 `settings.json` —— 只有到这里才"正式切换"。 */
-  | 'committing'
-  /** 删掉暂存区（仅关闭方向）。 */
-  | 'cleaning'
-
-/** 转换进度（主进程 → 渲染进程的单向推送）。维护界面靠它显示"到哪了"。 */
-export interface CacheConversionProgress {
-  /** 目标状态：`true` 开启、`false` 关闭。 */
-  readonly target: boolean
-  readonly phase: CacheConversionPhase
-  readonly done: number
-  readonly total: number
-  readonly bytesDone: number
-  readonly bytesTotal: number
-}
 
 /**
  * 切换失败的结构化原因。文案在 `shared/cache-conversion.ts`。
  */
 export type CacheSwitchFailure =
-  /** 已经有一次切换在进行。正常路径下界面会挡住这种操作，这条是兜底。 */
+  /** 已经有一次切换在进行。切换本身是瞬时的，界面也会在期间禁用开关，这条是兜底。 */
   | 'busy'
   /** 读不了缓存目录（权限、被换成文件）。 */
   | 'unreadable'
@@ -231,8 +206,8 @@ export type CacheSwitchFailure =
 /**
  * 一次切换的结果。
  *
- * `null`（不在这个类型里）表示用户取消了确认框 —— 与失败分开：取消不是错误，
- * 界面上不该留下任何痕迹。
+ * `null`（不在这个类型里）表示这次调用什么都没做 —— 开关已经是目标状态，没有可转换的
+ * 东西。它不是失败，界面按当前设置渲染即可。
  */
 export type CacheSwitchResult =
   | {

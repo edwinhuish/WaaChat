@@ -173,11 +173,9 @@ describe('convertCache（关闭）', () => {
     write(HALF_BODY, 'half')
     write('notes.txt', 'mine')
 
-    const seen: number[] = []
-    const result = await convertCache(planOf(false), (done) => seen.push(done))
+    const result = await convertCache(planOf(false))
 
     expect(result).toEqual({ ok: true, converted: 3, bytes: 12 })
-    expect(seen).toEqual([1, 2, 3])
     // 缓存目录里只剩不属于我们的东西 —— 而条目还在，只是在暂存区等着。
     expect(names()).toEqual(['notes.txt'])
     expect(staged()).toEqual([BODY, META, HALF_BODY].sort())
@@ -188,7 +186,7 @@ describe('convertCache（关闭）', () => {
     write(META, 'meta')
     write(HALF_BODY, 'half')
 
-    const result = await convertCache(planOf(false), () => undefined, {
+    const result = await convertCache(planOf(false), {
       afterEntry: (_name, index) => {
         if (index === 1) throw new Error('boom')
       },
@@ -208,7 +206,7 @@ describe('convertCache（开启）', () => {
     write(HALF_BODY)
     write(HALF_META)
 
-    const result = await convertCache(planOf(true), () => undefined)
+    const result = await convertCache(planOf(true))
 
     // 两个残留各 1 字节（用例里写的是 'x'）。
     expect(result).toEqual({ ok: true, converted: 2, bytes: 2 })
@@ -223,7 +221,7 @@ describe('暂存区（回滚与中断恢复）', () => {
     write(BODY)
     write(META)
 
-    await convertCache(planOf(false), () => undefined)
+    await convertCache(planOf(false))
 
     expect(await purgeStaging()).toBe(0)
     expect(existsSync(stagingDir())).toBe(false)

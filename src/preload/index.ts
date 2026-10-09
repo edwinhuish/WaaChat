@@ -24,7 +24,6 @@ import type {
   AppIconInput,
   ArchiveMigrationProgress,
   ArchiveQuery,
-  CacheConversionProgress,
   CaptureHealth,
   Settings,
 } from '../shared/types'
@@ -71,17 +70,6 @@ const bridge: WaaChatBridge = {
   },
 
   switchCiphertextCache: (target: boolean) => ipcRenderer.invoke(CHANNELS.cacheSwitch, target),
-
-  onCacheConversion: (listener: (progress: CacheConversionProgress) => void) => {
-    // 同 `onArchiveMigration`：包一层，只把载荷交给渲染侧（不透传 Electron 的 event）。
-    const wrapped = (_event: unknown, progress: CacheConversionProgress): void => listener(progress)
-
-    ipcRenderer.on(CHANNELS.cacheConversion, wrapped)
-
-    return () => {
-      ipcRenderer.removeListener(CHANNELS.cacheConversion, wrapped)
-    }
-  },
 
   getCaptureHealth: () => ipcRenderer.invoke(CHANNELS.captureHealth),
 

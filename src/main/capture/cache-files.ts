@@ -210,12 +210,11 @@ export interface CacheConversionHooks {
  * - **开启**：删掉不可能命中的残留。这些文件本来就永远命不中（缺一半、读不出来），
  *   删除不可逆但**没有可丢的东西**，因此失败时不需要回退（设置也不会被提交）。
  *
- * 逐条 `await`：缓存上限是 2 GiB、条目可能上万，用同步 API 会让主进程连同维护界面的
- * 进度一起卡住（与 `archive/migrate.ts` 同一条理由）。
+ * 逐条 `await`：缓存上限是 2 GiB、条目可能上万，用同步 API 会把主进程连同界面一起卡住
+ * （与 `archive/migrate.ts` 同一条理由）。
  */
 export async function convertCache(
   plan: CacheConversionPlan,
-  onProgress: (done: number, bytesDone: number) => void,
   hooks?: CacheConversionHooks,
 ): Promise<CacheConversionOutcome> {
   const dir = ciphertextCacheDir()
@@ -244,7 +243,6 @@ export async function convertCache(
       done += 1
       bytesDone += size
       hooks?.afterEntry?.(name, index)
-      onProgress(done, bytesDone)
     }
 
     return { ok: true, converted: done, bytes: bytesDone }
