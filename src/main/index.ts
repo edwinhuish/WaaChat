@@ -108,7 +108,7 @@ app.on('will-quit', () => {
   closeArchiveStore()
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const settings = getSettings()
 
   /**
@@ -119,7 +119,7 @@ app.whenReady().then(() => {
 
   // 会话配置必须早于创建任何窗口：两个接管点都是挂在 session 上的。
   // 传读取函数而不是快照 —— 见 settings.ts 里 current 的说明。
-  configureSession(session.fromPartition(SESSION_PARTITION), getSettings)
+  await configureSession(session.fromPartition(SESSION_PARTITION), getSettings)
 
   // 让系统里的自启条目与设置一致。用户可能在设置里关了自启，或手工删过那个
   // `.desktop` 条目 —— 每次启动对齐一次，代价是一次同步写入。

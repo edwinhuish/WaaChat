@@ -104,14 +104,16 @@ export const DEFAULT_SETTINGS: Settings = {
 /**
  * 哪些设置**需要重启**才能生效。
  *
- * 这个列表存在的意义：`enableCiphertextCache` 的开关对应的是
- * `ses.protocol.handle('https')` 的注册，而一个 scheme 在同一个会话里只能注册
- * 一次（重复注册会抛错）。也就是说它**在架构上**无法热切换。
+ * 界面对照这个列表渲染"重启后生效"的徽标，不自己写死。
  *
- * 与其让用户改了没反应、以为坏了，不如让界面直说"重启后生效"。
- * 界面对照这个列表渲染提示，不自己写死。
+ * **目前是空的**：唯一在册的 `enableCiphertextCache` 改成了事务式切换（[ADR-0027]）——
+ * 提交设置的同时把协议层一起注册/注销，因此它提交即生效。列表与徽标机制**保留**：
+ * 它是"某项改不动"这件事唯一的表达方式，将来还可能有别的项进来（例如需要重建分区的设置）。
+ *
+ * 历史：这个列表最初只有 `enableCiphertextCache`，理由是 `ses.protocol.handle('https')`
+ * 过去只在启动时注册一次、之后不再变。现在那层跟着设置走，理由随之消失。
  */
-export const RESTART_REQUIRED_SETTINGS: readonly (keyof Settings)[] = ['enableCiphertextCache']
+export const RESTART_REQUIRED_SETTINGS: readonly (keyof Settings)[] = []
 
 // ---------------------------------------------------------------------------
 // 归档迁移（更换保存位置）
@@ -184,6 +186,81 @@ export type ArchiveMigrationResult =
        * 回滚**只做搬运，不做删除**，这是刻意的（见 `archive/migrate.ts`）。
        */
       readonly rolledBack: boolean
+    }
+
+// ---------------------------------------------------------------------------
+// 密文缓存的切换（事务式维护流程，见 ADR-0027）
+// ---------------------------------------------------------------------------
+
+/**
+ * 切换过程中的阶段。
+ *
+ * 顺序是固定的：先转换文件，再提交设置，最后清理。**提交是分界线** —— 提交之前失败会
+ * 回退（设置一个字节都不写），提交之后只剩清理（失败也不回退，见 ADR-0027 的影响一节）。
+ */
+export type CacheConversionPhase =
+  /** 搬条目进暂存区（关闭）或清掉不可能命中的残留（开启）。 */
+  | 'converting'
+  /** 写 `settings.json` —— 只有到这里才"正式切换"。 */
+  | 'committing'
+  /** 删掉暂存区（仅关闭方向）。 */
+  | 'cleaning'
+
+/** 转换进度（主进程 → 渲染进程的单向推送）。维护界面靠它显示"到哪了"。 */
+export interface CacheConversionProgress {
+  /** 目标状态：`true` 开启、`false` 关闭。 */
+  readonly target: boolean
+  readonly phase: CacheConversionPhase
+  readonly done: number
+  readonly total: number
+  readonly bytesDone: number
+  readonly bytesTotal: number
+}
+
+/**
+ * 切换失败的结构化原因。文案在 `shared/cache-conversion.ts`。
+ */
+export type CacheSwitchFailure =
+  /** 已经有一次切换在进行。正常路径下界面会挡住这种操作，这条是兜底。 */
+  | 'busy'
+  /** 读不了缓存目录（权限、被换成文件）。 */
+  | 'unreadable'
+  /** 搬条目或落设置时写盘失败（磁盘满、权限）。 */
+  | 'write-failed'
+
+/**
+ * 一次切换的结果。
+ *
+ * `null`（不在这个类型里）表示用户取消了确认框 —— 与失败分开：取消不是错误，
+ * 界面上不该留下任何痕迹。
+ */
+export type CacheSwitchResult =
+  | {
+      readonly ok: true
+      /** 切换后的状态（等于用户拨向的那一边）。 */
+      readonly enabled: boolean
+      /** 更新后的完整设置。 */
+      readonly settings: Settings
+      /** 转换掉的条目数与字节数。 */
+      readonly converted: number
+      readonly bytes: number
+      /**
+       * 提交之后没能清理掉的条目数（正常为 0）。
+       *
+       * 不为 0 时状态**已经切过去了**，只是那些文件还在暂存区里占着磁盘，下次启动会清掉。
+       * 界面必须说出来 —— 用户检查磁盘空间时唯一的线索就是这句。
+       */
+      readonly pendingCleanup: number
+    }
+  | {
+      readonly ok: false
+      readonly failure: CacheSwitchFailure
+      /** 给用户看的具体信息。**不要写进日志**（INVARIANTS G-3）。 */
+      readonly detail: string
+      /** 已经搬走的条目是否都放回了原位。`false` 时界面要提示人工核对。 */
+      readonly rolledBack: boolean
+      /** 失败后仍然生效的设置（用来把界面复位到真实状态）。 */
+      readonly settings: Settings
     }
 
 // ---------------------------------------------------------------------------

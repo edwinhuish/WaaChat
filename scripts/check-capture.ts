@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path'
 
 import { isAllowedTarget } from '../src/main/archive/migrate'
 import { sanitizeFileName } from '../src/main/archive/naming'
+import { STAGING_DIR_NAME, isEntryName } from '../src/main/capture/cache-files'
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
 import {
@@ -359,15 +360,22 @@ if (existsSync(launcherOverride)) {
 // 8. 密文缓存的开关约定
 // ---------------------------------------------------------------------------
 //
-// 这两条都属于"改了没人会立刻发现"的约定：
+// 这几条都属于"改了没人会立刻发现"的约定：
 //   - 默认值被改回开启，等于让用户在不知情的情况下多一份本地密文副本（ADR-0026）；
-//   - 从"重启后生效"名单里掉出去，界面就不会再显示那个徽标，用户会以为改了没反应 ——
-//     而 scheme 的注册在会话里是一次性的，热切换根本不成立。
+//   - 它**不能**再回到"重启后生效"名单里：切换是事务式的（ADR-0027），提交即生效。
+//     一旦有人把它加回去，界面会显示"重启后生效"，而实际提交就已经生效了 —— 两边打架。
+//   - 暂存区以点开头、且不被当成缓存条目：它是转换期间的可回滚存放处，若被 `isEntryName()`
+//     认成条目，对账就会把它连内容一起"清掉"，回滚能力当场消失。
 
 section('密文缓存的开关约定')
 
 check('默认不开启', DEFAULT_SETTINGS.enableCiphertextCache === false)
-check('在"重启后生效"名单里', RESTART_REQUIRED_SETTINGS.includes('enableCiphertextCache'))
+check(
+  '不在"重启后生效"名单里（切换是事务式的，提交即生效）',
+  !RESTART_REQUIRED_SETTINGS.includes('enableCiphertextCache'),
+)
+check('暂存区不会被当成缓存条目', !isEntryName(STAGING_DIR_NAME))
+check('暂存区是隐藏目录（对账的"混进来的东西"里不含它）', STAGING_DIR_NAME.startsWith('.'))
 
 // ---------------------------------------------------------------------------
 

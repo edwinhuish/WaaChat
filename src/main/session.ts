@@ -3,6 +3,9 @@
  *
  * 两个接管点都挂在这里，因此 `configureSession` **必须**在任何窗口创建之前调用 ——
  * 晚一步就会错过早期的下载与请求。
+ *
+ * 它是**异步**的：密文缓存的启动对账要读写缓存目录（可能有上万个条目），按
+ * `ai/CONVENTIONS.md` 的纪律不能拿同步 IO 卡住主进程。
  */
 
 import type { Session } from 'electron'
@@ -31,7 +34,7 @@ const ALLOWED_PERMISSIONS = new Set([
   'fullscreen',
 ])
 
-export function configureSession(ses: Session, getSettings: () => Settings): void {
+export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
   // 就固定了，运行期改不了 —— 见 shared/types.ts 的 RESTART_REQUIRED_SETTINGS。
   const settings = getSettings()
@@ -81,7 +84,7 @@ export function configureSession(ses: Session, getSettings: () => Settings): voi
   // 残留。判据是"目录内容 vs 当前设置"而不是"上次是什么"，所以它幂等、无状态（ADR-0026）。
   //
   // 位置也重要：必须早于任何窗口与请求，否则可能出现"把正在写的条目当残留删掉"。
-  reconcileCiphertextCache(settings.enableCiphertextCache)
+  await reconcileCiphertextCache(settings.enableCiphertextCache)
 
   if (settings.enableCiphertextCache) {
     attachCiphertextCache(ses)
