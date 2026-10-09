@@ -221,9 +221,7 @@ describe('migrateArchive', () => {
 
     // 正文与索引一个都不能少。派生物（`.open/`、`.part-*`）不在此列：它们已经在收尾
     // 阶段被按计划删掉了，而它们是可重建的 —— 回滚的纪律是"不丢正文"，不是"恢复一切"。
-    expect(readdirSync(source).sort()).toEqual(
-      [BLOB_A, BLOB_B, late, '.index.sqlite'].sort(),
-    )
+    expect(readdirSync(source).sort()).toEqual([BLOB_A, BLOB_B, late, '.index.sqlite'].sort())
   })
 })
 
