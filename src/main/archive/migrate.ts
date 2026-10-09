@@ -13,6 +13,15 @@
  *     文件操作一律走 `node:fs/promises`。用同步 API 会让主进程卡住，界面连同承载
  *     上游页面的那个窗口一起失去响应。
  *
+ * ── 索引为什么不照计划搬 ──
+ *
+ * 计划（`planMigration`）是在索引连接**还开着**的时候算出来的，那时目录里除了
+ * `.index.sqlite` 还有 `.index.sqlite-wal` / `-shm`；而执行的第一步就是关掉那条连接
+ * （ADR-0019 理由 3）。一次干净的关闭会让 SQLite 做 checkpoint 并**删掉**这两个附属
+ * 文件，于是"照快照搬"变成搬一个已经不存在的文件 —— `ENOENT`，被记成一次写入失败，
+ * 界面上是"磁盘可能已满，或该位置不可写"，而两者其实都不是。因此索引以**执行时**的
+ * 目录内容为准（见 migrateArchive 的收尾阶段）。
+ *
  * 本模块**不导入 electron，也不导入 `archive/store.ts`** —— 前者是为了能在单测里
  * 直接跑（ai/CONVENTIONS.md 第 3 节），后者是因为 `better-sqlite3` 是原生模块，
  * 顶层导入它会拖慢并可能崩掉测试进程（见 test/unit/store.test.ts 的说明）。
@@ -32,6 +41,9 @@ import { logger } from '../logger'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
 const INDEX_PREFIX = '.index.sqlite'
+
+/** 正文的文件名：内容寻址，因此是小写十六进制的 SHA-256（见 `archive/blobs.ts`）。 */
+const BLOB_NAME = /^[0-9a-f]{64}$/
 
 /**
  * 并发兜底的最多轮数。
@@ -61,7 +73,13 @@ class MigrationError extends Error {
 export interface MigrationPlan {
   readonly source: string
   readonly target: string
-  /** 要搬的条目名：正文在前、索引在后（索引描述的是正文）。 */
+  /**
+   * 计划时看到的条目名：正文在前、索引在后（索引描述的是正文）。
+   *
+   * ⚠️ 其中的**索引**部分只是一份快照，执行时不会被照单搬走 —— 计划算出来的那一刻
+   * 索引连接还开着，附属文件（`.index.sqlite-wal` / `-shm`）随后就会被一次干净的关闭
+   * 删掉。执行阶段以源目录**当时**的内容为准，理由见文件头的说明。
+   */
   readonly entries: readonly string[]
   /** 源目录里可以直接删掉的派生物（`.open/`、`.part-*`）。 */
   readonly disposable: readonly string[]
@@ -251,7 +269,11 @@ export async function migrateArchive(
   try {
     await mkdir(plan.target, { recursive: true, mode: DIR_MODE })
 
+    // 正文照计划搬；索引留到收尾阶段，那时按源目录的**实际内容**再枚举一次
+    // （理由见文件头与下面的收尾阶段）。
     for (const [index, name] of plan.entries.entries()) {
+      if (name.startsWith(INDEX_PREFIX)) continue
+
       bytesDone += await moveEntry(plan.source, plan.target, name)
       done += 1
       hooks?.afterEntry?.(name, index)
@@ -274,6 +296,20 @@ export async function migrateArchive(
         hooks?.afterEntry?.(name, plan.entries.length)
         report('finishing')
       }
+    }
+
+    // 索引最后搬：它描述的是正文，正文没到位之前搬过去没有意义。而且它的清单只能
+    // 在**这一刻**才作数 —— 计划时看到的附属文件（`.index.sqlite-wal` / `-shm`）已经
+    // 被 `closeArchiveStore()` 顺带删掉了。
+    for (const name of scanSource(plan.source).index) {
+      // 目标里已经有同名文件 ⇒ 它已经被搬过去过一次，源目录里这份是迁移窗口里新建的
+      // （空库）。覆盖等于用空库盖掉真库 —— ADR-0019 不做索引合并，宁可让旧位置多留
+      // 一个空库（界面会提示核对两处），也不动新位置里那份完整的索引。
+      if (existsSync(join(plan.target, name))) continue
+
+      bytesDone += await moveEntry(plan.source, plan.target, name)
+      done += 1
+      report('finishing')
     }
 
     // 源目录空了才删它；没空说明还有东西搬不走，留着让用户看得见。
@@ -301,6 +337,11 @@ export async function migrateArchive(
  * 判据是"新位置有、原位置没有"的条目才需要搬回 —— 因此它是**幂等**的，可以在任意
  * 时刻重跑（迁移中途失败、或"数据搬完但设置没落盘"）。
  *
+ * 清单取自**目标目录本身**，而不是计划里的快照：执行阶段搬过去的东西里，索引是按
+ * 执行时的实际情况枚举的，收尾的多轮扫描还可能补搬几个迟到的正文 —— 它们都不在计划
+ * 里。用一份过期的快照回滚，结果是"回滚成功"而新位置里还留着一个我们搬过去的文件，
+ * 那正是这条路径上最不该出现的报告。
+ *
  * ⚠️ **只做搬运，不删数据以外的任何东西。** 唯一允许删除的是最后那个空的、由我们
  * 创建的目标目录。搬不回去的条目原样留在新位置，函数返回 `false`，让界面告诉用户
  * 去人工核对 —— 这是"回滚失败"唯一诚实的表达方式。
@@ -311,10 +352,12 @@ export async function rollbackMigration(plan: MigrationPlan): Promise<boolean> {
   // 源目录可能已经被删掉了（迁移成功后的收尾），搬回之前要先把它建回来。
   await mkdir(plan.source, { recursive: true, mode: DIR_MODE }).catch(() => undefined)
 
-  for (const name of [...plan.entries].reverse()) {
-    const inTarget = existsSync(join(plan.target, name))
-    const inSource = existsSync(join(plan.source, name))
-    if (!inTarget || inSource) continue
+  for (const name of listTargetEntries(plan.target)) {
+    // 只碰"我们可能搬过去的东西"。目标目录在计划时被验证为空，理论上里面只有我们的
+    // 条目 —— 但"理论上"不能拿来搬用户的东西：这期间恰好被写进目标目录的外来文件，
+    // 会被搬进用户的归档目录。宁可把它留在原地（界面本来就提示"请核对两处"）。
+    if (!isOwnEntry(name)) continue
+    if (existsSync(join(plan.source, name))) continue
 
     try {
       await moveEntry(plan.target, plan.source, name)
@@ -331,6 +374,30 @@ export async function rollbackMigration(plan: MigrationPlan): Promise<boolean> {
   }
 
   return complete
+}
+
+/**
+ * 目标目录里的**文件**名。
+ *
+ * 只列文件：目录（`.open/` 之类）从不会被搬过去，出现就说明那是别的东西，不该由回滚
+ * 去动它。目录不存在时返回空列表 —— 回滚可能在任何阶段被调用。
+ */
+function listTargetEntries(dir: string): string[] {
+  if (!existsSync(dir)) return []
+
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+}
+
+/**
+ * 这个名字是不是"归档目录里属于我们的东西"。
+ *
+ * 归档目录顶层只有三类文件：正文（SHA-256 十六进制名）、索引（`.index.sqlite*`）、
+ * 我们自己的临时文件（`.part-*`）。回滚用它把"我们搬过去的"与"别人放进来的"分开。
+ */
+function isOwnEntry(name: string): boolean {
+  return BLOB_NAME.test(name) || name.startsWith(INDEX_PREFIX) || name.startsWith(TEMP_FILE_PREFIX)
 }
 
 /**
