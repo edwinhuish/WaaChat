@@ -18,6 +18,7 @@ import {
   app,
   dialog,
   ipcMain,
+  session,
   type IpcMainInvokeEvent,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
@@ -26,6 +27,8 @@ import {
 
 import { ICON_DIALOG_EXTENSIONS } from '../../shared/appicon'
 import type { ArchiveIdInput } from '../../shared/bridge'
+import { describeCacheSwitchFailure, describeCacheSwitchScope } from '../../shared/cache-conversion'
+import { SESSION_PARTITION } from '../../shared/constants'
 import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure } from '../../shared/migration'
 import type {
@@ -33,11 +36,15 @@ import type {
   AppIconPickResult,
   AppIconResult,
   ArchiveQuery,
+  CacheSwitchFailure,
+  CacheSwitchResult,
   Settings,
 } from '../../shared/types'
 import { planMigration } from '../archive/migrate'
 import { relocateArchive } from '../archive/relocate'
 import { archiveStore } from '../archive/store'
+import { planCacheConversion } from '../capture/cache-files'
+import { switchCiphertextCache } from '../capture/cache-switch'
 import { captureHealth, onHealthChange } from '../capture/health'
 import {
   appIconState,
@@ -142,6 +149,15 @@ function presentSettings(settings: Settings): Settings {
  * 只接受 `Settings` 里已存在的键，值由 `settings.ts` 的 `coerce` 逐字段校验类型 ——
  * 因此渲染进程传一个 `{"evil": true}` 不会污染配置文件（未知键会被丢弃）。
  */
+/**
+ * 密文缓存的切换正在跑（[ADR-0027]）。
+ *
+ * 界面在维护期间根本不渲染设置列表，因此正常路径下没人能在这个窗口里改到东西；
+ * 这个标志是**兜底**：挡住"界面还没来得及换、用户已经点到了"这类窗口，以及将来
+ * 可能出现的别的调用方。同一时刻只允许一次切换。
+ */
+let cacheSwitchInProgress = false
+
 function applySettings(value: unknown): Settings {
   if (typeof value !== 'object' || value === null) return presentSettings(getSettings())
 
@@ -156,6 +172,15 @@ function applySettings(value: unknown): Settings {
    */
   if ('archiveDir' in patch) {
     throw new Error(`ipc: ${CHANNELS.archiveDirPick} is the only way to change archiveDir`)
+  }
+
+  /**
+   * 切换进行中不许改别的设置。界面侧已经不在渲染设置列表了（维护界面换了一屏），
+   * 这里是**兜底**：挡住"界面还没来得及换、用户已经点到了"这类窗口，以及将来可能
+   * 出现的新调用方。见 ADR-0027。
+   */
+  if (cacheSwitchInProgress) {
+    throw new Error('ipc: a ciphertext cache switch is in progress')
   }
 
   const next = updateSettings(patch)
@@ -368,6 +393,113 @@ export function registerIpcHandlers(): void {
       target: outcome.target,
       migrated: outcome.migrated,
       settings: presentSettings(getSettings()),
+    }
+  })
+
+  /**
+   * 切换密文磁盘缓存（[ADR-0027]）。
+   *
+   * 流程全在主进程：算规模 → 确认框 → 转换 → 提交。界面只显示进度与结果，它连"从哪一步
+   * 开始"都不知道 —— 因此不存在"界面以为成功了、主进程其实没提交"这种可能。
+   *
+   * 参数只有一个布尔值：这一层没有可被滥用的路径或标识，它只会清掉**我们自己的**缓存目录
+   * 里的派生数据，并且必须伴随一次真实转换（`settings:set` 改不动它）。
+   */
+  guard(CHANNELS.cacheSwitch, async (input: unknown): Promise<CacheSwitchResult | null> => {
+    // 来自渲染进程的一切都当成不可信输入。
+    if (typeof input !== 'boolean') return null
+
+    const failed = (
+      failure: CacheSwitchFailure,
+      detail: string,
+      rolledBack: boolean,
+    ): CacheSwitchResult => ({
+      ok: false,
+      failure,
+      detail,
+      rolledBack,
+      settings: presentSettings(getSettings()),
+    })
+
+    // 已经是目标状态：不弹框、不动文件。界面按设置渲染开关，正常不会走到这里。
+    if (input === getSettings().enableCiphertextCache) return null
+
+    if (cacheSwitchInProgress) return failed('busy', '', true)
+
+    /**
+     * 先算规模、再弹框：确认框要写清楚"将清掉 N 个文件（X）"，而不是先让用户确认、
+     * 再告诉他规模。读不到目录时连框都不该答应 —— 直接说清楚并放弃。
+     */
+    const planned = planCacheConversion(input)
+    if (!planned.ok) {
+      await showBox({
+        type: 'error',
+        title: '无法切换密文磁盘缓存',
+        message: describeCacheSwitchFailure('unreadable', planned.detail),
+        buttons: ['知道了'],
+      })
+      return null
+    }
+
+    const { plan } = planned
+    const confirmed = await showBox({
+      type: 'question',
+      title: input ? '开启密文磁盘缓存' : '关闭密文磁盘缓存',
+      message: input ? '开启密文磁盘缓存？' : '关闭密文磁盘缓存，并清掉已有缓存？',
+      detail: [
+        describeCacheSwitchScope(input, plan.entries, plan.bytes),
+        '',
+        '转换期间不能进行其他操作。全部文件转换成功后才会切换；任何一步失败都会回到现在的状态。',
+        input
+          ? '开启后，第二次打开同一个文件不再联网。'
+          : '关闭后，每次打开都会重新从 CDN 取一遍。',
+      ].join('\n'),
+      buttons: [input ? '开启' : '关闭', '取消'],
+      // 默认落在"取消"上：这一步会真的处理磁盘上的文件，不该被一次回车误触发。
+      defaultId: 1,
+      cancelId: 1,
+    })
+
+    // 取消不是错误：返回 null，界面不留下任何痕迹，状态一点都不变。
+    if (confirmed.response !== 0) return null
+
+    cacheSwitchInProgress = true
+
+    try {
+      const outcome = await switchCiphertextCache(
+        plan,
+        session.fromPartition(SESSION_PARTITION),
+        (progress) => {
+          // 与迁移进度同理：只有设置窗口有它的宿主（ADR-0025 / ADR-0027）。
+          const window = getSettingsWindow()
+          if (window === null || window.isDestroyed()) return
+          window.webContents.send(CHANNELS.cacheConversion, progress)
+        },
+        () => {
+          updateSettings({ enableCiphertextCache: input })
+        },
+      )
+
+      const settings = presentSettings(getSettings())
+
+      return outcome.ok
+        ? {
+            ok: true,
+            enabled: outcome.enabled,
+            settings,
+            converted: outcome.converted,
+            bytes: outcome.bytes,
+            pendingCleanup: outcome.pendingCleanup,
+          }
+        : {
+            ok: false,
+            failure: outcome.failure,
+            detail: outcome.detail,
+            rolledBack: outcome.rolledBack,
+            settings,
+          }
+    } finally {
+      cacheSwitchInProgress = false
     }
   })
 

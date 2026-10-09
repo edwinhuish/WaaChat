@@ -25,6 +25,8 @@ import type {
   ArchiveQuery,
   ArchiveRecord,
   ArchiveStats,
+  CacheConversionProgress,
+  CacheSwitchResult,
   CaptureHealth,
   OpenOutcome,
   RevealOutcome,
@@ -76,6 +78,24 @@ export interface WaaChatBridge {
    * `onCaptureHealthChanged`：不返回的话，界面每次重新挂载都会多留一个监听器。
    */
   onArchiveMigration(listener: (progress: ArchiveMigrationProgress) => void): () => void
+
+  /**
+   * 切换密文磁盘缓存。
+   *
+   * `target` 是用户拨向的那一边。主进程会先弹确认框，再在**维护流程**里转换缓存文件，
+   * 全部成功之后才提交设置（[ADR-0027]）。
+   *
+   * 三种结果：成功（含更新后的设置与规模）、失败（含原因与是否已回滚）、以及 `null` ——
+   * 用户在确认框里取消（或已经是目标状态）。取消不是错误。
+   */
+  switchCiphertextCache(target: boolean): Promise<CacheSwitchResult | null>
+  /**
+   * 订阅切换进度。维护界面靠它显示"到哪了"。
+   *
+   * 返回取消订阅函数 —— 与 `onArchiveMigration` 同理：不返回的话，窗口每次重新挂载都会
+   * 多留一个监听器。
+   */
+  onCacheConversion(listener: (progress: CacheConversionProgress) => void): () => void
 
   // --- 应用图标 --------------------------------------------------------------
 

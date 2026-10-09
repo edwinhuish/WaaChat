@@ -106,8 +106,8 @@ function simulateInterruptedConversion(...entries: string[]): void {
 /** 算一次切换的计划。读不了目录时直接让用例失败 —— 那是另一个用例的事。 */
 function planOf(target: boolean): CacheConversionPlan {
   const planned = planCacheConversion(target)
-  if (planned === null) throw new Error('planCacheConversion 返回了 null')
-  return planned
+  if (!planned.ok) throw new Error('planCacheConversion 失败了')
+  return planned.plan
 }
 
 describe('orphanEntries', () => {
@@ -133,7 +133,10 @@ describe('planCacheConversion', () => {
     write(HALF_BODY, 'half')
     write('notes.txt', 'mine')
 
-    expect(planCacheConversion(false)).toEqual({ target: false, entries: 3, bytes: 12 })
+    expect(planCacheConversion(false)).toEqual({
+      ok: true,
+      plan: { target: false, entries: 3, bytes: 12 },
+    })
   })
 
   it('开启方向只处理不可能命中的残留', () => {
@@ -142,14 +145,17 @@ describe('planCacheConversion', () => {
     write(HALF_BODY)
     write(HALF_META)
 
-    expect(planCacheConversion(true)).toEqual({ target: true, entries: 2, bytes: 2 })
+    expect(planCacheConversion(true)).toEqual({
+      ok: true,
+      plan: { target: true, entries: 2, bytes: 2 },
+    })
   })
 
-  it('缓存路径不是一个目录时返回 null（此时不该开始切换）', () => {
+  it('缓存路径不是一个目录时算不出计划（此时不该开始切换）', () => {
     rmSync(dir(), { recursive: true, force: true })
     writeFileSync(dir(), 'not a directory')
 
-    expect(planCacheConversion(false)).toBeNull()
+    expect(planCacheConversion(false).ok).toBe(false)
     // 对账遇到同样的情况不该崩：它只是记住"这里读不了"。
     return expect(reconcileCiphertextCache(false)).resolves.toEqual({
       removed: 0,

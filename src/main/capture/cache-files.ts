@@ -116,27 +116,32 @@ export function orphanEntries(names: readonly string[]): string[] {
 // 目录读取（对账与转换共用）
 // ---------------------------------------------------------------------------
 
-/** 缓存目录里的普通文件名。目录不存在时返回空列表；读不了时返回 `null`。 */
-function regularFiles(dir: string): string[] | null {
+type FilesResult =
+  | { readonly ok: true; readonly files: readonly string[] }
+  | { readonly ok: false; readonly detail: string }
+
+/** 缓存目录里的普通文件名。目录不存在时是空列表；读不了时带上 errno。 */
+function regularFiles(dir: string): FilesResult {
   let entries: Dirent[]
   try {
     entries = readdirSync(dir, { withFileTypes: true })
   } catch (error) {
-    if (!existsSync(dir)) return []
-    logger.warn('capture: could not read the cache directory', { reason: failureReason(error) })
-    return null
+    // 目录不存在（还没开过缓存的新机器）是正常情况，不是错误。
+    if (!existsSync(dir)) return { ok: true, files: [] }
+
+    return { ok: false, detail: failureReason(error) }
   }
 
-  return entries.filter((entry) => entry.isFile()).map((entry) => entry.name)
+  return { ok: true, files: entries.filter((entry) => entry.isFile()).map((entry) => entry.name) }
 }
 
 /** 我们写的条目文件里，这一次切换要处理的那些（关闭 = 全部；开启 = 只剩残留）。 */
-function targetEntries(dir: string, target: boolean): string[] | null {
-  const files = regularFiles(dir)
-  if (files === null) return null
+function targetEntries(dir: string, target: boolean): FilesResult {
+  const listed = regularFiles(dir)
+  if (!listed.ok) return listed
 
-  const ours = files.filter(isEntryName)
-  return target ? orphanEntries(ours) : ours
+  const ours = listed.files.filter(isEntryName)
+  return { ok: true, files: target ? orphanEntries(ours) : ours }
 }
 
 /** 这些文件的字节数。读不到某个文件时按 0 算 —— 它只用于确认框里的量级与进度。 */
@@ -164,18 +169,25 @@ export interface CacheConversionPlan {
   readonly bytes: number
 }
 
+export type CacheConversionPlanResult =
+  | { readonly ok: true; readonly plan: CacheConversionPlan }
+  | { readonly ok: false; readonly detail: string }
+
 /**
  * 算一次切换要处理多少东西。
  *
  * 必须在**动手之前**算出来：确认框要写清楚"将清掉 N 个文件（X）"，而不是先让用户确认、
- * 再告诉他规模。返回 `null` = 缓存目录读不了（此时不该开始切换）。
+ * 再告诉他规模。读不到目录时 `ok: false` —— 此时不该开始切换。
  */
-export function planCacheConversion(target: boolean): CacheConversionPlan | null {
+export function planCacheConversion(target: boolean): CacheConversionPlanResult {
   const dir = ciphertextCacheDir()
-  const names = targetEntries(dir, target)
-  if (names === null) return null
+  const listed = targetEntries(dir, target)
+  if (!listed.ok) return { ok: false, detail: listed.detail }
 
-  return { target, entries: names.length, bytes: totalBytes(dir, names) }
+  return {
+    ok: true,
+    plan: { target, entries: listed.files.length, bytes: totalBytes(dir, listed.files) },
+  }
 }
 
 export type CacheConversionOutcome =
@@ -207,9 +219,10 @@ export async function convertCache(
   hooks?: CacheConversionHooks,
 ): Promise<CacheConversionOutcome> {
   const dir = ciphertextCacheDir()
-  const names = targetEntries(dir, plan.target)
-  if (names === null) return { ok: false, detail: 'unreadable', rolledBack: true }
+  const listed = targetEntries(dir, plan.target)
+  if (!listed.ok) return { ok: false, detail: listed.detail, rolledBack: true }
 
+  const names = listed.files
   let done = 0
   let bytesDone = 0
 

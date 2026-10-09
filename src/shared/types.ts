@@ -257,7 +257,13 @@ export type CacheSwitchResult =
       readonly failure: CacheSwitchFailure
       /** 给用户看的具体信息。**不要写进日志**（INVARIANTS G-3）。 */
       readonly detail: string
-      /** 已经搬走的条目是否都放回了原位。`false` 时界面要提示人工核对。 */
+      /**
+       * 是否已经回到切换前的状态。`false` 时界面要提示人工核对。
+       *
+       * ⚠️ **开启方向**的 `true` 含义略有不同：那个方向删掉的是"正文与元信息缺一半"的
+       * 残留，它们本来就永远命不中、也搬不回来。所以那里 `true` 指的是"设置一个字节都
+       * 没写、缓存里可用的条目一个没少"，而不是"删掉的都回来了"。
+       */
       readonly rolledBack: boolean
       /** 失败后仍然生效的设置（用来把界面复位到真实状态）。 */
       readonly settings: Settings

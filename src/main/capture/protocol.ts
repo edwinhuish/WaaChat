@@ -34,8 +34,12 @@ import { CACHE_DIR_MODE, CACHE_VERSION, cacheEntryPaths } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
 import { setCiphertextCacheActive } from './health'
+import { failureReason } from '../errors'
 import { logger } from '../logger'
 import { ciphertextCacheDir } from '../paths'
+
+/** 这一层现在挂着没有。注册是一次性的，因此必须自己记着（见 attach/detach）。 */
+let attached = false
 
 interface CachedMeta {
   readonly version: number
@@ -46,6 +50,12 @@ interface CachedMeta {
 }
 
 export function attachCiphertextCache(ses: Session): void {
+  /**
+   * 一次会话里同一个 scheme 只能注册一次（重复注册会抛错）。切换流程会在两个方向上来回
+   * 切，因此记得住"现在挂着没有"比事后去猜要可靠 —— 也让这个调用是幂等的。
+   */
+  if (attached) return
+
   const dir = ciphertextCacheDir()
   mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE })
 
@@ -83,12 +93,45 @@ export function attachCiphertextCache(ses: Session): void {
     return response
   })
 
+  attached = true
   setCiphertextCacheActive(true)
   logger.info('capture: ciphertext layer attached', { dir })
 
   // TODO(M3)：容量上限与淘汰。当前实现只增不减，达到上限时会无声地吃掉磁盘。
   // 实现要点见 docs/media-capture.md 第 3 节：超限先淘汰，仍不够则退化为直通，
   // 而不是让请求失败。
+}
+
+/**
+ * 摘掉这一层（[ADR-0027] 的事务式切换要用）。
+ *
+ * 摘掉之后**任何流量都不再经过我们**：实测 `unhandle` 之后请求直接回到 Chromium 的网络栈
+ * （探针见 ADR-0027 理由 1）。这正是要的效果 —— "关闭"应当意味着与原生内核无差别，而不是
+ * 留下一段什么都不做的直通代码在路径上。
+ *
+ * 幂等；对已经摘掉的会话调用只是把状态标签置回关闭。
+ */
+export function detachCiphertextCache(ses: Session): void {
+  if (attached) {
+    try {
+      ses.protocol.unhandle('https')
+    } catch (error) {
+      // 摘不掉也不能把流程卡住：状态标签置回关闭，行为上等同于直通（下一次启动会重来）。
+      logger.warn('capture: could not unhandle the ciphertext layer', {
+        reason: failureReason(error),
+      })
+    }
+
+    attached = false
+  }
+
+  setCiphertextCacheActive(false)
+  logger.info('capture: ciphertext layer detached')
+}
+
+/** 这一层现在挂着没有。切换流程按它决定回滚时该恢复成哪一边。 */
+export function isCiphertextCacheAttached(): boolean {
+  return attached
 }
 
 /**
