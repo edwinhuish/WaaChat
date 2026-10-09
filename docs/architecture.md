@@ -97,6 +97,10 @@ sequenceDiagram
 
 热路径要解决的是"**上游每次点击都会重新下载**"这件事。注意缓存的是**密文** —— 我们不参与解密，页面拿到密文自己解。
 
+> 这一层可以关（设置里的"密文磁盘缓存"），而且**默认关闭**：[ADR-0026](decisions.md#adr-0026)。
+> 关闭后冷路径完全不受影响，代价只是"第二次打开仍要联网取一遍密文"。关掉之后，下一次启动
+> 会把 `cache/` 里已有的条目对账清空（开启则保留可命中的条目）—— 见 `capture/cache-files.ts`。
+
 ### 3.3 后台预取（可选增强）
 
 收到文档类消息时，后台按同一幂等键把密文预先拉进缓存。用户点开时走的是热路径，连进度条都不会出现。
@@ -138,7 +142,7 @@ sequenceDiagram
 └── .index.sqlite                # 归档索引 + FTS5 虚表
 
 ~/.local/share/waachat/            # XDG_DATA_HOME
-└── cache/                       # 密文缓存（可安全删除，删了只是要重新下载）
+└── cache/                       # 密文缓存（默认不开启；可安全删除，删了只是要重新下载）
 
 ~/.config/waachat/                 # XDG_CONFIG_HOME（Electron 的 userData）
 ├── settings.json                # 用户偏好（不含凭据）
