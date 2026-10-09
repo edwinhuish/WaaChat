@@ -13,6 +13,7 @@ import { wipeArchive } from './archive/blobs'
 import { registerIpcHandlers } from './ipc'
 import { applyLaunchAtLogin } from './integration/login'
 import { createTray } from './integration/tray'
+import { applyLinuxGpuSwitches } from './linux-gpu'
 import { configureLogger, logger } from './logger'
 import { configureSession } from './session'
 import { getSettings } from './settings'
@@ -33,6 +34,25 @@ import {
  * logger 刻意不自己 import electron（理由见 logger.ts），因此这一步是必须的装配。
  */
 configureLogger({ packaged: app.isPackaged })
+
+/**
+ * Linux：**Wayland 的臭氧路径不支持 Vulkan**（Chromium 自己在启动日志里这么说），而它会默认去
+ * 试一次 —— 代价是每次启动一行 `wayland_surface_factory.cc … not compatible with Vulkan` 的
+ * ERROR，加一次注定失败的 GPU 初始化。这里在**最早**的时刻决定"在这个平台上不请求它"。
+ *
+ * 必须在 `whenReady` 之前、GPU 进程启动之前。判据与三条边界（只在 Wayland 动、不覆盖用户的
+ * `--disable-features`、用户显式要求 Vulkan 时不动）见 `linux-gpu.ts` 与 [ADR-0036]。
+ */
+if (process.platform === 'linux') {
+  const changed = applyLinuxGpuSwitches(app.commandLine, {
+    sessionType: process.env['XDG_SESSION_TYPE'],
+    waylandDisplay: process.env['WAYLAND_DISPLAY'],
+  })
+
+  if (changed) {
+    logger.info('linux: not requesting Vulkan (the Wayland ozone path cannot use it)')
+  }
+}
 
 /**
  * 单实例锁。

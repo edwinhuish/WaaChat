@@ -45,6 +45,11 @@ import {
   isAcceptedIconName,
 } from '../src/shared/appicon'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import {
+  applyLinuxGpuSwitches,
+  type CommandLineLike,
+  usesWaylandOzone,
+} from '../src/main/linux-gpu'
 import { ALLOWED_PERMISSIONS, isPermissionAllowed } from '../src/main/permissions'
 import { isDocumentPreviewPage } from '../src/shared/upstream'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
@@ -546,6 +551,57 @@ check(
   `放行的类型恰好 ${String(ALLOWED_PERMISSIONS.size)} 项（加一项要改断言，也就必须说清理由）`,
   ALLOWED_PERMISSIONS.size === 5,
 )
+
+// ---------------------------------------------------------------------------
+// 12. Linux 启动期的 GPU 开关
+// ---------------------------------------------------------------------------
+//
+// 只在**走 Wayland 的臭氧路径**时把 Vulkan 相关的 feature 关掉 —— Chromium 自己说这个组合不支持
+// （那条 `wayland_surface_factory.cc … not compatible with Vulkan`），见 ADR-0036。
+// 三条边界都属于"改坏了没人会立刻发现"：判据放宽会在 X11 上白关一次；覆盖 `--disable-features`
+// 会静默抹掉用户自己的列表；忽略用户的显式要求等于替他做决定。
+
+section('Linux 启动期的 GPU 开关')
+
+/** 与 `app.commandLine` 同形的假对象 —— 自检不该真的改这个进程的开关。 */
+function fakeCommandLine(switches: Record<string, string> = {}): CommandLineLike {
+  const current = { ...switches }
+
+  return {
+    getSwitchValue: (name) => current[name] ?? '',
+    appendSwitch: (name, value) => {
+      current[name] = value
+    },
+  }
+}
+
+check(
+  'Wayland 上不请求 Vulkan',
+  applyLinuxGpuSwitches(fakeCommandLine(), { waylandDisplay: 'wayland-0' }),
+)
+check(
+  'X11 上不碰命令行（那边 Vulkan 可能真的可用）',
+  !applyLinuxGpuSwitches(fakeCommandLine(), { sessionType: 'x11' }) &&
+    !applyLinuxGpuSwitches(fakeCommandLine({ 'ozone-platform': 'x11' }), {
+      waylandDisplay: 'wayland-0',
+    }),
+)
+check(
+  '用户显式要求 Vulkan 时不动',
+  !applyLinuxGpuSwitches(fakeCommandLine({ 'enable-features': 'Vulkan' }), {
+    sessionType: 'wayland',
+  }),
+)
+check(
+  '与用户已有的 --disable-features 合并，而不是覆盖',
+  (() => {
+    const cli = fakeCommandLine({ 'disable-features': 'UserFeature' })
+    applyLinuxGpuSwitches(cli, { sessionType: 'wayland' })
+
+    return cli.getSwitchValue('disable-features').startsWith('UserFeature,Vulkan')
+  })(),
+)
+check('拿不准时不动作（既没有开关也没有会话信息）', !usesWaylandOzone({ ozonePlatform: '' }))
 
 // ---------------------------------------------------------------------------
 
