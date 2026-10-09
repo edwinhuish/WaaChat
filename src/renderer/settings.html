@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      CSP 是**兜底**，不是主要防线：这个页面只加载本地打包资源，不连任何远程地址。
+      主要防线是 contextIsolation + 无 nodeIntegration + 只经 preload 通信。
+
+      connect-src 里的 localhost 只为开发模式（Vite 的 HMR 用 websocket）而留。
+      打包后的页面用不到它 —— 但没有它，`pnpm run dev` 起来会是一片空白，
+      而那种"只有开发模式坏"的问题最容易被当成环境问题忽略过去。
+
+      ⚠️ 这段 meta 在 files.html 里有一份**逐字相同**的拷贝（两个入口各自独立，
+      见 ADR-0025）。改动必须同时改两处，产物冒烟测试对两个文件都断言它存在。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:* http://localhost:*"
+    />
+    <title>WaaChat — 设置</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand">WaaChat</span>
+
+      <!--
+        接管状态标签只在这扇窗口里（ADR-0025 理由 5）：它与设置项同属
+        "应用当前的行为是什么" —— 图标生效范围、迁移进度、缓存开关都在这一页。
+      -->
+      <div class="status" data-role="capture-status"></div>
+    </header>
+
+    <main>
+      <div data-role="settings-list"></div>
+      <footer class="hint">
+        设置保存在
+        <code>~/.config/waachat/settings.json</code>。归档与缓存的位置见「使用说明」。
+      </footer>
+    </main>
+
+    <script type="module" src="./settings.ts"></script>
+  </body>
+</html>

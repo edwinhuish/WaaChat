@@ -4,7 +4,8 @@
  * 三条约束：
  *  1. **只用系统字体**，不打包字体文件。缺字形的中文界面会显示方块，而随包带字体
  *     意味着几 MB 的体积与一份授权声明 —— 系统字体栈已经够好。
- *  2. **不引入 CSS 框架**。这里的界面是三个列表加一个表单。
+ *  2. **不引入 CSS 框架**。这里的界面就是一个列表加一个表单，而且分在两个窗口里
+ *     （文件列表 / 设置，见 ADR-0025）—— 没有标签栏，因此也没有"当前选中哪个"的样式。
  *  3. 颜色全部走 CSS 变量，且跟随 `prefers-color-scheme`。理由不是"好看"，而是
  *     GNOME 的深色模式是系统级的：一个纯白窗口在深色桌面上会刺眼。
  */
@@ -74,29 +75,13 @@ header {
   letter-spacing: 0.02em;
 }
 
-nav {
-  display: flex;
-  gap: 4px;
-  margin-left: 8px;
-}
-
-nav button {
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
-  padding: 4px 12px;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font: inherit;
-}
-
-nav button[aria-selected='true'] {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-/* 接管状态常驻在顶栏右侧：它是用户可见的状态，不该藏进设置页。 */
+/*
+ * 接管状态在设置窗口的顶栏右侧。
+ *
+ * 它只在这一扇窗口里（ADR-0025 理由 5）：状态与设置项同属"应用当前的行为是什么"，
+ * 而文件列表窗口的职责就是"看文件"。这里刻意不做隐藏/折叠 —— 接管失败是"安静地退回
+ * 上游原生行为"这类最难发现的失败，状态不该需要用户点一下才看得见。
+ */
 .status {
   margin-left: auto;
   display: flex;
@@ -133,10 +118,6 @@ nav button[aria-selected='true'] {
 main {
   padding: 16px;
   max-width: 960px;
-}
-
-section[hidden] {
-  display: none;
 }
 
 .toolbar {

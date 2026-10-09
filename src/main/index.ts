@@ -18,8 +18,9 @@ import { configureSession } from './session'
 import { getSettings } from './settings'
 import {
   beginQuit,
-  createLocalWindow,
+  createFilesWindow,
   createMainWindow,
+  createSettingsWindow,
   getMainWindow,
   isQuitting,
   presentWindow,
@@ -124,14 +125,15 @@ app.whenReady().then(() => {
   // `.desktop` 条目 —— 每次启动对齐一次，代价是一次同步写入。
   applyLaunchAtLogin(settings.launchAtLogin)
 
-  // 本地界面窗口：我们自己的内容，挂 preload。
-  const localWindow = createLocalWindow()
+  // 本地界面：两扇窗口（文件列表 / 设置），各自一个渲染入口，都挂 preload。
+  const filesWindow = createFilesWindow()
+  const settingsWindow = createSettingsWindow()
 
   // 承载上游页面的窗口：**不挂 preload**，见 window.ts 的说明。
   const mainWindow = createMainWindow()
 
   registerIpcHandlers()
-  createTray({ localWindow, mainWindow })
+  createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })
 
   logger.info('ready', {
     packaged: app.isPackaged,

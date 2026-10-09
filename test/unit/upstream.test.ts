@@ -31,7 +31,7 @@ describe('isUpstreamOrigin', () => {
     expect(isUpstreamOrigin('not a url')).toBe(false)
     expect(isUpstreamOrigin('')).toBe(false)
     // 本地界面窗口走 file://，它的 origin 是 "null" —— 权限必须拒绝它。
-    expect(isUpstreamOrigin('file:///opt/app/resources/app.asar/out/renderer/index.html')).toBe(
+    expect(isUpstreamOrigin('file:///opt/app/resources/app.asar/out/renderer/files.html')).toBe(
       false,
     )
   })

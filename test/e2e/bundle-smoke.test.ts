@@ -18,6 +18,14 @@ import { describe, expect, it } from 'vitest'
 const OUT = join(process.cwd(), 'out')
 const built = existsSync(join(OUT, 'main', 'index.js'))
 
+/**
+ * 渲染入口：**两扇窗口各一个**（文件列表 / 设置，见 ADR-0025）。
+ *
+ * 写成列表逐项断言，是因为漏掉一个入口的失败方式很隐蔽：构建**不报错**，只有那扇窗口
+ * 打开时白屏（`loadFile`/`loadURL` 打不开一个不存在的文件，Electron 只会在控制台留一行）。
+ */
+const RENDERER_ENTRIES = ['files.html', 'settings.html'] as const
+
 /** 读产物文本。产物是机器生成的，读之前先确认存在，失败信息才有指向性。 */
 function read(relative: string): string {
   const path = join(OUT, relative)
@@ -26,10 +34,13 @@ function read(relative: string): string {
 }
 
 describe.skipIf(!built)('构建产物', () => {
-  it('三个 bundle 都在', () => {
+  it('三个 bundle 都在（renderer 是两个入口）', () => {
     expect(existsSync(join(OUT, 'main', 'index.js'))).toBe(true)
     expect(existsSync(join(OUT, 'preload', 'index.js'))).toBe(true)
-    expect(existsSync(join(OUT, 'renderer', 'index.html'))).toBe(true)
+
+    for (const entry of RENDERER_ENTRIES) {
+      expect(existsSync(join(OUT, 'renderer', entry)), `缺少渲染入口 ${entry}`).toBe(true)
+    }
   })
 
   it('主进程产物里没有页面注入能力（INV-1 的产物级检查）', () => {
@@ -50,11 +61,14 @@ describe.skipIf(!built)('构建产物', () => {
   })
 
   it('界面产物没有内联脚本（CSP 里 script-src 只有 self）', () => {
-    const html = read('renderer/index.html')
+    // 两个入口都要查：每个入口各带一份 CSP meta，漏改一个的表现同样是白屏。
+    for (const entry of RENDERER_ENTRIES) {
+      const html = read(`renderer/${entry}`)
 
-    // 内联脚本会被我们自己的 CSP 拦掉，表现为"窗口一片空白"。
-    expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/i)
-    expect(html).toContain('Content-Security-Policy')
+      // 内联脚本会被我们自己的 CSP 拦掉，表现为"窗口一片空白"。
+      expect(html, `${entry} 里有内联脚本`).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/i)
+      expect(html, `${entry} 缺少 CSP meta`).toContain('Content-Security-Policy')
+    }
   })
 })
 

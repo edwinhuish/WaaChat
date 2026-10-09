@@ -27,6 +27,23 @@ import { logger } from './logger'
 const DEFAULT_SIZE = { width: 1280, height: 820 } as const
 
 /**
+ * 本地界面窗口的尺寸。
+ *
+ * 两扇窗口（文件列表 / 设置）共用它：一个是列表、一个是表单，都不需要聊天窗口那么宽。
+ * 定义一个常量而不是各写一份，是为了让"两扇同类窗口"这件事在代码里看得出来。
+ */
+const LOCAL_WINDOW_SIZE = { width: 960, height: 680 } as const
+
+/**
+ * 本地界面的渲染入口（各自的 HTML 文件名）。
+ *
+ * 一扇窗口一个入口（[ADR-0025]）：构建配置里两个都要显式声明，漏掉一个只会在运行期
+ * 白屏，因此产物冒烟测试对两个 HTML 都断言存在。
+ */
+const FILES_ENTRY = 'files.html'
+const SETTINGS_ENTRY = 'settings.html'
+
+/**
  * "正在退出"。
  *
  * 「关闭窗口 = 隐藏」这条约定必须给真正的退出让路，否则退出会**静默失效**：
@@ -131,17 +148,33 @@ export function createMainWindow(): BrowserWindow {
 }
 
 /**
- * 本地界面窗口（偏好设置、归档浏览器）。
+ * 开发模式下把入口拼到 Vite dev server 上。
+ *
+ * 末尾的斜杠必须补上：`new URL('files.html', 'http://host:5173')` 会把最后一段路径
+ * 当成文件名丢掉（`http://host:5173/files.html` 是巧合对了，一旦 dev server URL 带
+ * 路径段就会拼错）。
+ */
+function devEntryUrl(devServerUrl: string, entry: string): string {
+  const base = devServerUrl.endsWith('/') ? devServerUrl : `${devServerUrl}/`
+  return new URL(entry, base).toString()
+}
+
+/**
+ * 本地界面窗口的公共构造。
  *
  * 这是我们自己的内容，因此挂 preload 并通过 IPC 取数据。它加载的是本地文件，
  * 与上游页面共享同一个 session 分区 —— 因此**不要**在这里加载任何远程内容。
+ *
+ * 关闭窗口 = 隐藏（{@link hideOnClose}）：应用常驻托盘，两扇窗口随时可以再打开。
  */
-export function createLocalWindow(): BrowserWindow {
+function createLocalWindow(options: {
+  readonly title: string
+  readonly entry: string
+}): BrowserWindow {
   const window = new BrowserWindow({
-    width: 960,
-    height: 680,
+    ...LOCAL_WINDOW_SIZE,
     show: false,
-    title: 'WaaChat',
+    title: options.title,
     autoHideMenuBar: true,
     icon: effectiveAppIcon() ?? defaultIconPath(),
     webPreferences: {
@@ -155,41 +188,82 @@ export function createLocalWindow(): BrowserWindow {
 
   const devServerUrl = process.env['ELECTRON_RENDERER_URL']
   if (app.isPackaged === false && devServerUrl !== undefined) {
-    void window.loadURL(devServerUrl)
+    void window.loadURL(devEntryUrl(devServerUrl, options.entry))
   } else {
-    void window.loadFile(join(__dirname, '../renderer/index.html'))
+    void window.loadFile(join(__dirname, `../renderer/${options.entry}`))
   }
 
   hideOnClose(window)
 
-  localWindow = window
+  return window
+}
+
+/**
+ * 文件列表窗口：归档里的文件（前身是「归档」标签页）。
+ *
+ * ⚠️ "归档"是**数据层**的概念（内容寻址的库、索引、迁移，见 [ADR-0018]），
+ * "文件列表"是这扇**窗口**的名字 —— 两者不要混用（[ADR-0025] 理由 3）。
+ */
+export function createFilesWindow(): BrowserWindow {
+  const window = createLocalWindow({ title: 'WaaChat — 文件列表', entry: FILES_ENTRY })
+
+  filesWindow = window
   window.on('closed', () => {
-    if (localWindow === window) localWindow = null
+    if (filesWindow === window) filesWindow = null
   })
 
   return window
 }
 
 /**
- * 我们自己的界面窗口。
+ * 设置窗口：偏好设置 + 接管状态。
  *
- * 存在的理由：主进程有一类消息**只允许**发给它（接管状态推送）。
- * 用 `BrowserWindow.getAllWindows()` 遍历再判断谁"看起来像本地窗口"是不可靠的
- * —— 判断依据会随加载方式（`file://` 还是 dev server）而变化。留一个明确的引用，
- * 判断就只有一处。
+ * 接管状态标签只挂在这一扇窗口里（[ADR-0025] 理由 5）：它与设置项同属"应用当前的
+ * 行为是什么"。因此 `capture:health-changed` 的推送目标只有这一个。
  */
-let localWindow: BrowserWindow | null = null
+export function createSettingsWindow(): BrowserWindow {
+  const window = createLocalWindow({ title: 'WaaChat — 设置', entry: SETTINGS_ENTRY })
 
-export function getLocalWindow(): BrowserWindow | null {
-  return localWindow
+  settingsWindow = window
+  window.on('closed', () => {
+    if (settingsWindow === window) settingsWindow = null
+  })
+
+  return window
+}
+
+/**
+ * 我们自己的界面窗口（两扇，见 [ADR-0025]）。
+ *
+ * 存在的理由：主进程有两类消息**只允许**发给自己人（接管状态推送、迁移进度），
+ * 而对话框需要一个父窗口。用 `BrowserWindow.getAllWindows()` 遍历再判断谁"看起来像
+ * 本地窗口"是不可靠的 —— 判断依据会随加载方式（`file://` 还是 dev server）而变化。
+ * 留明确的引用，"是哪一扇"就只有一个答案。
+ */
+let filesWindow: BrowserWindow | null = null
+let settingsWindow: BrowserWindow | null = null
+
+/** 文件列表窗口。托盘入口与"打开归档"这类动作指的是它。 */
+export function getFilesWindow(): BrowserWindow | null {
+  return filesWindow
+}
+
+/**
+ * 设置窗口。
+ *
+ * 迁移确认框、目录/图标选择框都挂在它上面（那些操作全部由设置项发起），
+ * 迁移进度也只推给它（进度行长在设置页里）。
+ */
+export function getSettingsWindow(): BrowserWindow | null {
+  return settingsWindow
 }
 
 /**
  * 承载上游页面的窗口。
  *
- * 与 {@link getLocalWindow} 对称：`second-instance` 需要的是"把用户的那扇窗口
- * 调出来"，而它是哪一个**不能靠遍历猜** —— `getAllWindows()[0]` 取到的是先创建的
- * 本地窗口（偏好设置），它按设计从不显示，于是"再启动一次应用"看起来毫无反应。
+ * 与两个本地窗口的 getter 对称：`second-instance` 需要的是"把用户的那扇窗口调出来"，
+ * 而它是哪一个**不能靠遍历猜** —— `getAllWindows()[0]` 取到的可能是先创建的本地窗口，
+ * 它按设计从不显示，于是"再启动一次应用"看起来毫无反应。
  */
 let mainWindow: BrowserWindow | null = null
 

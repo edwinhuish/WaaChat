@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      CSP 是**兜底**，不是主要防线：这个页面只加载本地打包资源，不连任何远程地址。
+      主要防线是 contextIsolation + 无 nodeIntegration + 只经 preload 通信。
+
+      connect-src 里的 localhost 只为开发模式（Vite 的 HMR 用 websocket）而留。
+      打包后的页面用不到它 —— 但没有它，`pnpm run dev` 起来会是一片空白，
+      而那种"只有开发模式坏"的问题最容易被当成环境问题忽略过去。
+
+      ⚠️ 这段 meta 在 settings.html 里有一份**逐字相同**的拷贝（两个入口各自独立，
+      见 ADR-0025）。改动必须同时改两处，产物冒烟测试对两个文件都断言它存在。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:* http://localhost:*"
+    />
+    <title>WaaChat — 文件列表</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand">WaaChat</span>
+    </header>
+
+    <main>
+      <!--
+        `data-role` 是**脚本锚点**，`id` 不是。类名与 id 都会随样式和标签结构变化，
+        而脚本依赖它们就会让"改样式"变成"改行为"。见 src/renderer/dom.ts 的 part()。
+
+        这扇窗口只做一件事：列出归档里的文件（见 ADR-0025 —— 设置搬去了另一扇窗口，
+        因此这里没有标签栏，也没有任何"当前显示哪一半"的判断）。
+      -->
+      <div class="toolbar">
+        <input
+          type="search"
+          data-role="archive-search"
+          placeholder="按文件名搜索（中文支持任意子串）"
+          aria-label="按文件名搜索"
+        />
+        <button type="button" class="action" data-role="archive-refresh">刷新</button>
+      </div>
+      <ul class="archive" data-role="archive-list"></ul>
+      <footer class="hint" data-role="archive-footer"></footer>
+    </main>
+
+    <script type="module" src="./files.ts"></script>
+  </body>
+</html>

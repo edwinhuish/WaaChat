@@ -17,9 +17,16 @@ import { logger } from '../logger'
 import { presentWindow } from '../window'
 import { effectiveAppIcon } from './appicon'
 
+/**
+ * 托盘要打开的三扇窗口。
+ *
+ * ⚠️ 本地界面是**两扇**窗口（文件列表 / 设置，见 [ADR-0025]），因此不能像以前那样只留
+ * 一个 `localWindow` 引用 —— 托盘的每一项各对应一扇，指错了就是"点设置打开了列表"。
+ */
 export interface TrayWindows {
-  readonly localWindow: BrowserWindow
-  readonly mainWindow: BrowserWindow
+  readonly files: BrowserWindow
+  readonly settings: BrowserWindow
+  readonly main: BrowserWindow
 }
 
 let tray: Tray | null = null
@@ -52,8 +59,10 @@ export function createTray(windows: TrayWindows): Tray | null {
     tray.setToolTip('WaaChat')
     tray.setContextMenu(
       Menu.buildFromTemplate([
-        { label: '显示聊天', click: () => presentWindow(windows.mainWindow) },
-        { label: '归档', click: () => presentWindow(windows.localWindow) },
+        { label: '显示聊天', click: () => presentWindow(windows.main) },
+        // 两项各开一扇窗口：本地界面拆开之后，托盘不再需要"打开某一扇再自己找"。
+        { label: '文件列表', click: () => presentWindow(windows.files) },
+        { label: '设置', click: () => presentWindow(windows.settings) },
         { type: 'separator' },
         {
           label: '退出',
@@ -70,8 +79,10 @@ export function createTray(windows: TrayWindows): Tray | null {
      * 调用：哪种操作算激活由桌面环境决定（GNOME 的 appindicator 扩展要求双击），
      * 且在某些实现里根本不会发出。所以窗口的入口**不能只靠这一条** —— 上面那份
      * 上下文菜单里的「显示聊天」才是保底入口。
+     *
+     * 激活指向**聊天**窗口（本应用的主体），而不是两扇本地界面窗口中的某一扇。
      */
-    tray.on('click', () => presentWindow(windows.mainWindow))
+    tray.on('click', () => presentWindow(windows.main))
 
     return tray
   } catch (error) {

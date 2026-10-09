@@ -52,7 +52,7 @@ import { getTray } from '../integration/tray'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { getSettings, updateSettings } from '../settings'
-import { getLocalWindow } from '../window'
+import { getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
 /**
@@ -173,15 +173,19 @@ function applySettings(value: unknown): Settings {
  * 挂窗口不是装饰：迁移确认框必须挡在设置界面前面，否则用户可以在"确认迁移"的同时
  * 继续点「更改…」，两个迁移互相踩同一个目录。没有窗口时（理论上不会发生）退化为
  * 无父窗口的对话框，而不是放弃这一步。
+ *
+ * ⚠️ 父窗口是**设置窗口**：这一层的三处对话框（迁移确认、选择保存目录、选择图标图片）
+ * 全部由设置项发起（[ADR-0025]）。将来若出现从文件列表发起的对话框，给它加一个 owner
+ * 参数 —— 不要在这里改成"随便找一扇本地窗口"，那正是拆分窗口要消灭的猜测。
  */
 async function showBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
-  const window = getLocalWindow()
+  const window = getSettingsWindow()
   return window === null || window.isDestroyed()
     ? await dialog.showMessageBox(options)
     : await dialog.showMessageBox(window, options)
 }
 
-/** 让用户挑一个目录。取消时返回 `null`。 */
+/** 让用户挑一个目录。取消时返回 `null`。父窗口见 {@link showBox} 的说明。 */
 async function chooseDirectory(defaultPath: string): Promise<string | null> {
   const options: OpenDialogOptions = {
     title: '选择文件的保存位置',
@@ -191,7 +195,7 @@ async function chooseDirectory(defaultPath: string): Promise<string | null> {
     defaultPath,
   }
 
-  const window = getLocalWindow()
+  const window = getSettingsWindow()
   const result =
     window === null || window.isDestroyed()
       ? await dialog.showOpenDialog(options)
@@ -206,6 +210,8 @@ async function chooseDirectory(defaultPath: string): Promise<string | null> {
  *
  * 不给"所有文件"这一项：能解码的格式已经列全，放开只会让用户选中一个必然失败的文件，
  * 然后收到一句"不支持的格式"（而那个文件本来就看不出哪里不对）。
+ *
+ * 父窗口见 {@link showBox} 的说明。
  */
 async function chooseIconFile(): Promise<AppIconPickResult | null> {
   const options: OpenDialogOptions = {
@@ -215,7 +221,7 @@ async function chooseIconFile(): Promise<AppIconPickResult | null> {
     filters: [{ name: '图片', extensions: [...ICON_DIALOG_EXTENSIONS] }],
   }
 
-  const window = getLocalWindow()
+  const window = getSettingsWindow()
   const result =
     window === null || window.isDestroyed()
       ? await dialog.showOpenDialog(options)
@@ -344,7 +350,8 @@ export function registerIpcHandlers(): void {
     const outcome = await relocateArchive(
       plan,
       (progress) => {
-        const window = getLocalWindow()
+        // 进度只推给设置窗口：进度行长在设置页里（ADR-0025），别的窗口没有它的宿主。
+        const window = getSettingsWindow()
         if (window === null || window.isDestroyed()) return
         window.webContents.send(CHANNELS.archiveMigration, progress)
       },
@@ -395,9 +402,12 @@ export function registerIpcHandlers(): void {
    *
    * 只推给**我们自己的窗口**：承载上游页面的窗口没有 preload，本来就收不到，
    * 而且"把本地状态发给第三方页面"这件事本身就不该发生。
+   *
+   * 收件人是**设置窗口** —— 状态标签只挂在那里（ADR-0025 理由 5）。文件列表窗口不挂它，
+   * 因此不需要"两扇都发"。
    */
   onHealthChange((health) => {
-    const window = getLocalWindow()
+    const window = getSettingsWindow()
     if (window === null || window.isDestroyed()) return
     window.webContents.send(CHANNELS.captureHealthChanged, health)
   })
