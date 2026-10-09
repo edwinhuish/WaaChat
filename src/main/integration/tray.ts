@@ -7,7 +7,12 @@
  *
  * 平台差异要接受：GNOME 默认不显示托盘图标，需要 AppIndicator 扩展
  * （`gnome-shell-extension-appindicator`，deb 里作为 recommends）。
- * 缺失时的行为是**降级为没有托盘**，而不是启动失败。
+ *
+ * ⚠️ **"没有托盘"只在"构造失败"时才检测得到。** 实测（[ADR-0034]）：没有任何指示器宿主时
+ * `new Tray()` **依然成功** —— 于是 `getTray()` 非空、窗口照旧"关闭即隐藏"，而用户桌面上
+ * 根本没有那个图标。所以这里**不做**猜测式的可见性检测（`getBounds()` 之类的启发式在
+ * appindicator 下不可靠）：缺扩展时的两条入口写在 `docs/usage.md` 第 1 节 —— 重新运行
+ * `waachat`（单实例锁会把这扇窗口叫回来）、以及 `Ctrl+Q` 退出。
  */
 
 import { Menu, Tray, app } from 'electron'

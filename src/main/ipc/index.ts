@@ -276,6 +276,12 @@ function toIconBytes(value: unknown): Uint8Array | null {
  *
  * 托盘**不归** `appicon.ts` 管（那会引入 window → appicon → tray → window 的循环依赖），
  * 所以这最后一步留在这里。漏掉它的症状很具体：窗口换了新图标，托盘还是旧的。
+ *
+ * ⚠️ **不要**把这里改成"销毁旧托盘再建一个新的"。社区里流传的说法是 appindicator 下
+ * `setImage()` 不生效、必须重建托盘 —— 但重建正是产生 GLib
+ * `instance … has no handler with id …` 这类 **stale handler** 警告的经典模式（[ADR-0034]），
+ * 而我们无法在本机验证那条生命周期（没有指示器宿主）。代价是：部分指示器实现下托盘图标
+ * 要下次启动才更新，这一点写在 `docs/usage.md` 的「应用图标」一节里。
  */
 function refreshTrayIcon(result: AppIconResult): AppIconResult {
   if (!result.ok) return result
