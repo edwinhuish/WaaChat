@@ -20,8 +20,16 @@
  * 前者幂等、无状态、每次启动都跑；后者是一次性动作，成败由 [ADR-0027] 定义。
  */
 
-import { existsSync, readdirSync, rmSync, statSync, type Dirent } from 'node:fs'
-import { mkdir, rename, rm, rmdir } from 'node:fs/promises'
+import {
+  existsSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  type Dirent,
+  type Stats,
+} from 'node:fs'
+import { mkdir, readdir, rename, rm, rmdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { folderFor, isAccountSegment, isArchiveMonthDir } from '../archive/layout'
@@ -318,7 +326,7 @@ export async function convertCache(
 
       for (const [index, name] of names.entries()) {
         const path = join(dir, name)
-        const size = safeSize(path)
+        const size = fileBytes(path)
 
         if (plan.target) {
           await rm(path)
@@ -349,8 +357,13 @@ export async function convertCache(
   }
 }
 
-/** 文件的字节数；读不到就按 0 算（它只用于进度与确认框的量级）。 */
-function safeSize(path: string): number {
+/**
+ * 文件的字节数；读不到就按 0 算。
+ *
+ * 用在三个"数字只用于判断量级"的地方：切换的进度与确认框、以及落盘之后"这一份到底有多大"
+ * （[ADR-0049] 的退化直通要按**实际大小**兜一次，因为分块传输没有 `content-length`）。
+ */
+export function fileBytes(path: string): number {
   try {
     return statSync(path).size
   } catch {
@@ -561,7 +574,7 @@ function reconcileEntryDir(dir: string, enabled: boolean): CacheReconcileResult 
   for (const name of targets) {
     const path = join(dir, name)
     try {
-      const size = safeSize(path)
+      const size = fileBytes(path)
       rmSync(path)
       bytes += size
       removed += 1
@@ -612,7 +625,7 @@ function purgeLegacyFlatEntries(root: string): CacheReconcileResult {
 
     const path = join(root, entry.name)
     try {
-      const size = safeSize(path)
+      const size = fileBytes(path)
       rmSync(path)
       bytes += size
       removed += 1
@@ -637,4 +650,239 @@ function countForeign(dir: string, isOurs: (name: string) => boolean): number {
   } catch {
     return 0
   }
+}
+
+// ---------------------------------------------------------------------------
+// 容量上限与淘汰（ADR-0049）
+// ---------------------------------------------------------------------------
+//
+// 与归档那一侧（`archive/blobs.ts` 的 `evictToFit()` = [ADR-0048]）**形状相同、判据不同**：
+// 那边按索引里的 `opened_at` 排序、删一份内容的全部磁盘名；这边没有索引，按**正文的 mtime**
+// 排序、删成对的条目。两处共享的是同一条纪律：**只删我们写的东西**，超限只降级、不报错。
+
+/**
+ * 一个**可命中的**条目：正文与元信息成对存在（[ADR-0049] 决定 2）。
+ *
+ * 缺一半的残留不是条目 —— 回放要同时读两份（`readCached()`），它永远命不中，因此不计入
+ * 总量、也不在这个流程里删（那由启动对账、切换与读命中处的 `dropEntry()` 收拾）。
+ */
+export interface CacheEntry {
+  /** 内容键的 sha256（文件名去掉后缀）。 */
+  readonly id: string
+  /** 条目所在的月份目录。 */
+  readonly dir: string
+  /** 两份文件加起来占的字节数。 */
+  readonly bytes: number
+  /** 最后使用时间（Unix 毫秒）：正文文件的 `mtime`（[ADR-0049] 决定 1）。 */
+  readonly usedAt: number
+}
+
+/** `stat` 的容错包装：读不到返回 `null`（并发删除、权限异常都走这条路）。 */
+async function statOrNull(path: string): Promise<Stats | null> {
+  try {
+    return await stat(path)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 缓存里的全部**成对条目**（跨账号目录 × 月份目录，[ADR-0039]）。
+ *
+ * 用异步 IO：这个函数同时喂给**写入路径上的淘汰**（不能让一次下载卡住主进程）与界面的
+ * 统计，而它要 readdir + 每个条目 stat —— 条目可能上万。
+ */
+export async function listCacheEntries(root: string = ciphertextCacheDir()): Promise<CacheEntry[]> {
+  const found: CacheEntry[] = []
+
+  for (const accountDir of cacheAccountDirs(root)) {
+    for (const dir of cacheMonthDirs(accountDir)) {
+      let names: string[]
+      try {
+        names = await readdir(dir)
+      } catch {
+        // 读不到（刚被删掉、权限异常）就当这个月份目录里没有条目。
+        continue
+      }
+
+      const present = new Set(names)
+
+      for (const name of names) {
+        if (!name.endsWith(BODY_SUFFIX)) continue
+
+        const id = name.slice(0, -BODY_SUFFIX.length)
+        if (!present.has(`${id}${META_SUFFIX}`)) continue // 缺一半：不是条目。
+
+        const body = await statOrNull(join(dir, name))
+        const meta = await statOrNull(join(dir, `${id}${META_SUFFIX}`))
+
+        // 两边都必须是**普通文件**：名字长得像条目的目录 / 符号链接不是我们的条目 ——
+        // 与对账那边同一条判据（它只处理 `entry.isFile()`）。
+        if (body?.isFile() !== true || meta?.isFile() !== true) continue
+
+        found.push({ id, dir, bytes: body.size + meta.size, usedAt: body.mtimeMs })
+      }
+    }
+  }
+
+  return found
+}
+
+/** 当前占用：只算成对条目（界面的"现在占了多少"与淘汰的判据都用它）。 */
+export async function cacheUsage(
+  root: string = ciphertextCacheDir(),
+): Promise<{ bytes: number; entries: number }> {
+  const entries = await listCacheEntries(root)
+  return { bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0), entries: entries.length }
+}
+
+/**
+ * 哪些条目该被淘汰：**最久未用优先**，直到删掉它们之后总量不超过 `maxBytes`。
+ *
+ * 纯函数（输入就是 {@link listCacheEntries} 的结果），因此淘汰顺序能脱离文件系统直接断言。
+ * 一行都不多删：够到上限就停 —— 淘汰掉的每一份都要重新联网下载一次。
+ */
+export function selectCacheEvictions(
+  entries: readonly CacheEntry[],
+  totalBytes: number,
+  maxBytes: number,
+): CacheEntry[] {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0 || totalBytes <= maxBytes) return []
+
+  const ordered = [...entries].sort((left, right) => left.usedAt - right.usedAt)
+  const evicted: CacheEntry[] = []
+  let remaining = totalBytes
+
+  for (const entry of ordered) {
+    if (remaining <= maxBytes) break
+
+    evicted.push(entry)
+    remaining -= entry.bytes
+  }
+
+  return evicted
+}
+
+export interface CacheEvictionResult {
+  /** 真正删掉的条目数（两份文件都删成功才算一个；一个文件都没删掉的不计）。 */
+  readonly entries: number
+  readonly bytes: number
+}
+
+/**
+ * 按 LRU 淘汰到占用不超过 `maxBytes`。
+ *
+ * 逐条 `await`：条目可能上万，用同步 API 会把主进程连同界面一起卡住（与 `convertCache()`
+ * 同一条理由）。单个文件删不掉只记日志、继续处理后面的条目 —— 淘汰是维护动作，
+ * 不该让它打断一次下载（下一次扫描还会看到它）。
+ */
+export async function evictCacheToFit(
+  maxBytes: number,
+  root: string = ciphertextCacheDir(),
+): Promise<CacheEvictionResult> {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return { entries: 0, bytes: 0 }
+
+  const entries = await listCacheEntries(root)
+  const total = entries.reduce((sum, entry) => sum + entry.bytes, 0)
+  const targets = selectCacheEvictions(entries, total, maxBytes)
+
+  let evicted = 0
+  let bytes = 0
+
+  for (const entry of targets) {
+    const paths = cacheEntryPaths(entry.dir, entry.id)
+    let freed = 0
+    let files = 0
+
+    for (const path of [paths.body, paths.meta]) {
+      try {
+        const size = (await statOrNull(path))?.size ?? 0
+        await rm(path, { force: true })
+        freed += size
+        files += 1
+      } catch (error) {
+        logger.warn('capture: could not evict a cache file', { reason: failureReason(error) })
+      }
+    }
+
+    if (files > 0) {
+      evicted += 1
+      bytes += freed
+    }
+  }
+
+  return { entries: evicted, bytes }
+}
+
+/**
+ * 让缓存占用不超过 `maxBytes`，**永不抛错**（[ADR-0049]）。
+ *
+ * 与归档那一侧的 `enforceArchiveLimit()`（[ADR-0048]）同一条纪律：淘汰是维护动作，
+ * 它失败了也不该让一次下载或一次设置改动失败。三个触发点（写入后、启动对账后、
+ * 改上限设置时）都用它，因此把"永不抛错"收在这里。
+ *
+ * @returns 删掉的条目数（便于日志确认）。
+ */
+export async function enforceCacheLimit(maxBytes: number): Promise<number> {
+  try {
+    const result = await evictCacheToFit(maxBytes)
+
+    if (result.entries > 0) {
+      logger.info('capture: cache limit enforced', { entries: result.entries, bytes: result.bytes })
+    }
+
+    return result.entries
+  } catch (error) {
+    logger.warn('capture: failed to enforce the cache limit', { reason: failureReason(error) })
+    return 0
+  }
+}
+
+/**
+ * 命中留痕：把正文的 `mtime` 推到"现在"（[ADR-0049] 决定 1）。
+ *
+ * 刻意**不节流**：一次命中最少也要读几 KB，而更新 mtime 只是一次 syscall —— 成本被它盖过。
+ * 失败只记 `debug`：缓存是派生数据，留痕失败最坏也只是这一条被当成"更久没用"先淘汰。
+ */
+export function touchCacheEntry(bodyPath: string): void {
+  try {
+    const now = new Date()
+    utimesSync(bodyPath, now, now)
+  } catch (error) {
+    logger.debug('capture: could not update a cache entry timestamp', {
+      reason: failureReason(error),
+    })
+  }
+}
+
+/** 两次全盘扫描之间允许写入的字节量下限 / 上限（[ADR-0049] 决定 3）。 */
+const MIN_SWEEP_BYTES = 8 * 1024 * 1024
+const MAX_SWEEP_BYTES = 64 * 1024 * 1024
+
+/**
+ * 两次全盘扫描之间允许写入多少字节（[ADR-0049] 决定 3）。
+ *
+ * `上限 / 16`，钳在 8–64 MiB 之间，且**不超过上限本身**（否则"上限 1 MiB"的用户会先写进
+ * 8 MiB 才触发第一次淘汰）。`0` 表示不限制 ⇒ 也返回 `0`（调用方按"永不扫描"处理）。
+ */
+export function cacheSweepInterval(maxBytes: number): number {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return 0
+
+  return Math.min(Math.max(Math.floor(maxBytes / 16), MIN_SWEEP_BYTES), MAX_SWEEP_BYTES, maxBytes)
+}
+
+/**
+ * 这份内容该不该落盘（[ADR-0049] 决定 4）：**本身就超过上限的不缓存**。
+ *
+ * 理由不是省空间，而是**顺序**：淘汰按 LRU 排序，最新写下的那份永远排在最后 —— 一旦只剩
+ * 它一个，就轮不到别人被删，它会先把整个缓存清空、再删掉自己。靠调淘汰顺序解决不了。
+ *
+ * `bytes` 为 0（不知道长度，例如分块传输）或上限为 0（不限制）时一律返回 `true`；
+ * 前者由 `persist()` 在写完之后按**实际大小**再兜一次。
+ */
+export function shouldCacheEntry(bytes: number, maxBytes: number): boolean {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return true
+  if (!Number.isFinite(bytes) || bytes <= 0) return true
+
+  return bytes <= maxBytes
 }

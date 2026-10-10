@@ -17,24 +17,36 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   CACHE_DIR_MODE,
+  cacheSweepInterval,
+  cacheUsage,
   convertCache,
+  enforceCacheLimit,
+  evictCacheToFit,
+  fileBytes,
+  listCacheEntries,
   orphanEntries,
   planCacheConversion,
   purgeStaging,
   reconcileCiphertextCache,
   recoverStaging,
   restoreStaging,
+  selectCacheEvictions,
+  shouldCacheEntry,
   stagingDir,
+  touchCacheEntry,
   type CacheConversionPlan,
+  type CacheEntry,
 } from '../../src/main/capture/cache-files'
 import { ciphertextCacheDir, setAccountKey } from '../../src/main/paths'
 
@@ -410,5 +422,204 @@ describe('reconcileCiphertextCache（开启）', () => {
 
     expect(names()).toEqual([BODY, META, 'notes.txt', `${'d'.repeat(64)}.bin`].sort())
     expect(result).toMatchObject({ removed: 0, kept: 2, foreign: 2 })
+  })
+})
+
+/**
+ * 密文缓存的容量上限与淘汰（[ADR-0049]）。
+ *
+ * 淘汰是这个模块里**唯一会从用户磁盘上删文件**的动作（虽然都是我们写的），因此它比写入
+ * 路径更值得断言：顺序、边界、以及"什么能动、什么一个都不碰"都钉在这里。
+ */
+describe('selectCacheEvictions（纯函数）', () => {
+  function entry(id: string, bytes: number, usedAt: number): CacheEntry {
+    return { id, dir: '/不存在', bytes, usedAt }
+  }
+
+  it('最久未用优先，够到上限就停（不多删一条）', () => {
+    const entries = [entry('a', 10, 300), entry('b', 10, 100), entry('c', 10, 200)]
+
+    // 总量 30、上限 20：删掉最旧的 b 之后正好 20 —— 达标即停。
+    expect(selectCacheEvictions(entries, 30, 20).map((one) => one.id)).toEqual(['b'])
+  })
+
+  it('需要删多条时按 usedAt 升序，与数组顺序无关', () => {
+    const entries = [entry('a', 10, 300), entry('b', 10, 100), entry('c', 10, 200)]
+
+    expect(selectCacheEvictions(entries, 30, 5).map((one) => one.id)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('不超标 / 上限为 0（不限制）/ 上限不合法时一条都不删', () => {
+    const entries = [entry('a', 10, 1)]
+
+    expect(selectCacheEvictions(entries, 10, 10)).toEqual([])
+    expect(selectCacheEvictions(entries, 10, 0)).toEqual([])
+    expect(selectCacheEvictions(entries, 10, -1)).toEqual([])
+    expect(selectCacheEvictions(entries, 10, Number.NaN)).toEqual([])
+  })
+
+  it('永远只是"刚好够用"的子集，不会把缓存整片删空', () => {
+    const entries = [entry('a', 5, 1), entry('b', 5, 2), entry('c', 5, 3)]
+
+    expect(selectCacheEvictions(entries, 15, 8).map((one) => one.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('shouldCacheEntry', () => {
+  it('一份本身就超过上限的不缓存（否则它会先把缓存清空、再删自己）', () => {
+    expect(shouldCacheEntry(100, 50)).toBe(false)
+    expect(shouldCacheEntry(50, 50)).toBe(true)
+    expect(shouldCacheEntry(49, 50)).toBe(true)
+  })
+
+  it('不知道长度（0）或不限制（<= 0）时都缓存 —— 前者由写完之后按实际大小兜一次', () => {
+    expect(shouldCacheEntry(0, 50)).toBe(true)
+    expect(shouldCacheEntry(Number.NaN, 50)).toBe(true)
+    expect(shouldCacheEntry(100, 0)).toBe(true)
+    expect(shouldCacheEntry(100, -1)).toBe(true)
+    expect(shouldCacheEntry(100, Number.NaN)).toBe(true)
+  })
+})
+
+describe('cacheSweepInterval', () => {
+  it('上限越大间隔越大，且钳在 8–64 MiB', () => {
+    const mib = 1024 * 1024
+
+    expect(cacheSweepInterval(2 * 1024 * mib)).toBe(64 * mib) // 128 MiB → 钳到 64
+    expect(cacheSweepInterval(200 * mib)).toBe(12.5 * mib) // 12.5 MiB 落在区间内
+    expect(cacheSweepInterval(8 * mib)).toBe(8 * mib) // 512 KiB → 钳到 8
+  })
+
+  it('间隔不超过上限本身（上限 1 MiB 时不会先写进 8 MiB 才淘汰）', () => {
+    expect(cacheSweepInterval(1024 * 1024)).toBe(1024 * 1024)
+  })
+
+  it('不限制时是 0（调用方按"永不扫描"处理）', () => {
+    expect(cacheSweepInterval(0)).toBe(0)
+    expect(cacheSweepInterval(-1)).toBe(0)
+    expect(cacheSweepInterval(Number.NaN)).toBe(0)
+  })
+})
+
+describe('cacheUsage / listCacheEntries', () => {
+  beforeEach(resetDir)
+
+  it('只算成对的条目：缺一半的残留不计入，不是我们的文件也不计入', async () => {
+    write(BODY, 'body')
+    write(META, 'meta')
+    write(HALF_BODY, 'half')
+    write('notes.txt', '别人的')
+
+    expect(await cacheUsage()).toEqual({ entries: 1, bytes: 8 })
+  })
+
+  it('名字长得像条目的目录不是条目（只认普通文件）', async () => {
+    mkdirSync(join(entryDir(), `${'a'.repeat(64)}.bin`))
+
+    expect(await cacheUsage()).toEqual({ entries: 0, bytes: 0 })
+  })
+
+  it('跨账号与跨月份都算进来', async () => {
+    write(BODY, 'abcd')
+    write(META, 'ef')
+
+    const other = join(accountDir(), '2026-09')
+    mkdirSync(other, { recursive: true, mode: CACHE_DIR_MODE })
+    writeFileSync(join(other, `${'d'.repeat(64)}.bin`), 'xyz')
+    writeFileSync(join(other, `${'d'.repeat(64)}.meta.json`), '1')
+
+    // 6（abcd + ef）+ 4（xyz + 1）
+    expect(await cacheUsage()).toEqual({ entries: 2, bytes: 10 })
+  })
+
+  it('usedAt 取正文的 mtime；fileBytes 读不到时按 0 算', async () => {
+    write(BODY, 'abcd')
+    write(META, 'ef')
+
+    const entries = await listCacheEntries()
+    const bodyPath = join(entryDir(), BODY)
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.id).toBe('a'.repeat(64))
+    expect(entries[0]?.bytes).toBe(6)
+    expect(entries[0]?.usedAt).toBe(statSync(bodyPath).mtimeMs)
+
+    expect(fileBytes(bodyPath)).toBe(4)
+    expect(fileBytes(join(entryDir(), '没有这个文件.bin'))).toBe(0)
+  })
+})
+
+describe('evictCacheToFit', () => {
+  beforeEach(resetDir)
+
+  it('删掉最久未用的成对条目：正文与元信息一起消失', async () => {
+    const staleId = 'a'.repeat(64)
+    const freshId = 'b'.repeat(64)
+
+    write(`${staleId}.bin`, 'old')
+    write(`${staleId}.meta.json`, 'm1')
+    write(`${freshId}.bin`, 'new')
+    write(`${freshId}.meta.json`, 'm2')
+
+    // LRU 的输入就是正文的 mtime：把"旧"的那条往回拨一小时。
+    const past = new Date(Date.now() - 3_600_000)
+    utimesSync(join(entryDir(), `${staleId}.bin`), past, past)
+
+    // 总计 10 字节、上限 5：删掉 5 字节的旧条目正好达标（新条目留下）。
+    expect(await evictCacheToFit(5)).toEqual({ entries: 1, bytes: 5 })
+    expect(names()).toEqual([`${freshId}.bin`, `${freshId}.meta.json`])
+  })
+
+  it('不认识的扩展名与缺一半的残留一个都不动', async () => {
+    write(BODY, 'body')
+    write(META, 'meta')
+    write(HALF_BODY, 'half')
+    write('notes.txt', '别人的')
+
+    const result = await evictCacheToFit(1)
+
+    // 只有成对的那一个是条目：它被删掉了，另外两个原封不动（上限没达成也认）。
+    expect(result.entries).toBe(1)
+    expect(names()).toEqual([HALF_BODY, 'notes.txt'].sort())
+  })
+
+  it('上限 <= 0 / 不合法时什么都不做（"不限制"是唯一安全的解释）', async () => {
+    write(BODY, 'body')
+    write(META, 'meta')
+
+    expect(await evictCacheToFit(0)).toEqual({ entries: 0, bytes: 0 })
+    expect(await evictCacheToFit(-1)).toEqual({ entries: 0, bytes: 0 })
+    expect(await evictCacheToFit(Number.NaN)).toEqual({ entries: 0, bytes: 0 })
+
+    expect(names()).toEqual([BODY, META].sort())
+  })
+
+  it('enforceCacheLimit 永不抛错：缓存根被别的东西占住时也只是"什么都没做"', async () => {
+    rmSync(dir(), { recursive: true, force: true })
+    writeFileSync(dir(), '不是一个目录')
+
+    await expect(enforceCacheLimit(1)).resolves.toBe(0)
+  })
+})
+
+describe('touchCacheEntry', () => {
+  beforeEach(resetDir)
+
+  it('把正文的 mtime 推到"现在"（LRU 唯一的时间戳）', () => {
+    write(BODY, 'body')
+
+    const bodyPath = join(entryDir(), BODY)
+    const past = new Date(Date.now() - 3_600_000)
+    utimesSync(bodyPath, past, past)
+
+    touchCacheEntry(bodyPath)
+
+    expect(statSync(bodyPath).mtimeMs).toBeGreaterThan(past.getTime() + 60_000)
+  })
+
+  it('文件不在时不抛错（留痕失败最坏只是这一条先被淘汰）', () => {
+    expect(() => {
+      touchCacheEntry(join(entryDir(), '没有这个文件.bin'))
+    }).not.toThrow()
   })
 })
