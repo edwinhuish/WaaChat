@@ -5,15 +5,15 @@
  *
  *  1. **改动即时生效，不设「保存」按钮。** 每个开关独立提交，回填主进程返回的
  *     完整设置 —— 界面显示的就是实际生效的，不存在"我改了但它没生效"这种模糊状态。
- *  2. **没实现的项不假装能用，但状态要说的是"你当前的配置"。** `cacheMaxBytes` 的容量控制
- *     还没实现（见 docs/roadmap.md M3），因此它渲染成**禁用的**控件；`archiveMaxBytes`
- *     已经真的会被执行（[ADR-0048]），于是它是可改的。禁用与否只能由
- *     `shared/size-limit.ts` 的 `SIZE_LIMIT_ENFORCED` 决定 —— 一个能改但不起作用的开关，
- *     比一个明确标注"尚未生效"的开关糟得多，前者会让用户相信一件不成立的事。但徽标本身
- *     也不该是一句写死的话：**"不限制"时没有失效可言**（字面意思就是不清理），只有"设了
- *     上限却不会被执行"才需要警告。因此状态由 `describeSizeLimit()` 按"当前值 + 今天是否
- *     真的执行"算出来，而不是写在这一行里 —— 功能落地时改一个布尔值就够，不会留下一句
- *     过期的话。
+ *  2. **没实现的项不假装能用，但状态要说的是"你当前的配置"。** 今天没有实现的是
+ *     「后台预取文档」这一个开关（见 `docs/roadmap.md` M4 的候选），因此它渲染成**禁用的**
+ *     控件；两项容量上限都已经真的会被执行（[ADR-0048] / [ADR-0049]），于是它们是可改的。
+ *     禁用与否只能由"这一项今天是否真的会被执行"决定 —— `SIZE_LIMIT_ENFORCED`（容量项）与
+ *     `ToggleSpec.enforced`（开关）是同一个事实的两个落点。一个能改但不起作用的开关，比一个
+ *     明确标注"尚未生效"的开关糟得多，前者会让用户相信一件不成立的事。但状态本身也不该是
+ *     一句写死的话：**"不限制"时没有失效可言**（字面意思就是不清理），只有"设了上限却不会
+ *     被执行"才需要警告。因此容量项的状态由 `describeSizeLimit()` 按"当前值 + 今天是否真的
+ *     执行"算出来，而不是写在这一行里 —— 功能落地时改一个布尔值就够，不会留下一句过期的话。
  *  3. **相关的项放在同一个区域，且区域标题必须对里面的每一行都为真。**
  *     区域与行序是数据（`shared/settings-sections.ts`），不是散在这一篇渲染代码里的分支：
  *     两项容量上限因此必然紧跟各自管辖的开关 —— 一个容量项离开开关就读不懂（"2 GB"是给
@@ -58,6 +58,13 @@ interface ToggleSpec {
   readonly key: BooleanKey
   readonly label: string
   readonly hint: string
+  /**
+   * 这一项**今天是否真的会被执行**。省略即 `true`。
+   *
+   * `false` ⇒ 复选框禁用并写明未实现 —— 与两个容量项同一条纪律（本文件开头第 2 条）：
+   * 一个能改却不起作用的开关会让用户相信一件不成立的事。
+   */
+  readonly enforced?: boolean
 }
 
 const TOGGLES: readonly ToggleSpec[] = [
@@ -94,7 +101,14 @@ const TOGGLES: readonly ToggleSpec[] = [
   {
     key: 'prefetch',
     label: '后台预取文档',
-    hint: '收到文件类消息时提前拉取密文，点开更快。尚未实现（计划 M3）。',
+    /**
+     * 唯一一个"还没有实现"的设置项：`Settings.prefetch` 至今**没有任何读者**，拨动它只会
+     * 让一个值变掉。因此它按第 2 条纪律禁用 —— 留这一行是为了说清"将来会有这个开关"，而
+     * 不是让用户现在就以为它在工作。里程碑不写在这里：路线图把它列在 M4 的**候选**里
+     * （未承诺），写死一个期号只会变成下一句过期的话。
+     */
+    hint: '收到文件类消息时提前拉取密文，点开更快。尚未实现（见 docs/roadmap.md 的 M4 候选）。',
+    enforced: false,
   },
   {
     key: 'wipeArchiveOnExit',
@@ -571,11 +585,14 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     const needsRestart = RESTART_REQUIRED_SETTINGS.includes(spec.key)
     // 转换期间禁用**这一个**开关：再拨一次只会撞上主进程的闸门。别的开关不受影响。
     const switching = spec.key === 'enableCiphertextCache' && cacheSwitch.kind === 'running'
+    const implemented = spec.enforced ?? true
 
     const checkbox = h('input', {
       type: 'checkbox',
       checked: current[spec.key],
-      disabled: switching,
+      disabled: switching || !implemented,
+      // 与容量项同一个说法：悬停时就能看到"为什么它不能点"。
+      ...(implemented ? {} : { title: '尚未生效' }),
       onChange: (event) => {
         const checked = (event.target as HTMLInputElement).checked
 

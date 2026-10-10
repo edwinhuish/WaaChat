@@ -1009,6 +1009,30 @@ check(
 note('解密由上游页面代码完成：证据与作废条件见 docs/research/inv3-assessment.md')
 
 // ---------------------------------------------------------------------------
+// 17. "未实现的项必须不可改"这条约定今天还剩几项
+// ---------------------------------------------------------------------------
+//
+// 设置窗口里每个控件都必须对得起它写的那句话：**能改的就一定真的会被执行**，否则要么禁用它
+// （容量项看 `SIZE_LIMIT_ENFORCED`、开关看 `ToggleSpec.enforced`），要么明确标注未实现。
+//
+// 今天只剩「后台预取文档」一项没实现，而它的判据不是"代码里有没有 TODO"，而是**有没有读者**：
+// `Settings.prefetch` 在主进程里一次都不出现。这条断言因此是**故意会过期**的 —— 预取落地时
+// 它会变红，提醒把界面上那个开关解除禁用、并同步 docs/usage.md 与路线图。
+
+section('未实现的设置项')
+
+const mainRoot = fileURLToPath(new URL('../src/main', import.meta.url))
+const prefetchReaders = sourceFiles(mainRoot).filter((file) =>
+  readFileSync(file, 'utf8').includes('prefetch'),
+)
+
+check(
+  '「后台预取文档」确实还没有任何读者（界面上因此必须禁用并写明未实现）',
+  prefetchReaders.length === 0,
+  prefetchReaders.map((file) => basename(file)).join(', '),
+)
+
+// ---------------------------------------------------------------------------
 
 section('结论')
 if (failures === 0) {
