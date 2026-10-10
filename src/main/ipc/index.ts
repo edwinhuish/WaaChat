@@ -315,7 +315,8 @@ export function registerIpcHandlers(): void {
     const record = archiveStore().byId(id)
     if (record === null) return { ok: false, reason: 'not-found' } as const
 
-    // 定位文件靠 storedName（磁盘上的实际文件名），哈希只用于日志与失败报告（ADR-0031）。
+    // 定位文件靠 storedName（磁盘上的实际路径：`年/月/原名`），哈希只用于日志与失败报告
+    // （ADR-0031 / ADR-0037）。
     return openPath(record.hash, record.storedName)
   })
 

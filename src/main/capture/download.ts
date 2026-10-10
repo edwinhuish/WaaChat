@@ -69,8 +69,9 @@ function handleDownload(item: DownloadItem, getSettings: () => Settings): void {
     return
   }
 
-  // 先落到归档目录内的临时位置。放在同一目录是为了让最终提交能用 rename 而不是 copy ——
-  // 归档目录里因此永远不存在半成品（见 archive/blobs.ts 的注释）。
+  // 先落到归档目录**根**下的临时位置。留在根上是为了让最终提交能用 rename 而不是 copy
+  // （年月子目录是它的下级，必然同盘）—— 归档目录里因此永远不存在半成品
+  // （见 archive/blobs.ts 的注释）。
   const temp = tempPath()
   item.setSavePath(temp)
 
@@ -108,9 +109,16 @@ async function finalize(input: FinalizeInput): Promise<void> {
   let bytes: number
   let created: boolean
 
+  /**
+   * 归档时间：既决定文件落在哪个年月子目录（[ADR-0037]），也是索引里的 `opened_at`。
+   * 只取**一次**时钟 —— 两处各取一次，跨月的那一毫秒就会得到"索引说 10 月、文件在 9 月"。
+   */
+  const openedAt = Date.now()
+
   try {
     ;({ hash, storedName, bytes, created } = await commitFromTemp(temp, name, {
       findStored: findStoredName,
+      openedAt,
     }))
   } catch (error) {
     await unlink(temp).catch(() => undefined)
@@ -129,11 +137,12 @@ async function finalize(input: FinalizeInput): Promise<void> {
     archiveStore().record({
       hash,
       name,
-      // 磁盘上的实际名字（原名，冲突时带哈希后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031）。
+      // 磁盘上的实际路径（相对归档目录：`年/月/原名`，冲突时文件名带哈希后缀）：
+      // 打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0037）。
       storedName,
       bytes,
       mime,
-      openedAt: Date.now(),
+      openedAt,
       // chatLabel 刻意留空：我们不读取页面内部数据（INV-1），
       // 因此没有可靠的会话来源。不要为了填上它而引入新的数据源。
     })
@@ -162,11 +171,11 @@ async function finalize(input: FinalizeInput): Promise<void> {
 }
 
 /**
- * 索引里已知的、内容为 `hash` 的那个磁盘文件名（且文件仍在）；没有则返回 `null`。
+ * 索引里已知的、内容为 `hash` 的那个磁盘路径（相对归档目录，且文件仍在）；没有则返回 `null`。
  *
  * 交给 `commitFromTemp()` 用：同一份内容换个名字发来时，给它在归档里**再挂一个名字**，
- * 而不是再写一份字节（[ADR-0031]）。索引是唯一知道"这份内容叫什么名字"的地方 ——
- * 磁盘上的名字与内容无关了，这正是那次改动的代价。
+ * 而不是再写一份字节（[ADR-0031]）。索引是唯一知道"这份内容叫什么名字、在哪个月份目录里"
+ * 的地方 —— 磁盘上的名字与内容无关了，这正是那次改动的代价。
  */
 function findStoredName(hash: string): string | null {
   for (const record of archiveStore().byHash(hash)) {

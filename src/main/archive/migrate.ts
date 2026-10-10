@@ -13,6 +13,12 @@
  *     文件操作一律走 `node:fs/promises`。用同步 API 会让主进程卡住，界面连同承载
  *     上游页面的那个窗口一起失去响应。
  *
+ * ── 年月子目录（[ADR-0037]）──
+ *
+ * 正文在 `<年>/<月>/` 里，因此搬运的清单是**相对路径**，目标那一侧的同名子目录会被建出来。
+ * 两边都要收掉自己留下的**空壳**（源位置搬空之后、回滚之后），否则"搬完了"却删不掉旧目录，
+ * 用户看到的是一个空目录树 —— 那与"早就搬干净了"在界面上没法区分。
+ *
  * ── 索引为什么不照计划搬 ──
  *
  * 计划（`planMigration`）是在索引连接**还开着**的时候算出来的，那时目录里除了
@@ -29,7 +35,7 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { copyFile, mkdir, rename, rmdir, rm, stat, unlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { TEMP_FILE_PREFIX } from '../../shared/constants'
 import type {
@@ -40,9 +46,20 @@ import type {
 import { failureReason } from '../errors'
 import { logger } from '../logger'
 import { setReadOnly } from './blobs'
+import { isArchiveMonth, isArchiveYear } from './layout'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
 const INDEX_PREFIX = '.index.sqlite'
+
+/**
+ * 这个相对路径是不是归档**根**下的索引文件。
+ *
+ * `includes('/')` 那一半不能省：年月目录里的文件是正文，哪怕它恰好叫 `.index.sqlite`
+ * —— 只按前缀认的话，它会被当成索引跳过不搬，迁移随后报"源目录非空"。
+ */
+function isIndexEntry(relative: string): boolean {
+  return !relative.includes('/') && relative.startsWith(INDEX_PREFIX)
+}
 
 /**
  * 并发兜底的最多轮数。
@@ -73,7 +90,8 @@ export interface MigrationPlan {
   readonly source: string
   readonly target: string
   /**
-   * 计划时看到的条目名：正文在前、索引在后（索引描述的是正文）。
+   * 计划时看到的条目**相对源目录的路径**（`2026/10/合同.pdf` 或旧平面的 `合同.pdf`）：
+   * 正文在前、索引在后（索引描述的是正文）。
    *
    * ⚠️ 其中的**索引**部分只是一份快照，执行时不会被照单搬走 —— 计划算出来的那一刻
    * 索引连接还开着，附属文件（`.index.sqlite-wal` / `-shm`）随后就会被一次干净的关闭
@@ -114,6 +132,10 @@ export interface MigrationHooks {
 // ---------------------------------------------------------------------------
 
 interface SourceScan {
+  /**
+   * 正文，**相对源目录的路径**：平面布局是 `合同.pdf`，
+   * 年月布局是 `2026/10/合同.pdf`（[ADR-0037]）。
+   */
   readonly blobs: readonly string[]
   readonly index: readonly string[]
   readonly disposable: readonly string[]
@@ -123,8 +145,15 @@ interface SourceScan {
 /**
  * 扫描源目录，把里面的条目分成三类。
  *
- * 遇到搬不了、又不能删的东西（符号链接、非点开头的目录）时**抛错**而不是跳过：
- * 跳过等于"迁移成功"而后用户的文件少了一部分，这比迁移失败严重得多。
+ * 归档目录里只允许出现四样东西，其余一律**抛错**而不是跳过 —— 跳过等于"迁移成功"而后
+ * 用户的文件少了一部分，那比迁移失败严重得多：
+ *
+ *   1. 正文（根下的非点开头文件，或 `年/月/` 里的文件，[ADR-0037]）
+ *   2. 索引（根下的 `.index.sqlite*`）
+ *   3. 我们自己的派生物（根下的 `.part-*`，或点开头的目录 `.open/`）
+ *   4. `年/月` 两级目录 —— **只认这两级、且必须是数字形状**，深层或形状不对仍是异常
+ *
+ * 符号链接一律不跟随、不迁移（INVARIANTS G-4）。
  */
 function scanSource(dir: string): SourceScan {
   const blobs: string[] = []
@@ -132,35 +161,52 @@ function scanSource(dir: string): SourceScan {
   const disposable: string[] = []
   let bytes = 0
 
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const name = entry.name
+  /**
+   * @param level 1 = 归档根，2 = 年份目录，3 = 月份目录。目录只允许出现在 1、2 两级。
+   */
+  const walk = (abs: string, prefix: string, level: number): void => {
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const name = entry.name
+      const relative = prefix === '' ? name : `${prefix}/${name}`
 
-    // 符号链接一律不跟随、不迁移（INVARIANTS G-4：归档目录内不跟随符号链接）。
-    if (entry.isSymbolicLink()) throw new MigrationError('unexpected-content', name)
-    // 非点开头的目录不该出现在归档目录里 —— 那说明这个目录被别的东西用了。
-    if (entry.isDirectory() && !name.startsWith('.'))
-      throw new MigrationError('unexpected-content', name)
-    if (!entry.isFile() && !entry.isDirectory())
-      throw new MigrationError('unexpected-content', name)
+      if (entry.isSymbolicLink()) throw new MigrationError('unexpected-content', relative)
 
-    if (entry.isDirectory()) {
-      disposable.push(name) // `.open/`
-      continue
+      if (entry.isDirectory()) {
+        // 点开头的目录（`.open/`）是旧版本的派生物，删掉即可。
+        if (level === 1 && name.startsWith('.')) {
+          disposable.push(name)
+          continue
+        }
+
+        const isContainer =
+          (level === 1 && isArchiveYear(name)) || (level === 2 && isArchiveMonth(name))
+        if (!isContainer) throw new MigrationError('unexpected-content', relative)
+
+        walk(join(abs, name), relative, level + 1)
+        continue
+      }
+
+      if (!entry.isFile()) throw new MigrationError('unexpected-content', relative)
+
+      // 索引与临时文件只可能落在归档根。
+      if (level === 1) {
+        if (name.startsWith(INDEX_PREFIX)) {
+          index.push(name)
+          continue
+        }
+
+        if (name.startsWith('.')) {
+          disposable.push(name) // `.part-*` 半成品
+          continue
+        }
+      }
+
+      blobs.push(relative)
+      bytes += statSync(join(abs, name)).size
     }
-
-    if (name.startsWith(INDEX_PREFIX)) {
-      index.push(name)
-      continue
-    }
-
-    if (name.startsWith('.')) {
-      disposable.push(name) // `.part-*` 半成品
-      continue
-    }
-
-    blobs.push(name)
-    bytes += statSync(join(dir, name)).size
   }
+
+  walk(dir, '', 1)
 
   return { blobs, index, disposable, bytes }
 }
@@ -270,12 +316,12 @@ export async function migrateArchive(
 
     // 正文照计划搬；索引留到收尾阶段，那时按源目录的**实际内容**再枚举一次
     // （理由见文件头与下面的收尾阶段）。
-    for (const [index, name] of plan.entries.entries()) {
-      if (name.startsWith(INDEX_PREFIX)) continue
+    for (const [index, relative] of plan.entries.entries()) {
+      if (isIndexEntry(relative)) continue
 
-      bytesDone += await moveEntry(plan.source, plan.target, name)
+      bytesDone += await moveEntry(plan.source, plan.target, relative)
       done += 1
-      hooks?.afterEntry?.(name, index)
+      hooks?.afterEntry?.(relative, index)
       report('migrating')
     }
 
@@ -289,10 +335,10 @@ export async function migrateArchive(
       const late = scanSource(plan.source).blobs
       if (late.length === 0) break
 
-      for (const name of late) {
-        bytesDone += await moveEntry(plan.source, plan.target, name)
+      for (const relative of late) {
+        bytesDone += await moveEntry(plan.source, plan.target, relative)
         done += 1
-        hooks?.afterEntry?.(name, plan.entries.length)
+        hooks?.afterEntry?.(relative, plan.entries.length)
         report('finishing')
       }
     }
@@ -310,6 +356,10 @@ export async function migrateArchive(
       done += 1
       report('finishing')
     }
+
+    // 正文搬空之后，源目录里会留下一批**空的**年月子目录（[ADR-0037]），先收掉它们，
+    // 否则下面的 `rmdir` 会因为源目录非空而失败 —— 旧位置于是留下一个空壳目录树。
+    await removeEmptyDirs(plan.source)
 
     // 源目录空了才删它；没空说明还有东西搬不走，留着让用户看得见。
     await removeIfEmpty(plan.source)
@@ -351,15 +401,15 @@ export async function rollbackMigration(plan: MigrationPlan): Promise<boolean> {
   // 源目录可能已经被删掉了（迁移成功后的收尾），搬回之前要先把它建回来。
   await mkdir(plan.source, { recursive: true, mode: DIR_MODE }).catch(() => undefined)
 
-  for (const name of listTargetEntries(plan.target)) {
+  for (const relative of listTargetEntries(plan.target)) {
     // 只碰"我们可能搬过去的东西"。目标目录在计划时被验证为空，理论上里面只有我们的
     // 条目 —— 但"理论上"不能拿来搬用户的东西：这期间恰好被写进目标目录的外来文件，
     // 会被搬进用户的归档目录。宁可把它留在原地（界面本来就提示"请核对两处"）。
-    if (!isOwnEntry(name)) continue
-    if (existsSync(join(plan.source, name))) continue
+    if (!isOwnEntry(relative)) continue
+    if (existsSync(join(plan.source, relative))) continue
 
     try {
-      await moveEntry(plan.target, plan.source, name)
+      await moveEntry(plan.target, plan.source, relative)
     } catch (error) {
       complete = false
       logger.error('archive: could not move an entry back', { reason: failureReason(error) })
@@ -367,6 +417,10 @@ export async function rollbackMigration(plan: MigrationPlan): Promise<boolean> {
   }
 
   if (complete) {
+    // 年月子目录会随着里面的文件被搬空而留下来（[ADR-0037]），先自底向上收掉空目录；
+    // 否则最后那次 `rmdir(plan.target)` 会因为目标目录非空而失败。
+    await removeEmptyDirs(plan.target)
+
     // 只删**空**目录：`rmdir` 在目录非空时抛 ENOTEMPTY。不递归删除是这条路径上
     // 最重要的一条纪律 —— 目标目录里可能有并发写入的东西，也可能有我们没搬回来的。
     await rmdir(plan.target).catch(() => undefined)
@@ -376,47 +430,98 @@ export async function rollbackMigration(plan: MigrationPlan): Promise<boolean> {
 }
 
 /**
- * 目标目录里的**文件**名。
+ * 自底向上删掉目录树里的**空**目录（不含根）。
  *
- * 只列文件：目录（`.open/` 之类）从不会被搬过去，出现就说明那是别的东西，不该由回滚
- * 去动它。目录不存在时返回空列表 —— 回滚可能在任何阶段被调用。
+ * 用 `rmdir` 而不是 `rm -r`：`rmdir` 在目录非空时抛 `ENOTEMPTY`，这正是我们要的 ——
+ * 里面还有搬不走的东西（或者根本不是我们的目录）就留着它，让用户看得见。删不掉一律
+ * 忽略：这一步只是为了清掉自己留下的空壳，失败不影响"回滚是否成功"这个结论。
+ */
+async function removeEmptyDirs(dir: string): Promise<void> {
+  if (!existsSync(dir)) return
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+
+    const child = join(dir, entry.name)
+    await removeEmptyDirs(child)
+    await rmdir(child).catch(() => undefined)
+  }
+}
+
+/**
+ * 目标目录里的**文件**（相对路径，含年月子目录那一段）。
+ *
+ * 只列文件：目录（年月容器、`.open/` 之类）本身不会被搬来搬去，出现就说明那是别的东西，
+ * 不该由回滚去动它。点开头的目录不进去（`.open/` 从不会被搬过去）。目录不存在时返回空
+ * 列表 —— 回滚可能在任何阶段被调用。
  */
 function listTargetEntries(dir: string): string[] {
   if (!existsSync(dir)) return []
 
-  return readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
+  const entries: string[] = []
+
+  const walk = (abs: string, prefix: string): void => {
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`
+
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith('.')) walk(join(abs, entry.name), relative)
+        continue
+      }
+
+      if (entry.isFile()) entries.push(relative)
+    }
+  }
+
+  walk(dir, '')
+
+  return entries
 }
 
 /**
- * 这个名字是不是"归档目录里属于我们的东西"。
+ * 这个相对路径是不是"归档目录里属于我们的东西"。
  *
- * 归档目录顶层只有三类文件：正文（SHA-256 十六进制名）、索引（`.index.sqlite*`）、
- * 我们自己的临时文件（`.part-*`）。回滚用它把"我们搬过去的"与"别人放进来的"分开。
+ * 我们的东西只有四类：正文（根下的非点开头文件，或 `年/月/` 里的文件）、索引
+ * （根下的 `.index.sqlite*`）、我们自己的临时文件（根下的 `.part-*`）、以及承载正文的
+ * `年/月` 两级目录。回滚用它把"我们搬过去的"与"别人放进来的"分开。
+ *
+ * 正文在 [ADR-0031] 之后用**原文名**，没有可判定的名字形态了 —— 因此根下的判据只能放宽成
+ * "非点开头"（点开头的只剩索引与临时文件，那两类按前缀认掉）。为什么选择放宽而不是收紧：
+ * 两个方向的错误不对称。**漏搬**一个我们自己的文件会让回滚**谎报成功**，而文件其实留在
+ * 新位置；错搬一个外来文件只是让用户在两个位置都看到它（界面本来就提示"请核对两处"）。
+ * 另有两道更早的防线：目标目录在计划时必须为空、源目录里已有同名文件就跳过。
  */
-function isOwnEntry(name: string): boolean {
-  if (name.startsWith(INDEX_PREFIX) || name.startsWith(TEMP_FILE_PREFIX)) return true
+function isOwnEntry(relative: string): boolean {
+  const segments = relative.split('/')
 
-  // 正文在 [ADR-0031] 之后用**原文名**，没有可判定的名字形态了 —— 因此只能放宽成"非点开头"
-  // （点开头的只剩索引与临时文件，那两类上面按前缀认掉了）。为什么选择放宽而不是收紧：
-  // 两个方向的错误不对称。**漏搬**一个我们自己的文件会让回滚**谎报成功**，而文件其实留在
-  // 新位置；错搬一个外来文件只是让用户在两个位置都看到它（界面本来就提示"请核对两处"）。
-  // 另有两道更早的防线：目标目录在计划时必须为空、源目录里已有同名文件就跳过。
-  return !name.startsWith('.')
+  if (segments.length === 1) {
+    const name = segments[0] ?? ''
+    if (name.startsWith(INDEX_PREFIX) || name.startsWith(TEMP_FILE_PREFIX)) return true
+
+    return !name.startsWith('.')
+  }
+
+  // 深处（`年/月/…`）只有我们的年月容器会长这样；形状不对就不是我们的。
+  return isArchiveYear(segments[0] ?? '')
 }
 
 /**
  * 把一个条目从 `fromDir` 搬到 `toDir`，返回它的字节数。
+ *
+ * @param relative 相对源目录的路径，可能带年月子目录（`2026/10/合同.pdf`，[ADR-0037]）——
+ *   目标那一侧的同名子目录会被建出来（`0700`）。
  *
  * 同一文件系统下 `rename` 是原子且零拷贝的。跨文件系统（用户把归档放到了另一个
  * 挂载点）时退化为"复制到目标里的临时名 → 校验大小 → 改名"，这样目标目录里不会
  * 出现一个看起来完整、实则写了一半的文件。临时名沿用 `.part-` 前缀，因此即使进程
  * 正好死在这里，残留也会被下次启动的 `sweepTempFiles()` 清掉。
  */
-async function moveEntry(fromDir: string, toDir: string, name: string): Promise<number> {
-  const from = join(fromDir, name)
-  const to = join(toDir, name)
+async function moveEntry(fromDir: string, toDir: string, relative: string): Promise<number> {
+  const from = join(fromDir, relative)
+  const to = join(toDir, relative)
+
+  // 目标那一侧的年月子目录可能还不存在（跨设备复制到新位置、或回滚到刚重建的空目录）。
+  await mkdir(dirname(to), { recursive: true, mode: DIR_MODE })
 
   try {
     await rename(from, to)
@@ -425,14 +530,19 @@ async function moveEntry(fromDir: string, toDir: string, name: string): Promise<
     if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
   }
 
-  const staging = join(toDir, `${TEMP_FILE_PREFIX}migrating-${name}`)
+  /**
+   * 临时名落在目标目录**根**（`sweepTempFiles()` 只扫根），因此要把路径压平成
+   * 一段文件名 —— 否则 `join(toDir, '.part-migrating-2026/10/x.pdf')` 会在还不存在
+   * 的子目录里创建文件。
+   */
+  const staging = join(toDir, `${TEMP_FILE_PREFIX}migrating-${relative.replaceAll('/', '_')}`)
 
   await copyFile(from, staging)
 
   const [source, copied] = await Promise.all([stat(from), stat(staging)])
   if (source.size !== copied.size) {
     await rm(staging, { force: true })
-    throw new MigrationError('write-failed', name)
+    throw new MigrationError('write-failed', relative)
   }
 
   await rename(staging, to)

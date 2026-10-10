@@ -14,6 +14,16 @@
  *   2. **同一份内容**：只存一份。名字相同时丢掉临时文件；名字不同时给已有内容**再挂一个
  *      名字**（硬链接，不额外占字节）。因此 `usage()` 必须按 inode 去重统计。
  *
+ * ── 落进哪一层：年 / 月 ──
+ *
+ * 正文落在 `<归档目录>/<年>/<月>/`（[ADR-0037]），这两个目录由 `ensureArchiveFolder()`
+ * 按需创建并收到 `0700`。**同名的判据因此变成"同一个年月目录内"**：`合同.pdf` 在
+ * `2026/09` 与 `2026/10` 各有一份互不干扰 —— 跨月不再需要哈希后缀，这是分区带来的好处；
+ * 而同一份内容跨月出现时仍然是硬链接（不同目录、同一个 inode），占用不变。
+ *
+ * 临时文件**始终落在归档目录根**：`rename` 要求同一文件系统（根与年月子目录必然同盘），
+ * 而 `sweepTempFiles()` 因此不必递归。
+ *
  * ── 顺序 ──
  *
  * 算哈希 → 决定名字 → 原子改名（rename，不是 copy）→ 置为只读。用 rename 是为了让归档
@@ -43,21 +53,22 @@ import { join } from 'node:path'
 import { TEMP_FILE_PREFIX } from '../../shared/constants'
 import { hashPrefix, logger, redactPath } from '../logger'
 import { archiveDir } from '../paths'
+import { archiveRelativePath, folderFor, normalizeStoredPath } from './layout'
 import { archiveNameCandidates } from './naming'
 
 /** 归档目录权限：仅本人可读写执行。里面的文件是**解密后的明文**。 */
 const DIR_MODE = 0o700
 
 /**
- * 确保归档目录存在，权限正确。幂等。
+ * 建目录并确保权限是 0700。幂等。
  *
  * 必须在目录**已存在**时也收紧权限，而不是只靠 `mkdir` 的 `mode`：
- * `mkdirSync` 的 mode 只对新建的目录生效，而归档位置是用户可配的 ——
- * 默认位置就在 `~/Documents` 下，用户完全可能自己先建好了那个目录（权限通常是 0755）。
- * 那条路径上"目录必须 0700"会**静默失效**，而里面是解密后的明文。
+ * `mkdirSync` 的 mode 只对新建的目录生效，而这些目录都可能先被用户建好 ——
+ * 归档位置就在 `~/Documents` 下，用户完全可能自己先建好了它（权限通常是 0755），
+ * 年月子目录同理（例如他从别处拷来一棵同名目录树）。那条路径上"目录必须 0700"会
+ * **静默失效**，而里面是解密后的明文。
  */
-export function ensureArchiveDir(): void {
-  const dir = archiveDir()
+function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: DIR_MODE })
 
   try {
@@ -75,15 +86,45 @@ export function ensureArchiveDir(): void {
   }
 }
 
+/** 确保归档根目录存在，权限正确。幂等。 */
+export function ensureArchiveDir(): void {
+  ensureDir(archiveDir())
+}
+
 /**
- * 归档目录里某个文件名的完整路径。
+ * 确保某个年月子目录存在，权限正确（`0700`）。幂等。
  *
- * @param storedName 磁盘上的**实际**文件名：原文名（冲突时带一小段哈希后缀），或旧布局的
- *   内容哈希。调用方从 `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值拿到它。
+ * 只由落盘路径调用（[ADR-0037]）。它**只接受 `folderFor()` 算出来的形态**
+ * （`2026/10`）而不再净化：这里的输入是我们自己算的，若它不像年月，说明调用方写错了
+ * 而不是数据脏了 —— 那时 `mkdir` 会老老实实建出一个怪目录，比抛错更难查。
+ */
+export function ensureArchiveFolder(folder: string): void {
+  ensureDir(archiveFilePath(folder))
+}
+
+/**
+ * 归档目录里某个文件（或年月子目录）的完整路径。
+ *
+ * @param storedName 相对归档目录的**路径**：现在是 `年/月/文件名`
+ *   （如 `2026/10/合同.pdf`，[ADR-0037]），旧记录是裸文件名（原文名 / 内容哈希）。
+ *   两种形态都对，因为这里做的就是把它接到归档目录后面。调用方从
+ *   `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值拿到它。
  */
 export function archiveFilePath(storedName: string): string {
-  return join(archiveDir(), storedName)
+  const relative = normalizeStoredPath(storedName)
+
+  /**
+   * 净化之后什么都不剩（空串、`.`、`..`）：返回一个归档目录里**不可能存在**的名字，
+   * 而不是归档目录本身 —— 后者会让 `existsSync()` 判为真，把"打开这个文件"变成
+   * "用文件管理器打开整个归档目录"。点开头保证它不会被 `usage()` 当成正文。
+   */
+  if (relative === '') return join(archiveDir(), INVALID_STORED_PATH)
+
+  return join(archiveDir(), relative)
 }
+
+/** 净化后什么都不剩时用的占位名。见 `archiveFilePath()`。 */
+const INVALID_STORED_PATH = '.invalid-stored-name'
 
 /** 旧版本的影子目录（[ADR-0031] 之前为"带原始文件名的硬链接"而建）。 */
 const LEGACY_OPEN_DIR_NAME = '.open'
@@ -156,7 +197,10 @@ export function sha256File(path: string): Promise<string> {
 
 export interface CommitResult {
   readonly hash: string
-  /** 磁盘上的实际文件名（原文名；同名冲突时带一小段哈希后缀）。 */
+  /**
+   * 磁盘上的实际路径**相对归档目录**：`年/月/文件名`
+   * （如 `2026/10/合同.pdf`；同名冲突时文件名带一小段哈希后缀，[ADR-0031] / [ADR-0037]）。
+   */
   readonly storedName: string
   readonly bytes: number
   /**
@@ -168,23 +212,33 @@ export interface CommitResult {
 
 export interface CommitOptions {
   /**
-   * 内容哈希已知时，它在归档里的文件名；不知道（或索引里没有）则返回 `null`。
+   * 内容哈希已知时，它在归档里的**相对路径**；不知道（或索引里没有）则返回 `null`。
    *
    * **注入**而不是直接查索引：`archive/` 内部的方向是 `store → blobs`，反过来 import 会成环
    * （`store.ts` 要 import 这里的 `ensureArchiveDir` 与 `usage`）。
    */
   readonly findStored?: (hash: string) => string | null
+
+  /**
+   * 归档时间（Unix 毫秒），决定文件落在哪个年月子目录（[ADR-0037]）。默认"现在"。
+   *
+   * ⚠️ 调用方**必须**把同一个值交给索引（`store.record({ openedAt })`）：两处各取一次
+   * 时钟，跨月的那一毫秒就会得到"索引说 10 月、文件在 9 月"。
+   */
+  readonly openedAt?: number
 }
 
 /**
- * 把临时文件提交进归档，文件名用**原文名**（[ADR-0031]）。
+ * 把临时文件提交进归档：落在 `<归档目录>/<年>/<月>/`，文件名用**原文名**（[ADR-0031]）。
  *
  * 顺序不要重排：
  *
- *   算哈希 → 定名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字" → 否则原子改名 → 置只读
+ *   算哈希 → 定年月目录与名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字"
+ *   → 否则原子改名 → 置只读
  *
  * 用 rename 而不是 copy，是为了让归档目录里**永远不存在半成品**：要么文件不存在，要么它是
- * 完整的。前提是临时文件与目标在同一个文件系统上（因此 `tempPath()` 也落在归档目录内）。
+ * 完整的。前提是临时文件与目标在同一个文件系统上 —— 临时文件始终在归档目录**根**，而年月
+ * 子目录是它的下级，因此这个前提由构造保证。
  *
  * @param temp 位于归档目录内的临时文件（`capture/download.ts` 下载时指定）
  * @param rawName 打开时的原始文件名，**不可信输入**（由对端发送者决定），由 `naming.ts` 净化
@@ -197,17 +251,22 @@ export async function commitFromTemp(
   const hash = await sha256File(temp)
   const bytes = statSync(temp).size
 
-  // 同一份内容可能已经在归档里（只是叫别的名字）—— 那就只多挂一个名字，不再写一份字节。
+  const folder = folderFor(options.openedAt ?? Date.now())
+  ensureArchiveFolder(folder)
+
+  // 同一份内容可能已经在归档里（可能叫别的名字、也可能在同一个月之外的目录）——
+  // 那就只多挂一个名字，不再写一份字节。
   const existing = findExisting(hash, bytes, options)
 
   for (const candidate of archiveNameCandidates(rawName, hash)) {
-    const target = archiveFilePath(candidate)
+    const storedName = archiveRelativePath(folder, candidate)
+    const target = archiveFilePath(storedName)
 
     if (existsSync(target)) {
       // 这个名字被占着：内容相同就是"已经存过"（去重），不同就试下一个候选名。
       if (await sameContent(target, hash, bytes)) {
         await unlink(temp)
-        return { hash, storedName: candidate, bytes, created: false }
+        return { hash, storedName, bytes, created: false }
       }
 
       continue
@@ -218,7 +277,7 @@ export async function commitFromTemp(
       linkSync(existing, target)
       setReadOnly(target)
       await unlink(temp)
-      return { hash, storedName: candidate, bytes, created: false }
+      return { hash, storedName, bytes, created: false }
     }
 
     renameSync(temp, target)
@@ -227,7 +286,7 @@ export async function commitFromTemp(
     // 因此中间没有可被观察到的坏状态（[ADR-0031]）。
     setReadOnly(target)
 
-    return { hash, storedName: candidate, bytes, created: true }
+    return { hash, storedName, bytes, created: true }
   }
 
   /**
@@ -242,9 +301,9 @@ export async function commitFromTemp(
 /**
  * 磁盘上已有的、内容为 `hash` 的那份文件（绝对路径）；不确定时返回 `null`。
  *
- * 先用索引给的线索，再确认那个文件还在、**大小也对得上** —— 索引可能指向一个已被删除或已被
- * 替换的文件，那时去 link 会得到一个错的链接或 `ENOENT`。只比大小是够的：为"索引过期"这种
- * 情形每次下载都把整个文件哈希一遍不值得。
+ * 先用索引给的线索（相对路径，可能落在别的年月目录里），再确认那个文件还在、**大小也对得上**
+ * —— 索引可能指向一个已被删除或已被替换的文件，那时去 link 会得到一个错的链接或 `ENOENT`。
+ * 只比大小是够的：为"索引过期"这种情形每次下载都把整个文件哈希一遍不值得。
  */
 function findExisting(hash: string, bytes: number, options: CommitOptions): string | null {
   const hinted = options.findStored?.(hash)
@@ -279,6 +338,9 @@ async function sameContent(path: string, hash: string, bytes: number): Promise<b
  *
  * 进程被 kill 会留下它们。应在启动时调用一次。
  * 返回清掉的数量，便于日志确认。
+ *
+ * 只看归档目录**根**：临时文件永远落在这里（年月子目录里不会出现 `.part-*`，
+ * 见 `tempPath()` 与 `commitFromTemp()`），因此不必递归。
  */
 export function sweepTempFiles(): number {
   ensureArchiveDir()
@@ -309,20 +371,35 @@ export function usage(): { bytes: number; files: number } {
   let bytes = 0
   const inodes = new Set<number>()
 
-  for (const entry of readdirSync(archiveDir())) {
-    // 点开头的条目都不是正文：`.part-*` 是半成品（临时文件），`.index.sqlite*` 是索引。
-    if (entry.startsWith('.')) continue
+  /**
+   * 递归：正文现在在 `<年>/<月>/` 里（[ADR-0037]）。
+   *
+   * 跳过点开头的条目（`.part-*` 半成品、`.index.sqlite*` 索引、旧版 `.open/`）与符号链接
+   * （INVARIANTS G-4：归档目录内不跟随符号链接）。inode 集合**跨目录**共用 —— 硬链接可以
+   * 指向另一个年月目录里的正文，按目录分别去重会让占用翻倍。
+   */
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
 
-    try {
-      const stat = statSync(join(archiveDir(), entry))
-      if (inodes.has(stat.ino)) continue
+      if (entry.isDirectory()) {
+        walk(join(dir, entry.name))
+        continue
+      }
 
-      inodes.add(stat.ino)
-      bytes += stat.size
-    } catch {
-      // 统计失败不应影响主流程。
+      try {
+        const stat = statSync(join(dir, entry.name))
+        if (inodes.has(stat.ino)) continue
+
+        inodes.add(stat.ino)
+        bytes += stat.size
+      } catch {
+        // 统计失败不应影响主流程。
+      }
     }
   }
+
+  walk(archiveDir())
 
   return { bytes, files: inodes.size }
 }
@@ -344,7 +421,8 @@ export function wipeArchive(): number {
   let removed = 0
 
   for (const entry of readdirSync(archiveDir())) {
-    // 连残留的 `.part-*` 与旧版本的 `.open/` 一起清掉：它们都是派生物。
+    // 连残留的 `.part-*`、旧版本的 `.open/` 与年月子目录一起清掉：前两者是派生物，
+    // 后者是正文的容器 —— 清空归档就是连容器一起清。
     try {
       rmSync(join(archiveDir(), entry), { recursive: true, force: true })
       removed += 1

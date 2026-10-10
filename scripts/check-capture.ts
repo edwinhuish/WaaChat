@@ -19,9 +19,15 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import { ARCHIVE_FILE_MODE } from '../src/main/archive/blobs'
+import {
+  folderFor,
+  isArchiveMonth,
+  isArchiveYear,
+  normalizeStoredPath,
+} from '../src/main/archive/layout'
 import { isAllowedTarget } from '../src/main/archive/migrate'
 import { archiveNameCandidates, sanitizeFileName } from '../src/main/archive/naming'
 import { STAGING_DIR_NAME, isEntryName } from '../src/main/capture/cache-files'
@@ -193,6 +199,31 @@ check(
   archiveNameCandidates('合同.pdf', sampleHash).every((name) => name.endsWith('.pdf')),
 )
 
+// 归档正文的时间分区（ADR-0037）：正文在 `<年>/<月>/` 里。三条判据都属于"改了没人会立刻
+// 发现"的那一类 —— 年月算错会让"按时间翻文件夹"不可信，判据放宽则会让迁移把用户自己的目录
+// 当成正文容器（或者反过来，让新布局的归档根本迁移不了）。
+check(
+  '归档时间分区成 年/月（本地时间）',
+  folderFor(new Date(2026, 9, 5, 12).getTime()) === '2026/10',
+)
+check(
+  '年月判据收得够紧（`26` / `13` 都不是我们的容器）',
+  isArchiveYear('2026') &&
+    !isArchiveYear('26') &&
+    isArchiveMonth('01') &&
+    isArchiveMonth('12') &&
+    !isArchiveMonth('13') &&
+    !isArchiveMonth('1'),
+)
+// 索引里的相对路径会被拼到归档目录后面，因此它是**路径穿越的唯一入口**（ADR-0031 引入
+// stored_name，ADR-0037 让它可以带子目录）。这里的判据是纯字符串处理，能离线断言。
+check(
+  '索引里的相对路径走不出归档目录',
+  normalizeStoredPath('../../etc/passwd') === 'etc/passwd' &&
+    normalizeStoredPath('/etc/passwd') === 'etc/passwd' &&
+    normalizeStoredPath('2026/10/合同.pdf') === '2026/10/合同.pdf',
+)
+
 // 迁移目标是用户在对话框里选的目录（ADR-0019），选错一个 —— 选到自己的子目录、或
 // 选到上级 —— 会让搬迁变成"自我递归"或"搬完等于没搬"。这条判据是纯字符串比较，
 // 因此能离线断言。
@@ -212,6 +243,37 @@ check(
 )
 
 const archive = archiveDir()
+
+/**
+ * 递归列出归档目录里的**正文**与**年月容器**（相对路径）。
+ *
+ * 必须递归：正文从 ADR-0037 起在 `<年>/<月>/` 里。点开头的条目一律跳过 ——
+ * `.part-*` 是半成品、`.index.sqlite*` 是索引、`.open/` 是旧版本的影子目录，
+ * 它们都不是正文，也不该被算进这里的任何一条断言。
+ */
+function walkArchive(dir: string, prefix = ''): { blobs: string[]; dirs: string[] } {
+  const blobs: string[] = []
+  const dirs: string[] = []
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue
+
+    const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`
+
+    if (entry.isDirectory()) {
+      dirs.push(relative)
+      const nested = walkArchive(join(dir, entry.name), relative)
+      blobs.push(...nested.blobs)
+      dirs.push(...nested.dirs)
+      continue
+    }
+
+    if (entry.isFile()) blobs.push(relative)
+  }
+
+  return { blobs, dirs }
+}
+
 if (existsSync(archive)) {
   check(
     `归档目录权限为 0700`,
@@ -219,19 +281,33 @@ if (existsSync(archive)) {
     `实际 ${(statSync(archive).mode & 0o777).toString(8)}`,
   )
 
-  const entries = readdirSync(archive)
-  const blobs = entries.filter((name) => !name.startsWith('.'))
-  const leftovers = entries.filter((name) => name.startsWith('.part-'))
+  const { blobs, dirs } = walkArchive(archive)
 
-  const legacyNames = blobs.filter((name) => /^[0-9a-f]{64}$/.test(name)).length
-
-  note(`归档目录：${archive}`)
-  note(
-    `正文 ${blobs.length} 个${legacyNames === 0 ? '' : `（其中 ${legacyNames} 个是旧布局的哈希名，打开时会补上只读）`}`,
+  /**
+   * 年月子目录也是"里面是解密后的明文"那一类（ADR-0037）：它们由落盘时的
+   * `ensureArchiveFolder()` 建并收紧，这里回头确认那一步真的生效了。
+   */
+  const looseDirs = dirs.filter(
+    (relative) => (statSync(join(archive, relative)).mode & 0o777) !== 0o700,
+  )
+  check(
+    '年月子目录权限同样是 0700',
+    looseDirs.length === 0,
+    `${looseDirs.length} 个目录更宽：${looseDirs.slice(0, 3).join(', ')}`,
   )
 
   // 残留的临时文件说明上次进程是被 kill 的（正常退出不会留下）。
   // 它不是错误 —— 下次启动会清扫掉 —— 但知道这件事有助于解释磁盘占用。
+  // 只看**根**：临时文件永远落在归档根（年月子目录里不会出现 `.part-*`）。
+  const leftovers = readdirSync(archive).filter((name) => name.startsWith('.part-'))
+
+  const legacyNames = blobs.filter((relative) => /^[0-9a-f]{64}$/.test(basename(relative))).length
+
+  note(`归档目录：${archive}`)
+  note(
+    `正文 ${blobs.length} 个，分布在 ${dirs.length} 个子目录里${legacyNames === 0 ? '' : `（其中 ${legacyNames} 个是旧布局的哈希名，打开时会补上只读）`}`,
+  )
+
   check(
     '没有残留的半成品',
     leftovers.length === 0,
@@ -245,9 +321,10 @@ if (existsSync(archive)) {
    * 本来就不是只读的，而是在被打开时懒收紧。若把它也算进来，一台老机器上这条断言
    * 会永远变红 —— 一个永远红的检查等于没有检查。
    */
-  const legacy = (name: string): boolean => /^[0-9a-f]{64}$/.test(name)
+  const legacy = (relative: string): boolean => /^[0-9a-f]{64}$/.test(basename(relative))
   const writable = blobs.filter(
-    (name) => !legacy(name) && (statSync(join(archive, name)).mode & 0o777) !== ARCHIVE_FILE_MODE,
+    (relative) =>
+      !legacy(relative) && (statSync(join(archive, relative)).mode & 0o777) !== ARCHIVE_FILE_MODE,
   )
 
   check(

@@ -26,9 +26,10 @@ import { hashPrefix, logger } from '../logger'
  * 交给系统默认应用打开。
  *
  * @param hash 内容哈希。**只用于日志与失败报告**（不用于定位文件）
- * @param storedName 磁盘上的实际文件名，来自 `ArchiveRecord.storedName` 或
- *   `commitFromTemp()` 的返回值。它是**不可信输入的产物**，但已经由 `archive/naming.ts`
- *   净化过，且只在归档目录内拼路径。
+ * @param storedName 磁盘上的实际路径（相对归档目录：`年/月/原文名`），来自
+ *   `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值。它是**不可信输入的产物**，
+ *   但已经由 `archive/naming.ts` 净化过，再经 `archive/layout.ts` 的
+ *   `normalizeStoredPath()` 剥掉目录穿越，最终只在归档目录内拼路径。
  */
 export async function openPath(hash: string, storedName: string): Promise<OpenOutcome> {
   const path = archiveFilePath(storedName)

@@ -305,6 +305,94 @@ describe('migrateArchive（索引清单）', () => {
 })
 
 /**
+ * 年月子目录（[ADR-0037]）。
+ *
+ * 上面那些用例照旧跑**平面布局**，而且必须继续通过：旧归档里的文件还在根目录下，
+ * 索引里的 `stored_name` 记着它们在哪儿 —— 迁移要同时伺候两种形态。这里补的是新的那一半，
+ * 外加"什么才算我们的容器"这条判据：放宽会把用户自己的目录当成正文搬走，收紧则会让
+ * 全新布局的归档**根本迁移不了**。
+ */
+describe('migrateArchive（年月子目录）', () => {
+  const MONTH_BLOB = '2026/10/2026年第三季度采购合同.pdf'
+  const MONTH_BODY = 'month body'
+
+  /** 造一份"新布局"的正文：`<源>/2026/10/<原名>`。 */
+  function seedMonthBlob(): void {
+    mkdirSync(join(source, '2026', '10'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(source, MONTH_BLOB), MONTH_BODY)
+  }
+
+  it('年月目录里的正文按相对路径进计划（并计入文件数/字节数）', () => {
+    seedMonthBlob()
+
+    const planned = plan()
+
+    expect(planned.entries).toContain(MONTH_BLOB)
+    expect(planned.summary).toEqual({ files: 1, bytes: MONTH_BODY.length })
+  })
+
+  it('连两级子目录一起搬到新位置，并删掉搬空的源目录', async () => {
+    seedSource()
+    seedMonthBlob()
+
+    await expect(migrateArchive(plan(), () => undefined)).resolves.toEqual({ ok: true })
+
+    expect(readFileSync(join(target, MONTH_BLOB), 'utf8')).toBe(MONTH_BODY)
+    // 源目录搬空了就该被收掉；里面还留着空的 `2026/10/` 会让用户以为"没搬干净"。
+    expect(existsSync(source)).toBe(false)
+  })
+
+  it('回滚把子目录里的正文搬回原位，并收掉目标里被搬空的年月目录', async () => {
+    seedMonthBlob()
+    const planned = plan()
+
+    await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })
+    expect(existsSync(join(target, MONTH_BLOB))).toBe(true)
+
+    await expect(rollbackMigration(planned)).resolves.toBe(true)
+
+    expect(readFileSync(join(source, MONTH_BLOB), 'utf8')).toBe(MONTH_BODY)
+    // 空目录也要收掉：只 `rmdir(目标)` 是不够的，年月目录会先把它挡住。
+    expect(existsSync(join(target, '2026'))).toBe(false)
+  })
+
+  it('迁移途中失败时，子目录里的正文也被搬回来', async () => {
+    seedMonthBlob()
+    const planned = plan()
+
+    const result = await migrateArchive(planned, () => undefined, {
+      afterEntry: (_relative, index) => {
+        if (index === 0) throw new Error('boom')
+      },
+    })
+
+    expect(result).toMatchObject({ ok: false, failure: 'write-failed', rolledBack: true })
+    expect(readFileSync(join(source, MONTH_BLOB), 'utf8')).toBe(MONTH_BODY)
+    expect(existsSync(join(target, '2026'))).toBe(false)
+  })
+
+  it('非年月的目录仍然是异常内容（不静默搬走别人的东西）', () => {
+    mkdirSync(join(source, 'stuff'), { recursive: true })
+    writeFileSync(join(source, 'stuff', 'x.txt'), 'x')
+
+    expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
+  })
+
+  it('形状不对的年份 / 月份不算我们的容器', () => {
+    mkdirSync(join(source, '26'), { recursive: true })
+    mkdirSync(join(source, '2027', '13'), { recursive: true })
+
+    expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
+  })
+
+  it('年月目录里不允许再出现第三层目录', () => {
+    mkdirSync(join(source, '2026', '10', 'deep'), { recursive: true })
+
+    expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
+  })
+})
+
+/**
  * 跨文件系统的那条分支（`rename` 抛 EXDEV）走的是另一段代码：复制 → 校验大小 → 改名。
  * 用 `/dev/shm`（通常与 `TMPDIR` 不是同一个设备）触发它；环境里没有独立 tmpfs 时
  * **跳过**，而不是让一个其实没走那条分支的用例假装通过。
