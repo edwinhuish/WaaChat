@@ -5,7 +5,7 @@ name: Release
 #   2. 手动触发（workflow_dispatch），对**已存在**的标签重跑或补发。
 #
 #      正常路径：
-#        pnpm run release -- --release minor
+#        pnpm run release --release minor
 #
 #      等价的手工入口（走这条路就必须自己保证 package.json 的版本与标签一致）：
 #        git tag v0.2.0 && git push origin v0.2.0
