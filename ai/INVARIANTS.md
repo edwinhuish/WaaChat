@@ -138,6 +138,6 @@ AppArmor profile 的文件名与声明名也必须与 `executableName` 同源，
 | G-1 | 渲染进程不直接访问文件系统，一律经 IPC | 权限集中，易评审 | renderer 下不出现 `node:fs` / `node:path` 导入（ESLint 已拦） |
 | G-2 | preload 只提供**单向**数据通道，不提供"让页面发起本地动作"的能力 | 远程内容触达本地能力是 T1 攻击面 | preload 暴露的方法**全部是读**或**经主进程校验的明确操作**，不接受任意路径参数 |
 | G-3 | 日志不写文件名全文、会话名、消息内容、绝对路径的用户名段 | 见 [`docs/security.md`](../docs/security.md) T4 | 记录日志处只用哈希前缀或相对目录名 |
-| G-4 | 归档目录内不跟随符号链接 | 防路径穿越 | `archive/blobs.ts` 的写入用随机临时名 + `rename` |
+| G-4 | 归档目录内不跟随符号链接 | 防路径穿越 | `archive/blobs.ts` 的写入用随机临时名 + `rename`；**淘汰**只处理索引给出的名字，且用 `lstat` 判断（不是 `stat`）—— 见 [ADR-0048](../docs/decisions.md#adr-0048) |
 | G-5 | 新增原生依赖必须说明它对 deb / AppImage 打包的影响 | 原生依赖引入跨架构构建与 prebuild 可用性问题；优先选 Node-API 模块以避免 ABI 耦合 | 见 [`docs/packaging.md`](../docs/packaging.md) 第 6 节 |
 | G-6 | `typescript` 锁在 6.0.x | `typescript-eslint` 的 peer 要求 `<6.1.0` | `dependabot.yml` 已忽略 `>=6.1.0` |
