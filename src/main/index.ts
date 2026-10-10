@@ -11,6 +11,7 @@ import { APP_ID, DESKTOP_FILE_NAME, SESSION_PARTITION } from '../shared/constant
 import { resolveAccountKey } from './account'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
 import { wipeArchive } from './archive/blobs'
+import { attachDevProbe } from './dev-probe'
 import { registerIpcHandlers } from './ipc'
 import { applyLaunchAtLogin } from './integration/login'
 import { createTray } from './integration/tray'
@@ -163,6 +164,9 @@ app.whenReady().then(async () => {
 
   // 承载上游页面的窗口：**不挂 preload**，见 window.ts 的说明。
   const mainWindow = createMainWindow()
+
+  // 开发模式：把只读探针装进这扇窗口的控制台（未打包时才生效，见 dev-probe.ts）。
+  attachDevProbe(mainWindow)
 
   registerIpcHandlers()
   createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })

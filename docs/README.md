@@ -102,6 +102,8 @@ waachat/
 │   │   ├── notice.ts               主动提示用户：系统通知 + 节流（接管失效、PDF 预览被挡下）
 │   │   ├── account.ts              账号标识：读页面记下的 WID / `wa_ul` cookie（ADR-0039）
 │   │   ├── paths.ts                目录布局：归档位置、账号层次目录、缓存根与索引路径
+│   │   ├── dev-probe.ts            **仅开发模式**：把只读探针注入聊天窗口（ADR-0046）
+│   │   ├── dev-probe-source.ts     它的路径与注入代码（纯函数，可单测）
 │   │   ├── capture/                ★ 核心：内核层接管
 │   │   │   ├── cachekey.ts         幂等键推导（纯函数，可单测）
 │   │   │   ├── cache-files.ts      缓存条目形态 + 转换/暂存区/启动对账（不导入 electron）
