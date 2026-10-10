@@ -148,6 +148,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
+│       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
 │       └── vite-assets.d.ts        `?raw` 导入的类型声明
