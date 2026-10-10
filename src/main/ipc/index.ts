@@ -44,7 +44,6 @@ import { relocateArchive } from '../archive/relocate'
 import { archiveStore } from '../archive/store'
 import { planCacheConversion } from '../capture/cache-files'
 import { switchCiphertextCache } from '../capture/cache-switch'
-import { captureHealth, onHealthChange } from '../capture/health'
 import {
   appIconState,
   effectiveAppIcon,
@@ -495,25 +494,6 @@ export function registerIpcHandlers(): void {
   })
 
   guard(CHANNELS.appIconReset, () => refreshTrayIcon(resetAppIcon()))
-
-  // --- 接管健康 --------------------------------------------------------------
-
-  guard(CHANNELS.captureHealth, () => captureHealth())
-
-  /**
-   * 状态变化推给界面。
-   *
-   * 只推给**我们自己的窗口**：承载上游页面的窗口没有 preload，本来就收不到，
-   * 而且"把本地状态发给第三方页面"这件事本身就不该发生。
-   *
-   * 收件人是**设置窗口** —— 状态标签只挂在那里（ADR-0025 理由 5）。文件列表窗口不挂它，
-   * 因此不需要"两扇都发"。
-   */
-  onHealthChange((health) => {
-    const window = getSettingsWindow()
-    if (window === null || window.isDestroyed()) return
-    window.webContents.send(CHANNELS.captureHealthChanged, health)
-  })
 
   logger.info('ipc: handlers registered')
 }

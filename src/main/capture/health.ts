@@ -40,10 +40,6 @@ export function markFailure(failure: CaptureFailure): void {
   publish()
 }
 
-export function captureHealth(): CaptureHealth {
-  return snapshot()
-}
-
 /** 订阅变化。返回取消订阅函数。 */
 export function onHealthChange(listener: Listener): () => void {
   listeners.add(listener)

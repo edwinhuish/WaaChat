@@ -1,28 +1,25 @@
 /**
  * 「设置」窗口的入口。
  *
- * 设置项与接管状态同属"应用当前的行为是什么"（图标生效范围、迁移进度、缓存开关），
- * 因此它们在同一个窗口里 —— 状态标签**不**放文件列表窗口，理由与代价见 [ADR-0025]
- * 理由 5。
+ * 这一页只有偏好设置（[ADR-0042]）：原来它还挂着顶栏的品牌名与"接管状态"几颗标签，而那几颗
+ * 标签里"尚无接管记录 / 上次接管 …"既没有信息量又占地方。接管**失效**改由系统通知告知
+ * （`main/notice.ts`）—— 那条通道只在出事时响一次，比一颗总要用户主动看一眼的静态标签更容易
+ * 被看见。
  *
- * 窗口卸载时要取消订阅：本地界面窗口可以被关闭（只是隐藏），真正卸载时若不取消，
- * 窗口每次重建都会多留一个监听器，表现为"同一次接管被提示多次"。
+ * 窗口卸载时要取消订阅：本地界面窗口可以被关闭（只是隐藏），真正卸载时若不取消，窗口每次重建
+ * 都会多留一个监听器，表现为"同一次迁移进度被推两次"。
  */
 
 import { part } from './dom'
 import { fatal } from './fatal'
-import { mountHealthView } from './views/health'
 import { mountSettingsView } from './views/settings'
 
 function main(): void {
   const settings = mountSettingsView(part(document, 'settings-list'))
-  const health = mountHealthView(part(document, 'capture-status'))
 
   void settings.refresh()
-  void health.refresh()
 
   window.addEventListener('unload', () => {
-    health.dispose()
     settings.dispose()
   })
 }

@@ -233,10 +233,10 @@ export function createFilesWindow(): BrowserWindow {
 }
 
 /**
- * 设置窗口：偏好设置 + 接管状态。
+ * 设置窗口：偏好设置。
  *
- * 接管状态标签只挂在这一扇窗口里（[ADR-0025] 理由 5）：它与设置项同属"应用当前的
- * 行为是什么"。因此 `capture:health-changed` 的推送目标只有这一个。
+ * 它原来还挂着顶栏的"接管状态"标签（[ADR-0025] 理由 5），那条顶栏已经去掉（[ADR-0042]）——
+ * 接管失效改由系统通知告知，于是这一扇窗口不再接收任何推送。
  */
 export function createSettingsWindow(): BrowserWindow {
   const window = createLocalWindow({ title: 'WaaChat — 设置', entry: SETTINGS_ENTRY })
@@ -252,7 +252,7 @@ export function createSettingsWindow(): BrowserWindow {
 /**
  * 我们自己的界面窗口（两扇，见 [ADR-0025]）。
  *
- * 存在的理由：主进程有两类消息**只允许**发给自己人（接管状态推送、迁移进度），
+ * 存在的理由：主进程有一类消息**只允许**发给自己人（迁移进度），
  * 而对话框需要一个父窗口。用 `BrowserWindow.getAllWindows()` 遍历再判断谁"看起来像
  * 本地窗口"是不可靠的 —— 判断依据会随加载方式（`file://` 还是 dev server）而变化。
  * 留明确的引用，"是哪一扇"就只有一个答案。

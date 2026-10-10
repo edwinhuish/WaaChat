@@ -76,8 +76,10 @@ import { isDocumentPreviewPage } from '../src/shared/upstream'
 import {
   PREVIEW_BLOCKED_BODY,
   PREVIEW_NOTICE_COOLDOWN_MS,
+  captureFailureBody,
   shouldAnnouncePreviewBlocked,
-} from '../src/shared/preview-notice'
+  trackCaptureFailure,
+} from '../src/shared/notice'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
   accountKey,
@@ -884,6 +886,37 @@ check(
   '悬停与禁用态也定义在同一处（两处按钮因此共用同一套交互反馈）',
   stylesheet.includes(`button.${ACTION_BUTTON_CLASS}:hover`) &&
     stylesheet.includes(`button.${ACTION_BUTTON_CLASS}[disabled]`),
+)
+
+// ---------------------------------------------------------------------------
+// 15. 接管失效必须可见
+// ---------------------------------------------------------------------------
+//
+// `architecture.md` 第 5 节：**允许失效，不允许静默失效**。设置窗口那条顶栏去掉之后
+// （ADR-0042），界面告知的唯一渠道是系统通知 —— 因此"什么情况下会弹"这条判据属于"改了没人会
+// 立刻发现"的那一类：弹得太勤，用户会把通知关掉（之后真正需要的提示也看不到）；永远不弹，
+// 等于那条不变量被悄悄删掉。设置项与渲染层不再有任何"接管状态"显示，这条断言就是它的看守。
+
+section('接管失效必须可见')
+
+check(
+  '每种失效提示一次，接管恢复正常后重新武装',
+  (() => {
+    const failed = trackCaptureFailure(new Set(), { kind: 'write-failed', reason: 'ENOSPC' })
+    const healthy = trackCaptureFailure(failed.announced, null)
+
+    return (
+      failed.announce &&
+      !trackCaptureFailure(failed.announced, { kind: 'write-failed', reason: 'x' }).announce &&
+      trackCaptureFailure(failed.announced, { kind: 'too-large', bytes: 1 }).announce &&
+      healthy.announced.size === 0 &&
+      trackCaptureFailure(healthy.announced, { kind: 'write-failed', reason: 'x' }).announce
+    )
+  })(),
+)
+check(
+  '失效提示的正文与界面共用同一份人话（不再有别的显示渠道）',
+  captureFailureBody({ kind: 'too-large', bytes: 1 }).includes('上限'),
 )
 
 // ---------------------------------------------------------------------------

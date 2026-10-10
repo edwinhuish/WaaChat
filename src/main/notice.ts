@@ -1,32 +1,59 @@
 /**
- * 主动告诉用户一件事（目前只有一条：PDF 预览被挡下了）。
+ * 主动提示用户（系统通知）。
  *
  * 为什么单独一个模块：它 import `Notification`（electron），因此**不能**待在
- * `capture/pdf.ts` 里 —— 那个模块只 `import type` electron，离线自检要能直接引用它
- * （`ai/CONVENTIONS.md` 第 8 节）。于是这里做 IO，判据与文案留在
- * `shared/preview-notice.ts`（纯函数，可单测）。
+ * `capture/pdf.ts` / `capture/health.ts` 里 —— 那些模块只 `import type` electron，离线自检
+ * 要能直接引用它们（`ai/CONVENTIONS.md` 第 8 节）。判据与文案留在 `shared/notice.ts`
+ * （纯函数，可单测）。于是分工是：**判据可断言、IO 只此一处**。
  *
- * 用系统通知而不是弹窗：弹窗会打断且必须点掉，而这件事只是"提个醒"——用户可能正打算改用
- * 消息上的下载按钮。这也与页面自己的消息通知同一条通道（`permissions.ts` 允许 `notifications`）。
+ * 为什么是通知而不是界面上的标签：设置窗口原来顶栏挂着"接管状态"（[ADR-0025] 理由 5）。那几颗
+ * 标签里"尚无接管记录"没有信息量、正常状态也没有，而**真的失效**时用户未必正看着那扇窗口。
+ * 顶栏整个去掉之后（[ADR-0042]），失效改走这条通道：平时一声不响，出事时弹一次。
+ *
+ * 也不是弹窗：弹窗会打断且必须点掉，而这两件事都是"提个醒"。这与页面自己的消息通知走同一条
+ * 通道（`permissions.ts` 允许 `notifications`）。
  */
 
 import { Notification } from 'electron'
 
 import {
+  CAPTURE_FAILED_TITLE,
   PREVIEW_BLOCKED_BODY,
   PREVIEW_BLOCKED_TITLE,
+  captureFailureBody,
   shouldAnnouncePreviewBlocked,
-} from '../shared/preview-notice'
+  trackCaptureFailure,
+} from '../shared/notice'
+import type { CaptureFailure } from '../shared/types'
 import { logger } from './logger'
 
-/** 上次提示的时刻（模块级：进程内节流，不持久化 —— 重启后重新计一次没有坏处）。 */
+/** 上次提示"预览被挡下"的时刻（进程内节流，不持久化 —— 重启后重新计一次没有坏处）。 */
 let lastPreviewBlockedAt: number | null = null
 
+/** 已经提示过的**失效种类**。接管恢复正常时清空（见 `shared/notice.ts` 的两条规则）。 */
+let announcedFailures: ReadonlySet<string> = new Set()
+
+/** 弹一条通知。返回是否真的弹了 —— 桌面没有通知服务时不算弹过。 */
+function show(title: string, body: string): boolean {
+  try {
+    if (!Notification.isSupported()) {
+      // 纯 WM 的会话、容器里跑：记一条日志，而不是假装提示过了。
+      logger.warn('notice: this desktop has no notification service', { title })
+      return false
+    }
+
+    new Notification({ title, body }).show()
+    return true
+  } catch (error) {
+    logger.warn('notice: could not show a notification', { reason: (error as Error).name })
+    return false
+  }
+}
+
 /**
- * 提示"这次预览被挡下了，请用消息上的下载"。
+ * 提示"这次预览被挡下了，请用消息上的下载"（[ADR-0041]）。
  *
- * 幂等且**廉价**：节流判据在真正弹之前就返回，因此调用方（请求拦截器）可以每次命中都调用它。
- * 失败一律不影响主流程 —— 这条通知只是"允许失效时必须可见"里的那点可见性。
+ * 幂等且**廉价**：节流判据在真正弹之前返回，因此请求拦截器可以每次命中都调用它。
  */
 export function announcePreviewBlocked(): void {
   const now = Date.now()
@@ -34,16 +61,32 @@ export function announcePreviewBlocked(): void {
 
   lastPreviewBlockedAt = now
 
-  try {
-    if (!Notification.isSupported()) {
-      // 桌面环境没有通知服务（纯 WM 的会话、容器里跑）—— 记一条日志，而不是假装提示过了。
-      logger.warn('notice: this desktop has no notification service')
-      return
-    }
-
-    new Notification({ title: PREVIEW_BLOCKED_TITLE, body: PREVIEW_BLOCKED_BODY }).show()
+  if (show(PREVIEW_BLOCKED_TITLE, PREVIEW_BLOCKED_BODY)) {
     logger.info('notice: told the user how to fetch the blocked PDF')
-  } catch (error) {
-    logger.warn('notice: could not show a notification', { reason: (error as Error).name })
   }
+}
+
+/**
+ * 提示"接管失效了" —— `architecture.md` 第 5 节那条"允许失效，不允许静默失效"的落点
+ * （[ADR-0042] 之后它是**唯一**的界面告知渠道）。
+ *
+ * 由 `main/session.ts` 订阅 `onHealthChange` 调用：**每种失效只提示一次**，直到接管恢复正常
+ * 才重新武装（规则与理由见 `shared/notice.ts`）。
+ */
+export function announceCaptureFailure(failure: CaptureFailure): void {
+  const tracking = trackCaptureFailure(announcedFailures, failure)
+  announcedFailures = tracking.announced
+
+  if (!tracking.announce) return
+
+  // ⚠️ 正文里的人话来自 `describeCaptureFailure()`（与界面同一份），因此不会出现
+  // "日志里说 A、通知里说 B"这种分叉。
+  if (show(CAPTURE_FAILED_TITLE, captureFailureBody(failure))) {
+    logger.info('notice: told the user that the capture layer failed', { kind: failure.kind })
+  }
+}
+
+/** 接管恢复正常（`markCaptured`）：把"已经提示过"清空，下次失效会重新提示。 */
+export function markCaptureHealthy(): void {
+  announcedFailures = trackCaptureFailure(announcedFailures, null).announced
 }

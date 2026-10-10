@@ -59,61 +59,13 @@ body {
   line-height: 1.5;
 }
 
-/* --- 顶栏 ---------------------------------------------------------------- */
-
-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.brand {
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
+/* --- 主体 ---------------------------------------------------------------- */
 
 /*
- * 接管状态在设置窗口的顶栏右侧。
- *
- * 它只在这一扇窗口里（ADR-0025 理由 5）：状态与设置项同属"应用当前的行为是什么"，
- * 而文件列表窗口的职责就是"看文件"。这里刻意不做隐藏/折叠 —— 接管失败是"安静地退回
- * 上游原生行为"这类最难发现的失败，状态不该需要用户点一下才看得见。
+ * 这一页**没有顶栏**（[ADR-0042]）：原来那条挂着品牌名与"接管状态"几颗标签（`header` /
+ * `.brand` / `.status` / `.pill` 四条规则随之删掉）。常态信息不值得占用户的视线，而接管失效
+ * 改由系统通知告知（`main/notice.ts`）—— 出事时才响，反而更容易被看见。
  */
-.status {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.pill {
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.pill[data-state='ok'] {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-}
-
-.pill[data-state='warn'] {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
-}
-
-.pill[data-state='error'] {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-}
-
-/* --- 主体 ---------------------------------------------------------------- */
 
 main {
   padding: 16px;

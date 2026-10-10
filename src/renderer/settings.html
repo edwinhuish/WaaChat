@@ -21,16 +21,11 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header>
-      <span class="brand">WaaChat</span>
-
-      <!--
-        接管状态标签只在这扇窗口里（ADR-0025 理由 5）：它与设置项同属
-        "应用当前的行为是什么" —— 图标生效范围、迁移进度、缓存开关都在这一页。
-      -->
-      <div class="status" data-role="capture-status"></div>
-    </header>
-
+    <!--
+      这一页**没有顶栏**（[ADR-0042]）：原来那一条挂着品牌名与"接管状态"几颗标签，而
+      "尚无接管记录 / 上次接管 …"这类常态信息既没有信息量又占地方。接管失效改由系统通知
+      告知（`main/notice.ts`）—— 那比一颗静态标签更容易被看见，而且只在出事时出现。
+    -->
     <main>
       <div data-role="settings-list"></div>
       <footer class="hint">

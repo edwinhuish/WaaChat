@@ -24,7 +24,6 @@ import type {
   AppIconInput,
   ArchiveMigrationProgress,
   ArchiveQuery,
-  CaptureHealth,
   Settings,
 } from '../shared/types'
 import { CHANNELS } from '../main/ipc/channels'
@@ -56,8 +55,8 @@ const bridge: WaaChatBridge = {
 
   onArchiveMigration: (listener: (progress: ArchiveMigrationProgress) => void) => {
     /**
-     * 与 `onCaptureHealthChanged` 同样的包装：直接把 `listener` 交给 `ipcRenderer.on`
-     * 会把 Electron 的 `event`（带着 `sender`）作为第一个参数交给渲染侧代码。
+     * 包一层再注册：直接把 `listener` 交给 `ipcRenderer.on` 会把 Electron 的 `event`
+     * （带着 `sender`）作为第一个参数交给渲染侧代码。只透传载荷。
      */
     const wrapped = (_event: unknown, progress: ArchiveMigrationProgress): void =>
       listener(progress)
@@ -70,25 +69,6 @@ const bridge: WaaChatBridge = {
   },
 
   switchCiphertextCache: (target: boolean) => ipcRenderer.invoke(CHANNELS.cacheSwitch, target),
-
-  getCaptureHealth: () => ipcRenderer.invoke(CHANNELS.captureHealth),
-
-  onCaptureHealthChanged: (listener: (health: CaptureHealth) => void) => {
-    /**
-     * 包一层再注册。
-     *
-     * 直接把 `listener` 交给 `ipcRenderer.on` 会把 Electron 的 `event` 作为第一个
-     * 参数传过去 —— 那等于把一个 IPC 事件对象（带着 `sender`）交给渲染侧代码。
-     * 只透传载荷，是这个包装存在的唯一原因。
-     */
-    const wrapped = (_event: unknown, health: CaptureHealth): void => listener(health)
-
-    ipcRenderer.on(CHANNELS.captureHealthChanged, wrapped)
-
-    return () => {
-      ipcRenderer.removeListener(CHANNELS.captureHealthChanged, wrapped)
-    }
-  },
 }
 
 /** `Object.freeze` 挡的是渲染侧误改写；真正的边界是 contextIsolation 本身。 */

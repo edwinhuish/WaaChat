@@ -26,7 +26,6 @@ import type {
   ArchiveRecord,
   ArchiveStats,
   CacheSwitchResult,
-  CaptureHealth,
   OpenOutcome,
   RevealOutcome,
   Settings,
@@ -73,8 +72,8 @@ export interface WaaChatBridge {
   /**
    * 订阅迁移进度。
    *
-   * 迁移可能是几十 GB，界面必须能说清"到哪了"。返回取消订阅函数 —— 同
-   * `onCaptureHealthChanged`：不返回的话，界面每次重新挂载都会多留一个监听器。
+   * 迁移可能是几十 GB，界面必须能说清"到哪了"。返回取消订阅函数 —— 不返回的话，
+   * 界面每次重新挂载都会多留一个监听器。
    */
   onArchiveMigration(listener: (progress: ArchiveMigrationProgress) => void): () => void
 
@@ -115,14 +114,4 @@ export interface WaaChatBridge {
 
   /** 恢复默认图标（同时删掉我们写的那份启动器条目）。 */
   resetAppIcon(): Promise<AppIconResult>
-
-  // --- 接管健康 --------------------------------------------------------------
-
-  /** 主动查询一次。 */
-  getCaptureHealth(): Promise<CaptureHealth>
-  /**
-   * 订阅变化。返回取消订阅函数 —— 不返回的话，界面重新挂载时会累积监听器，
-   * 表现为"同一次接管弹出多次提示"。
-   */
-  onCaptureHealthChanged(listener: (health: CaptureHealth) => void): () => void
 }

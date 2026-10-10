@@ -56,11 +56,6 @@ export const CHANNELS = {
   appIconSet: 'appicon:set',
   /** 恢复默认图标：删掉自定义图标与**我们自己写的**启动器条目。 */
   appIconReset: 'appicon:reset',
-
-  /** 读取接管健康状态。 */
-  captureHealth: 'capture:health',
-  /** 接管健康状态发生变化（主进程 → 渲染进程的单向推送）。 */
-  captureHealthChanged: 'capture:health-changed',
 } as const
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS]

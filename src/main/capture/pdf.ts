@@ -130,7 +130,7 @@ export function attachPdfHandling(
   // 实测它确实会被嵌进 `web.whatsapp.com` 的 iframe（那次 COEP 症状见 ADR-0016 的背景）。
   //
   // 判据不细分"预览文档本身"还是"它加载的 SDK 资源"（两者都在 `/pdf-viewer/` 下）：一次点击
-  // 会引发一整串请求，逐条区分只会更脆；去重交给提示那一侧的节流（`shared/preview-notice.ts`）。
+  // 会引发一整串请求，逐条区分只会更脆；去重交给提示那一侧的节流（`shared/notice.ts`）。
   ses.webRequest.onBeforeRequest((details, callback) => {
     if (!pdfPreviewDisabled() || !isDocumentPreviewPage(details.url)) {
       callback({})

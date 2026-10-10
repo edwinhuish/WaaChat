@@ -14,9 +14,10 @@ import type { Settings } from '../shared/types'
 import { isUpstreamOrigin } from '../shared/upstream'
 import { reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
+import { onHealthChange } from './capture/health'
 import { attachPdfHandling } from './capture/pdf'
 import { attachCiphertextCache } from './capture/protocol'
-import { announcePreviewBlocked } from './notice'
+import { announceCaptureFailure, announcePreviewBlocked, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
 
@@ -91,6 +92,23 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 加载、PDF 在应用内预览；打开后才有上面两条规则。判据每个请求现读，因此改完立刻生效 ——
   // 传的是**读取函数**而不是快照。
   attachPdfHandling(ses, getSettings, { onPreviewBlocked: announcePreviewBlocked })
+
+  /**
+   * 接管失效必须**可见**（`architecture.md` 第 5 节："允许失效，不允许静默失效"）。
+   *
+   * 以前这是设置窗口顶栏那几颗标签的职责。顶栏整个去掉之后（[ADR-0042]），改由**系统通知**
+   * 承担：成功时什么都不做（正常状态不值得占用户视线），失效时每种原因提示一次。
+   * 订阅放在这里而不是 `notice.ts` 里，是为了让判据与 IO 保持分开 ——
+   * `capture/health.ts` 仍然只 `import type` electron。
+   */
+  onHealthChange((health) => {
+    if (health.lastError === null) {
+      markCaptureHealthy()
+      return
+    }
+
+    announceCaptureFailure(health.lastError)
+  })
 
   logger.info('session configured', {
     ciphertextCache: settings.enableCiphertextCache,
