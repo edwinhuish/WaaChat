@@ -46,6 +46,7 @@
 | [0036](#adr-0036) | 走 Wayland 的 Ozone 路径时**不请求 Vulkan**（Chromium 自己说这个组合不支持）：与用户已有的 `--disable-features` 合并，X11 与用户的显式选择一律不碰 | 已生效（**机制**由 [ADR-0038](#adr-0038) 修正：那行实际来自 WebGPU 的「原生 Vulkan + GL 互操作」路） |
 | [0037](#adr-0037) | 归档正文落在 `<年>/<月>/`（按归档时刻的本地时间）：`stored_name` 升为相对路径，旧的平面布局照旧可读，不搬动旧文件、不改 schema | 已生效（取代 [ADR-0003](#adr-0003) 被否决方案里"按日期分层不可行"的那一半判断） |
 | [0038](#adr-0038) | Wayland 上还要把 WebGPU 从「原生 Vulkan + GL 互操作」挪开（`--use-webgpu-adapter=opengles`）：那行 `not compatible with Vulkan` 的真正来源是这条路，而它**不是** feature 开关能关的 | 已生效（修正 [ADR-0036](#adr-0036) 的机制） |
+| [0039](#adr-0039) | 归档与密文都按 `<账号>/…/<年-月>/` 分层（明文 `<账号>/files/`，密文在独立根目录里镜像）；账号标识取页面记下的 WID，退而求其次用 `wa_ul` | 已生效（**月份格式**取代 [ADR-0037](#adr-0037) 的 `2026/10`；旧布局照旧可读） |
 
 ---
 
@@ -1634,3 +1635,121 @@ app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己�
 - **判据锁在上游行为上，而自检锁不住上游。** `scripts/check-capture.ts` 断言的是"我们在 Wayland 上追加了这个开关"，不是"这行会消失" —— 上游改了 `GetWebGPUOnVulkanViaGLInterop()` 的判据（或换掉这批 feature/开关）时，自检会全绿而那行会回来。因此真机上 `waachat 2>&1 | grep -i vulkan` 再确认一次仍然值得做。
 
 
+
+---
+
+## ADR-0039
+
+**决定**：归档与密文缓存都加上**账号**这一层，并把月份改成**单层** `YYYY-MM`：
+
+```
+<归档根>/<账号>/files/2026-10/<净化后的原文名>          # 明文（ADR-0031 的名字规则不变）
+<缓存根>/<账号>/2026-10/<key>.bin|.meta.json           # 密文（缓存根仍在 XDG_DATA_HOME）
+```
+
+配套六条：
+
+1. **账号标识的来源分两级**：先读页面自己记下的 WID（分区 Local Storage 里的 `last-wid` /
+   `last-wid-md`，取它的用户部分，例如 `18665597400`），拿不到再退到分区会话的 `wa_ul` cookie
+   （一个随机 UUID），最后才是回落值 `unknown-account`。**每一级都只做"按已知键名取相邻的值"，
+   不写存储解析器。**
+2. **`stored_name` 升为 `<账号>/files/<年-月>/<名>`**（[ADR-0037] 的"位置是事实、不反推"不变）。
+   旧记录（裸文件名、`2026/10/…`）照旧可读 —— **不搬动任何旧文件**，磁盘上允许并存四种布局。
+3. **密文缓存保持独立根目录**（[ADR-0008] 的物理隔离），只**镜像**层级：`<缓存根>/<账号>/<年-月>/`。
+   它不随归档位置移动，"清除归档"与"关闭密文缓存"因此都不可能误伤对方。
+4. **`CACHE_VERSION` 提到 3**：条目路径变了，老的平铺布局（条目直接躺在缓存根下）再也命不中，
+   启动对账时**整批删掉**（纯派生数据，[ADR-0008]）。
+5. **暂存区（切换时的可回滚存放处）放在月份目录里**：`<账号>/<年-月>/.staging/`。
+   同目录 `rename` 零拷贝，而且**回滚知道该回哪个月份** —— 账号级的暂存区做不到这一点。
+6. **迁移的容器判据是一张转移表**（`archive/migrate.ts` 的 `containerKind()`）：
+   `根 → 账号 | <年-月> | <年>`、`账号 → files`、`files | <年> → <年-月>`、月份目录里只有文件。
+   形状不对的目录让**整次迁移失败**，而不是被当成我们的东西搬走。
+
+**状态**：已生效（**月份格式**取代 [ADR-0037](#adr-0037) 的 `2026/10`；账号层是新增的一层）
+
+**背景**：需求是"不同用户用独立的目录结构"，给出的样例是 `18665597400/files/2026-10/` 与
+`18665597400/ciphertexts/2026-10/`。
+
+于是问题变成两件：**账号标识从哪来**，以及**密文要不要进归档树**。查证过程与结论：
+
+- **明文的 HTTP 流量里没有账号标识。** 我们能在内核层看到的只有三条 cookie：`wa_ul`（36 位随机
+  UUID）、`wa_web_access_token`（141 字符**凭据**）、`wa_web_lang_pref`。媒体 CDN 的 URL 只有不透明
+  路径与签名参数（`capture/cachekey.ts` 正是这么推幂等键的）。主协议走 WebSocket，`protocol.handle`
+  不覆盖它，帧内容还是加密的（[INV-3] 就在旁边）。
+- **IndexedDB 里有号码，但"自己"与"联系人"字节同形。** 实测：`phoneNumber"<11 位>@c.us"` 这种形状
+  在一个文件里就有 39 处（含大量联系人），`"server":"c.us","user":"<id>"` 数千处。要区分"我是谁"
+  必须解析上游 IndexedDB 的 schema（自己写 LevelDB + IDB 记录解析器），上游一改就**静默**失效。
+- **页面确实会用 `last-wid` / `last-wid-md` 记"当前账号是谁"**（需求方给出的键名，页面的打包 JS 里
+  也有这个字符串）。但**实测本机 profile 里它不是活跃键**：整个分区搜下来只出现在页面的缓存 JS 与
+  IndexedDB 的一处 —— 因此第 1 级在真机上可能是空的，那时会退到第 2 级。这不是缺陷，而是这条阶梯
+  存在的理由。
+
+**理由**：
+
+1. **账号那一层的键必须是账号级的。** `wa_ul` 只有 profile 粒度（实测：它在本机上是页面首次加载时
+   写下的，`creation_utc == last_update_utc`，早于登录 6 分钟），因此同一个 profile 里换账号不会换
+   目录 —— 这一条写在"已知限制"里，并作为第 1 级失败时的兜底而不是主路径。
+2. **只读"已知键名旁边的值"，不写存储解析器。** 一旦开始解析上游的存储格式，我们就欠下了一份永远
+   还不完的债：上游改布局 → 我们静默取错 → 文件落进别人的目录。取而代之的是"取不到就退一级"，
+   最坏结果是目录名叫 `unknown-account`，数据不丢。
+3. **路径不进内存推导。** 账号与月份都写进 `stored_name`，读取时逐字用（[ADR-0037] 的理由原样适用）：
+   同一份内容不会因为"换了账号标识"而被搬来搬去。
+4. **密文必须留在自己的根目录里。** [ADR-0008] 的物理隔离是"清理类功能在文件系统层面不可能误伤"
+   这条保证的全部来源；把 `ciphertexts/` 放进归档树等于把它降级成"靠代码记得别碰"。
+   "分别存放于各自对应的路径中"这个要求，**镜像层级 + 独立根目录**同样满足。
+5. **月份改成单层是需求给的格式**（`2026-10`）。它与 [ADR-0037] 的 `2026/10` 只差一个分隔符，
+   但两条判据必须并存：`2026/10` 是老数据，迁移动它之前要先能**认出来**。
+6. **暂存区必须在它要回滚到的那个目录里。** 命中这一条的代价是实现了两遍 —— 第一版把暂存区放在账号
+   层，回滚时文件会散落到 `<账号>/` 下（单测当场抓到）。这属于 [ADR-0027] 那条"要么全成、要么全
+   不成"的保证，不能靠"反正同一个文件系统"糊过去。
+
+**被否决的替代方案**：
+
+- **解析 IndexedDB 取号码**：见背景。成本是自写 LevelDB + IDB 解析器，收益是一个更漂亮的目录名，
+  风险是上游改版后**静默**把文件归错账号。
+- **只用 `wa_ul`**：账号粒度不对（见理由 1）。它现在是第 2 级兜底。
+- **把密文放进归档树（`<账号>/ciphertexts/<年-月>/`）**：见理由 4；顺带还会让"换保存位置"把可重建
+  的密文也搬一遍、让缓存落进用户可能选中的同步盘。
+- **在账号层之上再按会话分层**：会话标签本就不可靠（`chat_label` 通常拿不到，[ADR-0037] 已否决）。
+- **索引（`.index.sqlite`）也按账号分**：那样"我打开过的文件"就不再是一个整体，搜索要先选账号；
+  账号只是**磁盘上的分层**，不是查询边界。
+- **把账号做成设置项**（手填一次）：可靠、零边界代价，但需求方要的是自动识别；这一条留在
+  "已知限制"里作为可回退的方向 —— 真要手填，只需在 `paths.setAccountKey()` 之上加一处来源。
+
+**影响**：
+
+- 新模块 `src/main/account.ts`：`readAccountKeyFromStorage()`（读 Local Storage 的 `.log`/`.ldb`，
+  新文件优先、有大小上限）、`extractAccountKeyFromBytes()`、`accountKeyFromText()`、
+  `pickAccountKey()`、`resolveAccountKey(ses)`。**不解析存储格式**，只在已知键名后面找 WID。
+- `src/main/paths.ts`：`accountKey()` / `setAccountKey()` / `normalizeAccountKey()`（白名单净化）、
+  `archiveAccountDir()` / `archiveFilesDir()` / `ciphertextAccountDir()`。
+- `src/main/archive/layout.ts`：`folderFor()` → `2026-10`；`isArchiveMonthDir()`；
+  `isLegacyYearDir()` / `isLegacyMonthDir()`（[ADR-0037] 的两层）；`isAccountSegment()`
+  （UUID / `unknown-account` / 当前账号）；`archiveStoredPath()`；`FILES_SEGMENT`。
+- `src/main/archive/blobs.ts`：落盘前一次建齐 `<账号>/files/<年-月>` 三层目录（0700）。
+- `src/main/archive/migrate.ts`：`containerKind()` 转移表 + `isOwnEntry()` 认四种历史布局。
+- `src/main/capture/cache-files.ts`：`cacheAccountDirs()` / `cacheMonthDirs()` / `cacheEntryDirs()` /
+  `currentCacheMonthDir()` / `findCacheEntry()`；对账与切换按"账号 × 月份"遍历；暂存区改为
+  **每月份目录一个**；`CACHE_VERSION` 3 并清掉老的平铺条目。
+- `src/main/capture/protocol.ts`：查询跨月份（`findCacheEntry`），写入落在当月目录；用不了的条目
+  （缺一半 / 旧格式）就地清掉 —— 布局变了之后"原地覆盖"不再成立。
+- `src/main/index.ts`：`whenReady` 里、早于 `configureSession` 解析一次账号标识。
+- 测试：新增 `test/unit/account.test.ts`（合成字节，两种编码、键名列表、取最后一个）；
+  `layout` / `paths` / `blobs` / `migrate` / `cache-files` 全部跟着改；`scripts/check-capture.ts`
+  的归档与缓存两节改为按层级统计，并新增账号判据、`stored_name` 形态、账号名净化等断言。
+- 文档：`docs/architecture.md` 第 6 节、`docs/usage.md` 第 4 节、`docs/security.md` 第 2 节、
+  `docs/README.md` 的模块表、`ai/CONTEXT.md`、`ai/TASKS.md`、`CHANGELOG.md`。
+
+**已知限制**：
+
+- **`wa_ul` 只有 profile 粒度**：同一个 profile 里换账号不换目录；profile 被重置 / cookie 被清会让
+  归档分叉到新的 UUID 目录（旧目录仍在、照旧可读）。要真正的多账号隔离，需要路线图 M4 的
+  "每账号独立**会话分区**" —— 那时账号键自然跟着分区走。
+- **`last-wid` / `last-wid-md` 不保证存在**（实测本机就没有活跃值）：那时目录名会退化成 `wa_ul`
+  的 UUID，或 `unknown-account`。上游换键名、或页面还没写过这一键，表现都是"退一级"，不会猜。
+- **磁盘上允许四种布局并存**（哈希名平面 / 原名平面 / `2026/10` / `<账号>/files/2026-10`）。
+  它们都能读、都能迁移、都能打开；代价是迁移的判据变长（见决定 6）。
+- **`CACHE_VERSION` 提升会让已缓存的密文全部失效**（重下一次），这是路径变化的必然结果；
+  缓存本来就是纯派生数据。
+- **实测范围**：单测（226 条）与 `pnpm run check` 的离线自检全绿；"真实点击一个文件落在当月账号
+  目录下"需要真机手工确认一次 —— 自检不能替代一次真实点击。
