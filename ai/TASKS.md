@@ -354,3 +354,35 @@
 - [ ] 来源判据没有被放宽成前缀匹配（`web.whatsapp.com.evil.com` 这类输入必须仍然被拒）
 - [ ] 单向加权限之后，**两个**处理器（request / check）用的都是同一套判据
 - [ ] `pnpm run check` 通过（自检里那一节会拦住"顺手放开"）
+
+---
+
+## T12 · 在真实页面上侦察媒体字段（只读探针）
+
+> 用途：回答"**下载之前**能不能拿到一个标识文件内容的值"（判据与岔路口见
+> [`../docs/research/early-file-identity.md`](../docs/research/early-file-identity.md) §3）。
+> 它只读元数据：不下载、不发请求、不读密钥（[INV-3](INVARIANTS.md)），因此**不需要**新的 ADR ——
+> 反过来，任何"顺手把它改成能取值的工具"的想法都必须先立 ADR。
+
+**步骤**
+
+1. `pnpm run dev`。开发模式会把探针自动装进聊天窗口（[ADR-0046](../docs/decisions.md#adr-0046)），
+   控制台里直接就是 `__waProbe.*`。**产物里没有这段行为** —— 打包后只能手动粘贴：
+   `cat test/fixtures/probe-media-metadata.js` → 整个粘进 Console（粘贴会**立即扫描一次**）。
+2. 聊天窗口 `Ctrl+Shift+I` → Console → `__waProbe.scan()`。
+3. P2/P3：会话 A 里 `capture('A')` → 切到会话 B、把**同一个文件**改个名再发一次 →
+   ⚠️ **必须再 `scan()`** → `capture('B')` → `compare()`。
+   `capture` 记录的是"上一次扫描到的消息"，忘了重扫会让两个通道指向同一条消息 ⇒ 结论**错**。
+4. 交付物是 `__waProbe.report()` 的**返回值**（或 `copy()`）：markdown 文本，含全部结论
+   **与限定条件**。`console.table` 那套打印的是对象，复制不出形状，不要拿它当交付物。
+5. 结论写进 [`../docs/decisions.md`](../docs/decisions.md)（新 ADR）。**不要**改研究文档 ——
+   `docs/research/` 只增不改。
+
+**检查点**
+
+- [ ] 报告里出现 `P3 未覆盖` 或 `根本没比` 时，**先解决它再下结论** ——
+      这两种情形下"跨会话都不同"是假结论（零次比较 / 没覆盖到改名情形）
+- [ ] 报告里没有任何字段的**值**（只有字段名、类型、长度、指纹前缀）
+- [ ] 改了探针本身 → `pnpm run test`：`test/unit/probe-media-metadata.test.ts` 守着"绝不打印值"
+      与"必须走原型链上的 getter"两条性质
+- [ ] 报告里每个通道都记了**扩展名来源**；为「未找到」时说明文件名在客户端侧可能不存在
