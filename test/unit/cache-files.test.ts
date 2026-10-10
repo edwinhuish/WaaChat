@@ -36,7 +36,7 @@ import {
   stagingDir,
   type CacheConversionPlan,
 } from '../../src/main/capture/cache-files'
-import { ciphertextCacheDir } from '../../src/main/paths'
+import { ciphertextCacheDir, setAccountKey } from '../../src/main/paths'
 
 /** 一对正常的条目。 */
 const PAIR_ID = 'a'.repeat(64)
@@ -60,22 +60,40 @@ beforeAll(() => {
    */
   previousDataHome = process.env['XDG_DATA_HOME']
   process.env['XDG_DATA_HOME'] = root
+
+  /**
+   * 账号标识也用固定的一个（[ADR-0039]）：`purgeStaging()` / `restoreStaging()` 这些函数
+   * 不传参时取"当前账号目录"，因此这个值必须与用例里建出来的那棵树一致。
+   */
+  setAccountKey(ACCOUNT)
 })
 
 afterAll(() => {
-  // 复位进程级状态：同一个进程里的其它用例不该继承这个临时目录。
+  // 复位进程级状态：同一个进程里的其它用例不该继承这个临时目录与账号名。
   if (previousDataHome === undefined) delete process.env['XDG_DATA_HOME']
   else process.env['XDG_DATA_HOME'] = previousDataHome
 
+  setAccountKey(null)
   rmSync(root, { recursive: true, force: true })
 })
 
+/** 缓存根。 */
 const dir = (): string => ciphertextCacheDir()
 
-/** 每个用例从一个空的缓存目录开始（目录存在，但什么都没有）。 */
+/**
+ * 条目现在落在 `<缓存根>/<账号>/<年-月>/`（[ADR-0039]）。用例固定用同一个 UUID 形状的账号名
+ * 与固定的月份 —— 判据只看形状（`isAccountSegment`），因此不必真的等一个月。
+ */
+const ACCOUNT = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+const MONTH = '2026-10'
+
+const accountDir = (): string => join(dir(), ACCOUNT)
+const entryDir = (): string => join(accountDir(), MONTH)
+
+/** 每个用例从一个空的缓存目录开始（账号与当月目录已建好，但什么都没有）。 */
 function resetDir(): void {
   rmSync(dir(), { recursive: true, force: true })
-  mkdirSync(dir(), { recursive: true, mode: CACHE_DIR_MODE })
+  mkdirSync(entryDir(), { recursive: true, mode: CACHE_DIR_MODE })
 }
 
 afterEach(() => {
@@ -83,24 +101,26 @@ afterEach(() => {
 })
 
 function write(name: string, content = 'x'): void {
-  writeFileSync(join(dir(), name), content)
+  writeFileSync(join(entryDir(), name), content)
 }
 
-/** 缓存目录里"看得见的东西"：把暂存区排除掉 —— 它是实现细节，不是条目。 */
+/** 月份目录里"看得见的东西"：把暂存区排除掉 —— 它是实现细节，不是条目。 */
 function names(): string[] {
-  return readdirSync(dir())
+  return readdirSync(entryDir())
     .filter((name) => name !== '.staging')
     .sort()
 }
 
 function staged(): string[] {
-  return readdirSync(stagingDir()).sort()
+  return readdirSync(stagingDir(entryDir())).sort()
 }
 
 /** 造出"进程在转换途中被杀"的现场：条目已经在暂存区，而设置从未提交。 */
 function simulateInterruptedConversion(...entries: string[]): void {
-  mkdirSync(stagingDir(), { recursive: true, mode: CACHE_DIR_MODE })
-  for (const name of entries) renameSync(join(dir(), name), join(stagingDir(), name))
+  mkdirSync(stagingDir(entryDir()), { recursive: true, mode: CACHE_DIR_MODE })
+  for (const name of entries) {
+    renameSync(join(entryDir(), name), join(stagingDir(entryDir()), name))
+  }
 }
 
 /** 算一次切换的计划。读不了目录时直接让用例失败 —— 那是另一个用例的事。 */
@@ -151,18 +171,36 @@ describe('planCacheConversion', () => {
     })
   })
 
-  it('缓存路径不是一个目录时算不出计划（此时不该开始切换）', () => {
+  it('缓存根不是目录时，计划是 0 个条目（而不是崩掉）', () => {
     rmSync(dir(), { recursive: true, force: true })
     writeFileSync(dir(), 'not a directory')
 
-    expect(planCacheConversion(false).ok).toBe(false)
-    // 对账遇到同样的情况不该崩：它只是记住"这里读不了"。
+    // 没有账号目录可遍历 ⇒ 没有条目。对账同样什么都不做、也不把它建出来。
+    expect(planCacheConversion(false)).toEqual({
+      ok: true,
+      plan: { target: false, entries: 0, bytes: 0 },
+    })
     return expect(reconcileCiphertextCache(false)).resolves.toEqual({
       removed: 0,
       bytes: 0,
       kept: 0,
       foreign: 0,
     })
+  })
+
+  it('老的平铺布局整批清掉（它们在新的查找路径上永远命不中）', async () => {
+    // ADR-0039 之前：条目直接躺在缓存根下。
+    writeFileSync(join(dir(), BODY), 'body')
+    writeFileSync(join(dir(), META), 'meta')
+    // 同一层还有不属于我们的东西：不动它。
+    writeFileSync(join(dir(), 'notes.txt'), 'mine')
+
+    const result = await reconcileCiphertextCache(true)
+
+    expect(existsSync(join(dir(), BODY))).toBe(false)
+    expect(existsSync(join(dir(), META))).toBe(false)
+    expect(existsSync(join(dir(), 'notes.txt'))).toBe(true)
+    expect(result).toMatchObject({ removed: 2, foreign: 1 })
   })
 })
 
@@ -195,7 +233,7 @@ describe('convertCache（关闭）', () => {
     expect(result).toMatchObject({ ok: false, detail: 'Error', rolledBack: true })
     // 一个都不能少：这正是"失败就回到切换前的状态"。
     expect(names()).toEqual([BODY, META, HALF_BODY].sort())
-    expect(existsSync(stagingDir())).toBe(false)
+    expect(existsSync(stagingDir(entryDir()))).toBe(false)
   })
 })
 
@@ -212,7 +250,7 @@ describe('convertCache（开启）', () => {
     expect(result).toEqual({ ok: true, converted: 2, bytes: 2 })
     expect(names()).toEqual([BODY, META].sort())
     // 这个方向不需要暂存区：残留本来就命不中，删掉不丢任何可用的东西。
-    expect(existsSync(stagingDir())).toBe(false)
+    expect(existsSync(stagingDir(entryDir()))).toBe(false)
   })
 })
 
@@ -223,8 +261,8 @@ describe('暂存区（回滚与中断恢复）', () => {
 
     await convertCache(planOf(false))
 
-    expect(await purgeStaging()).toBe(0)
-    expect(existsSync(stagingDir())).toBe(false)
+    expect(await purgeStaging(entryDir())).toBe(0)
+    expect(existsSync(stagingDir(entryDir()))).toBe(false)
   })
 
   it('搬不回去时报告回滚失败（界面据此提示人工核对）', async () => {
@@ -232,11 +270,11 @@ describe('暂存区（回滚与中断恢复）', () => {
     simulateInterruptedConversion(BODY)
 
     // 目标位置上有一个非空目录，rename 会失败 —— 这正是"回滚失败"的样子。
-    mkdirSync(join(dir(), BODY))
-    writeFileSync(join(dir(), BODY, 'x'), 'y')
+    mkdirSync(join(entryDir(), BODY))
+    writeFileSync(join(entryDir(), BODY, 'x'), 'y')
 
-    expect(await restoreStaging()).toBe(false)
-    expect(existsSync(join(stagingDir(), BODY))).toBe(true)
+    expect(await restoreStaging(entryDir())).toBe(false)
+    expect(existsSync(join(stagingDir(entryDir()), BODY))).toBe(true)
   })
 
   it('中断后以"开启"启动：搬回去（回退到切换前的状态）', async () => {
@@ -245,10 +283,10 @@ describe('暂存区（回滚与中断恢复）', () => {
     simulateInterruptedConversion(BODY)
 
     // 设置说"开启" ⇒ 那次切换没走到提交 ⇒ 回退。
-    expect(await recoverStaging(true)).toBe(1)
+    expect(await recoverStaging(true, entryDir())).toBe(1)
 
     expect(names()).toEqual([BODY, META].sort())
-    expect(existsSync(stagingDir())).toBe(false)
+    expect(existsSync(stagingDir(entryDir()))).toBe(false)
   })
 
   it('中断后以"关闭"启动：删掉暂存区（完成收尾）', async () => {
@@ -257,9 +295,9 @@ describe('暂存区（回滚与中断恢复）', () => {
     simulateInterruptedConversion(BODY, META)
 
     // 设置说"关闭" ⇒ 提交已经发生，只剩收尾 ⇒ 完成它。
-    expect(await recoverStaging(false)).toBe(0)
+    expect(await recoverStaging(false, entryDir())).toBe(0)
 
-    expect(existsSync(stagingDir())).toBe(false)
+    expect(existsSync(stagingDir(entryDir()))).toBe(false)
     expect(names()).toEqual([])
   })
 })
@@ -281,11 +319,11 @@ describe('reconcileCiphertextCache（关闭）', () => {
   it('不动不是缓存条目的东西', async () => {
     write(BODY, 'body')
     write('notes.txt', 'mine')
-    mkdirSync(join(dir(), 'somedir'))
+    mkdirSync(join(entryDir(), 'somedir'))
 
     const result = await reconcileCiphertextCache(false)
 
-    // 目录是这个目录里的外来物：不认识就不删，但要能被看见（日志里会 warn）。
+    // 目录与不认识的扩展名都是这个目录里的外来物：不认识就不删，但要能被看见（日志里会 warn）。
     expect(names()).toEqual(['notes.txt', 'somedir'])
     expect(result).toMatchObject({ removed: 1, kept: 0, foreign: 2 })
   })
@@ -323,7 +361,7 @@ describe('reconcileCiphertextCache（关闭）', () => {
     // 目录里还在的 META 才由这次对账删掉。
     expect(await reconcileCiphertextCache(false)).toMatchObject({ removed: 1, kept: 0 })
     expect(names()).toEqual([])
-    expect(existsSync(stagingDir())).toBe(false)
+    expect(existsSync(stagingDir(entryDir()))).toBe(false)
   })
 })
 
@@ -366,7 +404,7 @@ describe('reconcileCiphertextCache（开启）', () => {
     write(META)
     write('notes.txt')
     // 名字看起来像条目、其实是个目录：只处理普通文件，因此原样留着。
-    mkdirSync(join(dir(), `${'d'.repeat(64)}.bin`))
+    mkdirSync(join(entryDir(), `${'d'.repeat(64)}.bin`))
 
     const result = await reconcileCiphertextCache(true)
 

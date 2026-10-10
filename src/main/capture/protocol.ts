@@ -32,6 +32,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { Readable } from 'node:stream'
@@ -39,7 +40,13 @@ import { pipeline } from 'node:stream/promises'
 
 import type { Session } from 'electron'
 
-import { CACHE_DIR_MODE, CACHE_VERSION, cacheEntryPaths } from './cache-files'
+import {
+  CACHE_DIR_MODE,
+  CACHE_VERSION,
+  cacheEntryPaths,
+  currentCacheMonthDir,
+  findCacheEntry,
+} from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
 import { forceDownloadIfPdf } from './pdf'
@@ -47,7 +54,7 @@ import { setCiphertextCacheActive } from './health'
 import { fetchWithRetry, type RetryAttempt } from './retry'
 import { failureReason } from '../errors'
 import { hostOf, logger } from '../logger'
-import { ciphertextCacheDir } from '../paths'
+import { ciphertextAccountDir } from '../paths'
 
 /** 这一层现在挂着没有。注册是一次性的，因此必须自己记着（见 attach/detach）。 */
 let attached = false
@@ -67,7 +74,9 @@ export function attachCiphertextCache(ses: Session): void {
    */
   if (attached) return
 
-  const dir = ciphertextCacheDir()
+  // 条目落在 `<账号>/<年-月>/`（[ADR-0039]）：这里只保证账号那一层存在，
+  // 月份目录在**写入时**按需创建（读取时可能一个都没有 —— 那就是没缓存过）。
+  const dir = ciphertextAccountDir()
   mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE })
 
   ses.protocol.handle('https', async (request) => {
@@ -86,20 +95,27 @@ export function attachCiphertextCache(ses: Session): void {
     }
 
     const id = createHash('sha256').update(key).digest('hex')
-    const { body: bodyPath, meta: metaPath } = cacheEntryPaths(dir, id)
 
-    const cached = readCached(bodyPath, metaPath)
-    if (cached !== null) {
-      logger.debug('capture: ciphertext cache hit')
-      // 这一层返回给页面的响应都要过一遍 PDF 规则：缓存键只认得媒体 CDN（密文），
-      // 理论上不会出现 PDF 条目 —— 但"理论上"不该是安全性的依据（[ADR-0029]）。
-      return forceDownloadIfPdf(cached)
+    // 跨月份找：同一条密文可能是在上个月写下的（条目按写入时的月份落盘）。
+    const entry = findCacheEntry(id)
+    if (entry !== null) {
+      const cached = readCached(entry.body, entry.meta)
+      if (cached !== null) {
+        logger.debug('capture: ciphertext cache hit')
+        // 这一层返回给页面的响应都要过一遍 PDF 规则：缓存键只认得媒体 CDN（密文），
+        // 理论上不会出现 PDF 条目 —— 但"理论上"不该是安全性的依据（[ADR-0029]）。
+        return forceDownloadIfPdf(cached)
+      }
     }
 
     const response = await passthrough(request, ses)
 
     // 只缓存成功的、完整的响应。失败与 3xx 落盘没有意义，还会污染缓存。
     if (response.ok) {
+      const monthDir = currentCacheMonthDir()
+      mkdirSync(monthDir, { recursive: true, mode: CACHE_DIR_MODE })
+
+      const { body: bodyPath, meta: metaPath } = cacheEntryPaths(monthDir, id)
       persist(bodyPath, metaPath, request.url, response)
     }
 
@@ -188,14 +204,25 @@ async function passthrough(request: Request, ses: Session): Promise<Response> {
 }
 
 function readCached(bodyPath: string, metaPath: string): Response | null {
-  if (!existsSync(bodyPath) || !existsSync(metaPath)) return null
+  if (!existsSync(bodyPath) || !existsSync(metaPath)) {
+    // 缺一半的条目永远命不中（回放要同时读正文与元信息）—— 顺手清掉，不让它白占磁盘。
+    dropEntry(bodyPath, metaPath)
+    return null
+  }
 
   try {
     const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as CachedMeta
 
-    // 旧格式（当前是 version 缺失或不是 2）不回放：它的响应头语义可能已经不成立。
+    /**
+     * 旧格式不回放：它的响应头语义（[ADR-0016]）或**磁盘布局**（[ADR-0039] 把条目挪进了
+     * 月份目录）可能已经不成立。
+     *
+     * ⚠️ 与布局改动之前不同：那时"同一个 URL 再请求一次"会原地覆盖掉旧条目，因此不必删。
+     * 现在写入落在**当月**目录里，旧条目再也不会被写到，所以必须在这里清掉。
+     */
     if (meta.version !== CACHE_VERSION) {
       logger.debug('capture: cache entry has an older format, refetching')
+      dropEntry(bodyPath, metaPath)
       return null
     }
 
@@ -207,7 +234,22 @@ function readCached(bodyPath: string, metaPath: string): Response | null {
     logger.warn('capture: cache entry unreadable, will refetch', {
       reason: (error as Error).name,
     })
+    dropEntry(bodyPath, metaPath)
     return null
+  }
+}
+
+/**
+ * 丢一个用不了的条目（缺一半、旧格式、读不出来）。**只删我们写的这两个文件**，
+ * 且失败一律忽略 —— 缓存是派生数据（[ADR-0008]），下一次请求会重新写一份。
+ */
+function dropEntry(bodyPath: string, metaPath: string): void {
+  for (const path of [bodyPath, metaPath]) {
+    try {
+      rmSync(path, { force: true })
+    } catch {
+      // 删不掉不影响任何正确性（下次对账/覆盖还会再试）。
+    }
   }
 }
 

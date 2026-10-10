@@ -8,6 +8,7 @@
 import { app, session } from 'electron'
 
 import { APP_ID, DESKTOP_FILE_NAME, SESSION_PARTITION } from '../shared/constants'
+import { resolveAccountKey } from './account'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
 import { wipeArchive } from './archive/blobs'
 import { registerIpcHandlers } from './ipc'
@@ -132,6 +133,15 @@ app.on('will-quit', () => {
 
 app.whenReady().then(async () => {
   const settings = getSettings()
+
+  /**
+   * 账号标识（[ADR-0039]）：归档与密文缓存的第一层目录名，来自分区会话里的 `wa_ul` cookie。
+   *
+   * 必须早于 `configureSession`：两个接管点都要用它 —— 归档写入（`commitFromTemp`）与
+   * 密文缓存的条目路径（`capture/protocol.ts`）。读不到就回落到 `unknown-account`，
+   * 不阻断启动。
+   */
+  await resolveAccountKey(session.fromPartition(SESSION_PARTITION))
 
   /**
    * 归档位置必须早于会话配置：接管点 A 在装配时就会建好归档目录并清扫临时文件，

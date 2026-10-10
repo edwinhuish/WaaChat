@@ -22,6 +22,8 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
+import { ACCOUNT_FALLBACK, FILES_SEGMENT } from './archive/layout'
+
 /** 应用标识在文件系统层面的名字，与 package.json 的 name 一致。 */
 const APP_DIR_NAME = 'waachat'
 
@@ -111,6 +113,62 @@ let configured: string | null = null
 export const archiveDir = (): string => configured ?? defaultArchiveDir()
 
 /**
+ * 账号标识（[ADR-0039]）：归档与密文两棵树都按它分一层目录。
+ *
+ * 值来自分区会话里那条 `wa_ul` cookie（`wa_ul` 是页面自己第一次加载时写下的随机 UUID），
+ * 由 `src/main/account.ts` 在启动时读一次并调 {@link setAccountKey} 灌进来 —— 这个模块
+ * **不导入 electron**（与 `setArchiveDir` 同一条纪律：单测与离线自检要能直接用它）。
+ *
+ * 拿不到时用 {@link ACCOUNT_FALLBACK}：那是个正常状态（还没登录 / cookie 被清过），
+ * 而不是错误 —— 文件照常归档，只是落在一个叫 `unknown-account` 的目录里。
+ */
+let configuredAccount: string | null = null
+
+/**
+ * 账号名的最大长度。真的 UUID 是 36 字符；留一倍余量给将来的标识形状。
+ */
+const ACCOUNT_MAX_LENGTH = 72
+
+/** 目录名的合法字符：小写字母、数字、点、下划线、连字符。 */
+const ACCOUNT_UNSAFE = /[^a-z0-9._-]/g
+
+/**
+ * 把 cookie 里的值整成一个**单段目录名**；不可用时返回 `null`（调用方回落到
+ * {@link ACCOUNT_FALLBACK}）。
+ *
+ * 这是**安全关键**的净化，理由与 `archive/naming.ts` 相同：这个值来自页面的存储，
+ * 我们把它当目录名用，因此 `/`、`..`、控制字符都必须挡掉。规则：
+ *
+ *   - 只保留 `[a-z0-9._-]`（大写折成小写），其余一律删掉；
+ *   - 空、`.`、`..`、以点开头都不接受（点开头会与归档内部的 `.part-*` / `.index.sqlite*` 混在一起）；
+ *   - 超长截断（真实标识远不到 72 字符）。
+ *
+ * 纯函数，因此单测与离线自检都能直接断言它。
+ */
+export function normalizeAccountKey(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null
+
+  const cleaned = raw.trim().toLowerCase().replace(ACCOUNT_UNSAFE, '')
+  if (cleaned === '' || cleaned === '.' || cleaned === '..' || cleaned.startsWith('.')) return null
+
+  return cleaned.slice(0, ACCOUNT_MAX_LENGTH)
+}
+
+/**
+ * 设置账号标识（不合法 / 空 = 回落到 {@link ACCOUNT_FALLBACK}），返回最终生效的值。
+ *
+ * 只改这个模块里的一个变量 —— 建目录、收权限是 `archive/blobs.ts` 与
+ * `capture/cache-files.ts` 的职责（与 `setArchiveDir()` 同一条分工）。
+ */
+export function setAccountKey(raw: string | null | undefined): string {
+  configuredAccount = normalizeAccountKey(raw)
+  return accountKey()
+}
+
+/** 当前生效的账号标识；没设或设不进去时是 {@link ACCOUNT_FALLBACK}。 */
+export const accountKey = (): string => configuredAccount ?? ACCOUNT_FALLBACK
+
+/**
  * 设置归档根目录（`null` / 空 / 不合法 = 回到默认位置），返回最终生效的绝对路径。
  *
  * 只改这个模块里的一个变量 —— 建目录、收紧权限、把索引连接挪过去，
@@ -129,16 +187,36 @@ export function setArchiveDir(raw: string | null | undefined): string {
  * 不会出现"索引里有记录、新目录里没有文件"的悬空状态（[ADR-0018]）。
  *
  * 注意它包含元数据（谁在何时打开过什么文件），因此所在目录的权限同样要收紧。
+ *
+ * ⚠️ 它是**一整个归档一棵**（不在账号目录里，[ADR-0039]）：账号只是磁盘上的分层，
+ * 而"我打开过的文件"是一个整体，搜索不该先在界面上选账号。
  */
 export const indexDbPath = (): string => join(archiveDir(), ARCHIVE_INDEX_FILE)
 
 /**
- * 密文缓存目录。
+ * 归档里属于某个账号的那一层：`<归档根>/<账号>`。
+ *
+ * 账号名由 `accountKey()` 给（cookie 里的标识；拿不到就是 `unknown-account`）。
+ */
+export const archiveAccountDir = (): string => join(archiveDir(), accountKey())
+
+/** 明文正文的容器：`<归档根>/<账号>/files`（[ADR-0039]）。 */
+export const archiveFilesDir = (): string => join(archiveAccountDir(), FILES_SEGMENT)
+
+/**
+ * 密文缓存目录（**根**）。
  *
  * 存的是**未解密**的字节流，因此即使泄露，危害低于归档目录。可随时删除。
  * 它不随归档位置移动：它是派生数据，放在 XDG 缓存/数据目录下才是对的。
+ *
+ * 账号与月份各占一层：`<这里>/<账号>/<年-月>/<key>.bin`（[ADR-0039]）。分层的理由与归档
+ * 相同（看得清、删得干净），但**根目录仍然独立** —— 这是 [ADR-0008] 的物理隔离：
+ * "清除归档"与"关闭密文缓存"因此都不可能误伤对方。
  */
 export const ciphertextCacheDir = (): string => join(dataHome(), APP_DIR_NAME, 'cache')
+
+/** 密文缓存里属于某个账号的那一层：`<缓存根>/<账号>`。 */
+export const ciphertextAccountDir = (): string => join(ciphertextCacheDir(), accountKey())
 
 /** 日志目录。放在 XDG_CACHE_HOME 下 —— 日志是派生物，用户清缓存时清掉它是对的。 */
 export const logDir = (): string => join(cacheHome(), APP_DIR_NAME, 'logs')

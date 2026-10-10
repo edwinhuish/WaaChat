@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -305,59 +305,73 @@ describe('migrateArchive（索引清单）', () => {
 })
 
 /**
- * 年月子目录（[ADR-0037]）。
+ * 分层容器（[ADR-0037] / [ADR-0039]）。
  *
- * 上面那些用例照旧跑**平面布局**，而且必须继续通过：旧归档里的文件还在根目录下，
- * 索引里的 `stored_name` 记着它们在哪儿 —— 迁移要同时伺候两种形态。这里补的是新的那一半，
- * 外加"什么才算我们的容器"这条判据：放宽会把用户自己的目录当成正文搬走，收紧则会让
- * 全新布局的归档**根本迁移不了**。
+ * 上面那些用例照旧跑**平面布局**（正文直接躺在根下），而且必须继续通过：老归档就是这样，
+ * 索引里的 `stored_name` 记着它们在哪儿 —— 迁移要同时伺候**所有**历史形态。
+ *
+ * 这里补的是分层的那几种，外加"什么才算我们的容器"这条判据：放宽会把用户自己的目录当成
+ * 正文搬走，收紧则会让**自己写下的**归档根本迁移不了。
  */
-describe('migrateArchive（年月子目录）', () => {
-  const MONTH_BLOB = '2026/10/2026年第三季度采购合同.pdf'
+describe('migrateArchive（分层容器）', () => {
+  /** 任意一个 UUID 形状的账号名（判据只认形状，见 `layout.isAccountSegment`）。 */
+  const ACCOUNT = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+  /** 现在写入的布局：`<账号>/files/<年-月>/`。 */
+  const MODERN_BLOB = `${ACCOUNT}/files/2026-10/2026年第三季度采购合同.pdf`
+  /** [ADR-0037] 当时的两层布局：`<年>/<月>/`。 */
+  const LEGACY_BLOB = '2026/10/2026年第三季度采购合同.pdf'
   const MONTH_BODY = 'month body'
 
-  /** 造一份"新布局"的正文：`<源>/2026/10/<原名>`。 */
-  function seedMonthBlob(): void {
-    mkdirSync(join(source, '2026', '10'), { recursive: true, mode: 0o700 })
-    writeFileSync(join(source, MONTH_BLOB), MONTH_BODY)
+  /** 造一份分层布局里的正文。 */
+  function seedBlob(relative: string): void {
+    mkdirSync(dirname(join(source, relative)), { recursive: true, mode: 0o700 })
+    writeFileSync(join(source, relative), MONTH_BODY)
   }
 
-  it('年月目录里的正文按相对路径进计划（并计入文件数/字节数）', () => {
-    seedMonthBlob()
+  it('新布局的正文按相对路径进计划（并计入文件数/字节数）', () => {
+    seedBlob(MODERN_BLOB)
 
     const planned = plan()
 
-    expect(planned.entries).toContain(MONTH_BLOB)
+    expect(planned.entries).toContain(MODERN_BLOB)
     expect(planned.summary).toEqual({ files: 1, bytes: MONTH_BODY.length })
   })
 
-  it('连两级子目录一起搬到新位置，并删掉搬空的源目录', async () => {
+  it('[ADR-0037] 的旧两层同样进计划（老归档必须还能迁移）', () => {
+    seedBlob(LEGACY_BLOB)
+
+    const planned = plan()
+
+    expect(planned.entries).toContain(LEGACY_BLOB)
+  })
+
+  it('连子目录一起搬到新位置，并删掉搬空的源目录', async () => {
     seedSource()
-    seedMonthBlob()
+    seedBlob(MODERN_BLOB)
 
     await expect(migrateArchive(plan(), () => undefined)).resolves.toEqual({ ok: true })
 
-    expect(readFileSync(join(target, MONTH_BLOB), 'utf8')).toBe(MONTH_BODY)
-    // 源目录搬空了就该被收掉；里面还留着空的 `2026/10/` 会让用户以为"没搬干净"。
+    expect(readFileSync(join(target, MODERN_BLOB), 'utf8')).toBe(MONTH_BODY)
+    // 源目录搬空了就该被收掉；里面还留着空的容器会让用户以为"没搬干净"。
     expect(existsSync(source)).toBe(false)
   })
 
-  it('回滚把子目录里的正文搬回原位，并收掉目标里被搬空的年月目录', async () => {
-    seedMonthBlob()
+  it('回滚把子目录里的正文搬回原位，并收掉目标里被搬空的容器', async () => {
+    seedBlob(MODERN_BLOB)
     const planned = plan()
 
     await expect(migrateArchive(planned, () => undefined)).resolves.toEqual({ ok: true })
-    expect(existsSync(join(target, MONTH_BLOB))).toBe(true)
+    expect(existsSync(join(target, MODERN_BLOB))).toBe(true)
 
     await expect(rollbackMigration(planned)).resolves.toBe(true)
 
-    expect(readFileSync(join(source, MONTH_BLOB), 'utf8')).toBe(MONTH_BODY)
-    // 空目录也要收掉：只 `rmdir(目标)` 是不够的，年月目录会先把它挡住。
-    expect(existsSync(join(target, '2026'))).toBe(false)
+    expect(readFileSync(join(source, MODERN_BLOB), 'utf8')).toBe(MONTH_BODY)
+    // 空容器也要收掉：只 `rmdir(目标)` 是不够的，账号 / files / 月份三层会先把它挡住。
+    expect(existsSync(join(target, ACCOUNT))).toBe(false)
   })
 
-  it('迁移途中失败时，子目录里的正文也被搬回来', async () => {
-    seedMonthBlob()
+  it('迁移途中失败时，分层里的正文也被搬回来', async () => {
+    seedBlob(MODERN_BLOB)
     const planned = plan()
 
     const result = await migrateArchive(planned, () => undefined, {
@@ -367,11 +381,11 @@ describe('migrateArchive（年月子目录）', () => {
     })
 
     expect(result).toMatchObject({ ok: false, failure: 'write-failed', rolledBack: true })
-    expect(readFileSync(join(source, MONTH_BLOB), 'utf8')).toBe(MONTH_BODY)
-    expect(existsSync(join(target, '2026'))).toBe(false)
+    expect(readFileSync(join(source, MODERN_BLOB), 'utf8')).toBe(MONTH_BODY)
+    expect(existsSync(join(target, ACCOUNT))).toBe(false)
   })
 
-  it('非年月的目录仍然是异常内容（不静默搬走别人的东西）', () => {
+  it('非容器的目录仍然是异常内容（不静默搬走别人的东西）', () => {
     mkdirSync(join(source, 'stuff'), { recursive: true })
     writeFileSync(join(source, 'stuff', 'x.txt'), 'x')
 
@@ -385,7 +399,19 @@ describe('migrateArchive（年月子目录）', () => {
     expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
   })
 
-  it('年月目录里不允许再出现第三层目录', () => {
+  it('账号目录里只允许 files，别的名字是异常', () => {
+    mkdirSync(join(source, ACCOUNT, 'movies'), { recursive: true })
+
+    expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
+  })
+
+  it('files 里只允许 年-月，旧两层不算', () => {
+    mkdirSync(join(source, ACCOUNT, 'files', '2026', '10'), { recursive: true })
+
+    expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
+  })
+
+  it('月份目录里不允许再出现目录（第三层之后只有文件）', () => {
     mkdirSync(join(source, '2026', '10', 'deep'), { recursive: true })
 
     expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })

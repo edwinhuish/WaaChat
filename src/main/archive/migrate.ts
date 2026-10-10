@@ -13,11 +13,15 @@
  *     文件操作一律走 `node:fs/promises`。用同步 API 会让主进程卡住，界面连同承载
  *     上游页面的那个窗口一起失去响应。
  *
- * ── 年月子目录（[ADR-0037]）──
+ * ── 分层容器（[ADR-0037] / [ADR-0039]）──
  *
- * 正文在 `<年>/<月>/` 里，因此搬运的清单是**相对路径**，目标那一侧的同名子目录会被建出来。
- * 两边都要收掉自己留下的**空壳**（源位置搬空之后、回滚之后），否则"搬完了"却删不掉旧目录，
- * 用户看到的是一个空目录树 —— 那与"早就搬干净了"在界面上没法区分。
+ * 正文在 `<账号>/files/<年-月>/` 里（历史上还出现过 `<年-月>/` 与 `<年>/<月>/`），因此搬运的
+ * 清单是**相对路径**，目标那一侧的同名子目录会被建出来。两边都要收掉自己留下的**空壳**
+ * （源位置搬空之后、回滚之后），否则"搬完了"却删不掉旧目录，用户看到的是一个空目录树
+ * —— 那与"早就搬干净了"在界面上没法区分。
+ *
+ * 容器判据在 `containerKind()`：一张"父容器 → 允许的孩子"的转移表。它同时是**安全边界**
+ * —— 形状不对的目录（用户自己放进来的）会让整次迁移失败，而不是被当成我们的东西搬走。
  *
  * ── 索引为什么不照计划搬 ──
  *
@@ -45,8 +49,15 @@ import type {
 } from '../../shared/types'
 import { failureReason } from '../errors'
 import { logger } from '../logger'
+import { accountKey } from '../paths'
 import { setReadOnly } from './blobs'
-import { isArchiveMonth, isArchiveYear } from './layout'
+import {
+  FILES_SEGMENT,
+  isAccountSegment,
+  isArchiveMonthDir,
+  isLegacyMonthDir,
+  isLegacyYearDir,
+} from './layout'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
 const INDEX_PREFIX = '.index.sqlite'
@@ -145,13 +156,17 @@ interface SourceScan {
 /**
  * 扫描源目录，把里面的条目分成三类。
  *
- * 归档目录里只允许出现四样东西，其余一律**抛错**而不是跳过 —— 跳过等于"迁移成功"而后
+ * 归档目录里只允许出现这几样东西，其余一律**抛错**而不是跳过 —— 跳过等于"迁移成功"而后
  * 用户的文件少了一部分，那比迁移失败严重得多：
  *
- *   1. 正文（根下的非点开头文件，或 `年/月/` 里的文件，[ADR-0037]）
+ *   1. 正文（根下的非点开头文件；或下面任何一种容器里的文件）
  *   2. 索引（根下的 `.index.sqlite*`）
  *   3. 我们自己的派生物（根下的 `.part-*`，或点开头的目录 `.open/`）
- *   4. `年/月` 两级目录 —— **只认这两级、且必须是数字形状**，深层或形状不对仍是异常
+ *   4. **我们写下的容器**，逐个历史版本都要认（[ADR-0037] / [ADR-0039]）：
+ *        `<账号>/files/<年-月>/`   ← 现在
+ *        `<年-月>/`                ← ADR-0037 之后、ADR-0039 之前的月份目录
+ *        `<年>/<月>/`              ← ADR-0037 当时的两层
+ *      形状不对（例如 `stuff/`）仍然是异常 —— 那说明归档目录被别的东西用了。
  *
  * 符号链接一律不跟随、不迁移（INVARIANTS G-4）。
  */
@@ -161,10 +176,7 @@ function scanSource(dir: string): SourceScan {
   const disposable: string[] = []
   let bytes = 0
 
-  /**
-   * @param level 1 = 归档根，2 = 年份目录，3 = 月份目录。目录只允许出现在 1、2 两级。
-   */
-  const walk = (abs: string, prefix: string, level: number): void => {
+  const walk = (abs: string, prefix: string, parent: ContainerKind): void => {
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
       const name = entry.name
       const relative = prefix === '' ? name : `${prefix}/${name}`
@@ -173,23 +185,22 @@ function scanSource(dir: string): SourceScan {
 
       if (entry.isDirectory()) {
         // 点开头的目录（`.open/`）是旧版本的派生物，删掉即可。
-        if (level === 1 && name.startsWith('.')) {
+        if (parent === 'root' && name.startsWith('.')) {
           disposable.push(name)
           continue
         }
 
-        const isContainer =
-          (level === 1 && isArchiveYear(name)) || (level === 2 && isArchiveMonth(name))
-        if (!isContainer) throw new MigrationError('unexpected-content', relative)
+        const kind = containerKind(parent, name)
+        if (kind === null) throw new MigrationError('unexpected-content', relative)
 
-        walk(join(abs, name), relative, level + 1)
+        walk(join(abs, name), relative, kind)
         continue
       }
 
       if (!entry.isFile()) throw new MigrationError('unexpected-content', relative)
 
       // 索引与临时文件只可能落在归档根。
-      if (level === 1) {
+      if (parent === 'root') {
         if (name.startsWith(INDEX_PREFIX)) {
           index.push(name)
           continue
@@ -206,9 +217,40 @@ function scanSource(dir: string): SourceScan {
     }
   }
 
-  walk(dir, '', 1)
+  walk(dir, '', 'root')
 
   return { blobs, index, disposable, bytes }
+}
+
+/** 我们写下的容器种类（按父容器决定下一层允许什么）。 */
+type ContainerKind = 'root' | 'account' | 'files' | 'month' | 'legacy-year' | 'legacy-month'
+
+/**
+ * `parent` 里出现一个叫 `name` 的目录，它算不算**我们的**容器；算的话是哪一种。
+ *
+ * 这一张转移表是迁移能"认出自己写下的所有布局、又不把别人的目录搬走"的全部依据：
+ * 每一层只接受它该有的那一种孩子。
+ */
+function containerKind(parent: ContainerKind, name: string): ContainerKind | null {
+  switch (parent) {
+    case 'root':
+      if (isAccountSegment(name, accountKey())) return 'account'
+      if (isArchiveMonthDir(name)) return 'month'
+      return isLegacyYearDir(name) ? 'legacy-year' : null
+
+    case 'account':
+      return name === FILES_SEGMENT ? 'files' : null
+
+    case 'files':
+      return isArchiveMonthDir(name) ? 'month' : null
+
+    case 'legacy-year':
+      return isLegacyMonthDir(name) ? 'legacy-month' : null
+
+    // 月份目录里只有正文 —— 再出现目录就是异常。
+    default:
+      return null
+  }
 }
 
 /**
@@ -501,8 +543,11 @@ function isOwnEntry(relative: string): boolean {
     return !name.startsWith('.')
   }
 
-  // 深处（`年/月/…`）只有我们的年月容器会长这样；形状不对就不是我们的。
-  return isArchiveYear(segments[0] ?? '')
+  // 深处的前缀只可能是我们写下的某一种容器 —— 逐个历史版本都认（见 scanSource）：
+  // `<账号>/…`、`<年-月>/…`（ADR-0039 之后）、`<年>/…`（ADR-0037 当时）。
+  const head = segments[0] ?? ''
+
+  return isAccountSegment(head, accountKey()) || isArchiveMonthDir(head) || isLegacyYearDir(head)
 }
 
 /**

@@ -52,8 +52,8 @@ import { join } from 'node:path'
 
 import { TEMP_FILE_PREFIX } from '../../shared/constants'
 import { hashPrefix, logger, redactPath } from '../logger'
-import { archiveDir } from '../paths'
-import { archiveRelativePath, folderFor, normalizeStoredPath } from './layout'
+import { accountKey, archiveDir } from '../paths'
+import { FILES_SEGMENT, archiveStoredPath, folderFor, normalizeStoredPath } from './layout'
 import { archiveNameCandidates } from './naming'
 
 /** 归档目录权限：仅本人可读写执行。里面的文件是**解密后的明文**。 */
@@ -92,11 +92,12 @@ export function ensureArchiveDir(): void {
 }
 
 /**
- * 确保某个年月子目录存在，权限正确（`0700`）。幂等。
+ * 确保归档目录里的某个**容器**（相对路径，如 `<账号>/files/2026-10`）存在，权限正确（`0700`）。
+ * 幂等。
  *
- * 只由落盘路径调用（[ADR-0037]）。它**只接受 `folderFor()` 算出来的形态**
- * （`2026/10`）而不再净化：这里的输入是我们自己算的，若它不像年月，说明调用方写错了
- * 而不是数据脏了 —— 那时 `mkdir` 会老老实实建出一个怪目录，比抛错更难查。
+ * 只由落盘路径调用（[ADR-0037] / [ADR-0039]）。它**不做净化**：这里的输入全部由我们自己
+ * 拼出来（账号名已由 `paths.normalizeAccountKey()` 净化过、月份由 `folderFor()` 生成），
+ * 若它不成形，说明调用方写错了 —— 那时 `mkdir` 会老老实实建出一个怪目录，比抛错更难查。
  */
 export function ensureArchiveFolder(folder: string): void {
   ensureDir(archiveFilePath(folder))
@@ -251,15 +252,19 @@ export async function commitFromTemp(
   const hash = await sha256File(temp)
   const bytes = statSync(temp).size
 
+  const account = accountKey()
   const folder = folderFor(options.openedAt ?? Date.now())
-  ensureArchiveFolder(folder)
 
-  // 同一份内容可能已经在归档里（可能叫别的名字、也可能在同一个月之外的目录）——
+  // 容器链一次建齐：`<账号>/files/<年-月>`（[ADR-0039]）。`rename` 不会建目录，
+  // 因此这一步必须在落盘之前 —— 权限同样是 0700（见 ensureDir 里那段说明）。
+  ensureArchiveFolder(`${account}/${FILES_SEGMENT}/${folder}`)
+
+  // 同一份内容可能已经在归档里（可能叫别的名字、可能在别的月份、也可能在别的账号目录下）——
   // 那就只多挂一个名字，不再写一份字节。
   const existing = findExisting(hash, bytes, options)
 
   for (const candidate of archiveNameCandidates(rawName, hash)) {
-    const storedName = archiveRelativePath(folder, candidate)
+    const storedName = archiveStoredPath(account, folder, candidate)
     const target = archiveFilePath(storedName)
 
     if (existsSync(target)) {

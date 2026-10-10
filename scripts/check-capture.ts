@@ -23,14 +23,21 @@ import { basename, dirname, join } from 'node:path'
 
 import { ARCHIVE_FILE_MODE } from '../src/main/archive/blobs'
 import {
+  FILES_SEGMENT,
+  archiveStoredPath,
   folderFor,
-  isArchiveMonth,
-  isArchiveYear,
+  isAccountSegment,
+  isArchiveMonthDir,
   normalizeStoredPath,
 } from '../src/main/archive/layout'
 import { isAllowedTarget } from '../src/main/archive/migrate'
 import { archiveNameCandidates, sanitizeFileName } from '../src/main/archive/naming'
-import { STAGING_DIR_NAME, isEntryName } from '../src/main/capture/cache-files'
+import {
+  BODY_SUFFIX,
+  STAGING_DIR_NAME,
+  cacheEntryDirs,
+  isEntryName,
+} from '../src/main/capture/cache-files'
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
 import { PDF_DOWNLOAD_MIME, isPdfResponse } from '../src/main/capture/pdf'
@@ -60,10 +67,12 @@ import { ALLOWED_PERMISSIONS, isPermissionAllowed } from '../src/main/permission
 import { isDocumentPreviewPage } from '../src/shared/upstream'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
+  accountKey,
   archiveDir,
   ciphertextCacheDir,
   defaultArchiveDir,
   indexDbPath,
+  normalizeAccountKey,
   normalizeArchiveDir,
 } from '../src/main/paths'
 import { buildUserAgent, isCleanUserAgent } from '../src/shared/user-agent'
@@ -199,21 +208,48 @@ check(
   archiveNameCandidates('合同.pdf', sampleHash).every((name) => name.endsWith('.pdf')),
 )
 
-// 归档正文的时间分区（ADR-0037）：正文在 `<年>/<月>/` 里。三条判据都属于"改了没人会立刻
-// 发现"的那一类 —— 年月算错会让"按时间翻文件夹"不可信，判据放宽则会让迁移把用户自己的目录
-// 当成正文容器（或者反过来，让新布局的归档根本迁移不了）。
+// 归档的分层（ADR-0037 / ADR-0039）：正文在 `<账号>/files/<年-月>/` 里，"账号"来自页面写下
+// 的 `wa_ul`（一个 UUID）。这几条都属于"改了没人会立刻发现"的那一类 —— 年月算错会让"按时间
+// 翻文件夹"不可信，容器判据放宽则会让迁移把用户自己的目录当成正文搬走（收紧则会让自己的归档
+// 迁移不了）。
+const sampleAccount = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
 check(
-  '归档时间分区成 年/月（本地时间）',
-  folderFor(new Date(2026, 9, 5, 12).getTime()) === '2026/10',
+  '归档时间分区成 年-月（本地时间、单层）',
+  folderFor(new Date(2026, 9, 5, 12).getTime()) === '2026-10',
+  folderFor(new Date(2026, 9, 5, 12).getTime()),
 )
 check(
-  '年月判据收得够紧（`26` / `13` 都不是我们的容器）',
-  isArchiveYear('2026') &&
-    !isArchiveYear('26') &&
-    isArchiveMonth('01') &&
-    isArchiveMonth('12') &&
-    !isArchiveMonth('13') &&
-    !isArchiveMonth('1'),
+  '月份判据收得够紧（`2026-13` / `2026-1` / 旧两层都不算）',
+  isArchiveMonthDir('2026-01') &&
+    isArchiveMonthDir('2026-12') &&
+    !isArchiveMonthDir('2026-13') &&
+    !isArchiveMonthDir('2026-1') &&
+    !isArchiveMonthDir('2026/10') &&
+    !isArchiveMonthDir('2026'),
+)
+// 账号目录的判据是**迁移的安全边界**：只认 UUID 形状、unknown-account 与当前生效的那个名字，
+// 否则用户自己放进归档目录的 `stuff/` 会被当成我们的容器搬走。
+check(
+  '账号目录只认自己的形状（`stuff` 不算）',
+  isAccountSegment(sampleAccount, sampleAccount) &&
+    isAccountSegment('unknown-account', sampleAccount) &&
+    !isAccountSegment('stuff', sampleAccount) &&
+    !isAccountSegment('2026-10', sampleAccount),
+)
+check(
+  '`stored_name` 的形态：账号 / files / 年-月 / 文件名',
+  archiveStoredPath(sampleAccount, '2026-10', '合同.pdf') ===
+    `${sampleAccount}/${FILES_SEGMENT}/2026-10/合同.pdf`,
+)
+// 账号那一层来自 cookie（页面写的），因此是**不可信输入**：路径分隔符与控制字符必须被剥掉，
+// 否则 `join(归档目录, stored_name)` 又多一个穿越点。
+check(
+  '账号名净化：白名单之外的字符删掉，清不干净的整条拒掉',
+  normalizeAccountKey('a/b') === 'ab' &&
+    normalizeAccountKey('../../etc/passwd') === null &&
+    normalizeAccountKey('.hidden') === null &&
+    normalizeAccountKey('..') === null &&
+    normalizeAccountKey(sampleAccount) === sampleAccount,
 )
 // 索引里的相对路径会被拼到归档目录后面，因此它是**路径穿越的唯一入口**（ADR-0031 引入
 // stored_name，ADR-0037 让它可以带子目录）。这里的判据是纯字符串处理，能离线断言。
@@ -221,8 +257,10 @@ check(
   '索引里的相对路径走不出归档目录',
   normalizeStoredPath('../../etc/passwd') === 'etc/passwd' &&
     normalizeStoredPath('/etc/passwd') === 'etc/passwd' &&
-    normalizeStoredPath('2026/10/合同.pdf') === '2026/10/合同.pdf',
+    normalizeStoredPath(`${sampleAccount}/files/2026-10/合同.pdf`) ===
+      `${sampleAccount}/files/2026-10/合同.pdf`,
 )
+check('拿不到账号标识时回落到 unknown-account', accountKey() === 'unknown-account')
 
 // 迁移目标是用户在对话框里选的目录（ADR-0019），选错一个 —— 选到自己的子目录、或
 // 选到上级 —— 会让搬迁变成"自我递归"或"搬完等于没搬"。这条判据是纯字符串比较，
@@ -284,14 +322,14 @@ if (existsSync(archive)) {
   const { blobs, dirs } = walkArchive(archive)
 
   /**
-   * 年月子目录也是"里面是解密后的明文"那一类（ADR-0037）：它们由落盘时的
-   * `ensureArchiveFolder()` 建并收紧，这里回头确认那一步真的生效了。
+   * 账号 / files / 月份三层子目录也是"里面是解密后的明文"那一类（ADR-0037 / ADR-0039）：
+   * 它们由落盘时的 `ensureArchiveFolder()` 建并收紧，这里回头确认那一步真的生效了。
    */
   const looseDirs = dirs.filter(
     (relative) => (statSync(join(archive, relative)).mode & 0o777) !== 0o700,
   )
   check(
-    '年月子目录权限同样是 0700',
+    '分层子目录权限同样是 0700',
     looseDirs.length === 0,
     `${looseDirs.length} 个目录更宽：${looseDirs.slice(0, 3).join(', ')}`,
   )
@@ -338,8 +376,14 @@ if (existsSync(archive)) {
 
 const cache = ciphertextCacheDir()
 if (existsSync(cache)) {
-  const bins = readdirSync(cache).filter((name) => name.endsWith('.bin'))
-  note(`密文缓存：${bins.length} 项，位于 ${cache}`)
+  // 条目在 `<缓存根>/<账号>/<年-月>/` 里（ADR-0039），因此要按目录树数，不能只数根下。
+  const months = cacheEntryDirs()
+  const bins = months.reduce(
+    (total, dir) => total + readdirSync(dir).filter((name) => name.endsWith(BODY_SUFFIX)).length,
+    0,
+  )
+
+  note(`密文缓存：${bins} 项，分布在 ${months.length} 个月份目录里，位于 ${cache}`)
 } else {
   note(`密文缓存尚未创建：${cache}`)
 }
