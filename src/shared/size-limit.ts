@@ -60,8 +60,11 @@ const FACTS: Readonly<Record<SizeLimitKey, SizeLimitFacts>> = {
   archiveMaxBytes: {
     subject: '归档',
     feature: '自动淘汰',
+    // 这一项**已经实现**：`milestone` 与 `growsText` 只在 `enforced=false` 那条分支里出现，
+    // 而生产路径永远不会给它传 false（[ADR-0048]）。留着它们是为了那条分支仍可被断言 ——
+    // 也是下一项（缓存）落地前，这套叙述材料本身的样板。
     milestone: 'M2',
-    // 与 `blobs.evictToFit()` 的文档一致（"按最久未访问优先淘汰"）。
+    // 与 `store.enforceLimit()` / `blobs.evictToFit()` 的文档一致（"按最久未访问优先淘汰"）。
     enforcedHint: (limit) => `超过 ${limit} 后按最久未访问优先淘汰。`,
     growsText: '归档不会被自动清理，会一直增长',
   },

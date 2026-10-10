@@ -114,7 +114,7 @@ waachat/
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
 │   │   │   └── health.ts           接管失效的事实源（markCaptured / markFailure / onHealthChange）
 │   │   ├── archive/                ★ 核心：本地归档（账号 / 月份分层，见 ADR-0039）
-│   │   │   ├── blobs.ts            归档落盘：原文名命名 + <年>/<月>/ 分层 + 只读 + 去重（硬链接）+ 清扫、淘汰（M2）
+│   │   │   ├── blobs.ts            归档落盘：原文名命名 + <年>/<月>/ 分层 + 只读 + 去重（硬链接）+ 清扫、淘汰（ADR-0048）
 │   │   │   ├── naming.ts           文件名净化 + 同名冲突的候选名（纯函数，安全关键，可单测）
 │   │   │   ├── layout.ts           时间分区：年月推导 / 年月判据 / 相对路径净化（纯函数，可单测）
 │   │   │   ├── store.ts            SQLite 索引（FTS5 全文搜索）
