@@ -27,9 +27,14 @@ WaaChat 是一个 Linux 桌面聊天客户端：会话与媒体由 **`whatsapp-w
 | **INV-3** | **绝不经手密钥与加密。** 不解析 mediaKey、不修改加密流量、不做自己的解密实现。解密只由官方页面代码完成。 | 触碰加密会把项目从「宿主」变成「破解工具」，性质完全不同 |
 | **INV-4** | **绝不使用服务方的视觉标识资产。** 不用 WhatsApp / Meta 的 Logo、图标、字体、吉祥物、官方配色，也不用其素材做应用图标。项目名 `WaaChat` 不含服务方名称，但强制义务不变：非官方声明必须同时出现在 `README.md`、`DISCLAIMER.md` 与安装产物中。 | 名称与知名服务近似，而应用承载的正是那个服务——声明义务是"不做官方外观"之外的第二道防线；视觉资产则成本为零、风险最高，因此始终是红线 —— 见 `docs/decisions.md` ADR-0020 |
 
-**INV-1 与 INV-2 的 ESLint 守卫已随 [ADR-0043](docs/decisions.md#adr-0043) 移除**（`eslint.config.mjs` 的 `invariantGuards` 里那两段）。
+**现在由 ESLint 强制的是 INV-3**：`eslint.config.mjs` 的 `cryptoGuards`（作用于 `src/**`）禁止解密原语
+（`createDecipher*` / `createCipher*` / `createHmac` / `hkdf` / `subtle`）与密钥字段（`mediaKey` / `filehash`）；
+`pnpm run selfcheck` 第 16 节再加一道同样的文本扫描，并断言依赖里没有在 Node 侧解密的库。
+
+**INV-1 与 INV-2 的守卫已随 [ADR-0043](docs/decisions.md#adr-0043) 移除**（原 `invariantGuards` 里那两段）。
 渲染侧的**进程边界不在撤销范围**：渲染进程仍不得 import `electron` / `node:fs` / `node:path`（G-1），仍然由 ESLint 强制。
-若要重新收紧任何约束：不要直接改 lint 配置，先在 `docs/decisions.md` 里追加一条 ADR 并说明理由。
+
+要改任何一条守卫：不要直接改 lint 配置，先在 `docs/decisions.md` 里追加一条 ADR 并说明理由。
 
 ## 2. 常用命令
 
