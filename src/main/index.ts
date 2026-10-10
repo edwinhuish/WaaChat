@@ -9,6 +9,7 @@ import { app, session } from 'electron'
 
 import { APP_ID, DESKTOP_FILE_NAME, SESSION_PARTITION } from '../shared/constants'
 import { resolveAccountKey } from './account'
+import { attachContextMenu } from './context-menu'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
 import { wipeArchive } from './archive/blobs'
 import { attachDevProbe } from './dev-probe'
@@ -167,6 +168,9 @@ app.whenReady().then(async () => {
 
   // 开发模式：把只读探针装进这扇窗口的控制台（未打包时才生效，见 dev-probe.ts）。
   attachDevProbe(mainWindow)
+
+  // 右键菜单：唯一的内容是拼写检查的建议（Electron 不像浏览器自带菜单，见 context-menu.ts）。
+  attachContextMenu(mainWindow)
 
   registerIpcHandlers()
   createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })
