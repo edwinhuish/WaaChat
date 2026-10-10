@@ -25,6 +25,7 @@
 
 import type { Session } from 'electron'
 
+import type { Settings } from '../../shared/types'
 import { failureReason } from '../errors'
 import { logger } from '../logger'
 import { convertCache, purgeStaging, restoreStaging, type CacheConversionPlan } from './cache-files'
@@ -54,6 +55,7 @@ export type CacheSwitchOutcome =
 export async function switchCiphertextCache(
   plan: CacheConversionPlan,
   ses: Session,
+  getSettings: () => Settings,
   commit: () => void,
 ): Promise<CacheSwitchOutcome> {
   const target = plan.target
@@ -66,7 +68,7 @@ export async function switchCiphertextCache(
 
   const restoreLayer = (): void => {
     try {
-      if (layerWasAttached) attachCiphertextCache(ses)
+      if (layerWasAttached) attachCiphertextCache(ses, getSettings)
       else detachCiphertextCache(ses)
     } catch (error) {
       // 恢复不了只记日志：设置没有提交，因此下次启动会按设置重新决定挂不挂。
@@ -78,7 +80,7 @@ export async function switchCiphertextCache(
 
   // 1. 协议层先跟上。失败就什么都别做：文件一个没动、设置也没写。
   try {
-    if (target) attachCiphertextCache(ses)
+    if (target) attachCiphertextCache(ses, getSettings)
     else detachCiphertextCache(ses)
   } catch (error) {
     const detail = failureReason(error)

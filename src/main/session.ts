@@ -12,7 +12,7 @@ import type { Session } from 'electron'
 
 import type { Settings } from '../shared/types'
 import { isUpstreamOrigin } from '../shared/upstream'
-import { reconcileCiphertextCache } from './capture/cache-files'
+import { enforceCacheLimit, reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
 import { onHealthChange } from './capture/health'
 import { attachPdfHandling } from './capture/pdf'
@@ -80,8 +80,14 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 位置也重要：必须早于任何窗口与请求，否则可能出现"把正在写的条目当残留删掉"。
   await reconcileCiphertextCache(settings.enableCiphertextCache)
 
+  /**
+   * 对账之后按上限淘汰一次（[ADR-0049]）：上次退出时可能超过上限（比如用户把上限调小、
+   * 之后再没下载过任何东西），而对账本身只让磁盘与**开关**一致，不管容量。
+   */
+  await enforceCacheLimit(settings.cacheMaxBytes)
+
   if (settings.enableCiphertextCache) {
-    attachCiphertextCache(ses)
+    attachCiphertextCache(ses, getSettings)
   }
 
   // --- PDF：可选地交给系统应用 -------------------------------------------------

@@ -42,7 +42,7 @@ import type {
 import { planMigration } from '../archive/migrate'
 import { relocateArchive } from '../archive/relocate'
 import { archiveStore, enforceArchiveLimit } from '../archive/store'
-import { planCacheConversion } from '../capture/cache-files'
+import { cacheUsage, enforceCacheLimit, planCacheConversion } from '../capture/cache-files'
 import { switchCiphertextCache } from '../capture/cache-switch'
 import {
   appIconState,
@@ -194,6 +194,12 @@ function applySettings(value: unknown): Settings {
    */
   if ('archiveMaxBytes' in patch) enforceArchiveLimit(next.archiveMaxBytes)
 
+  /**
+   * 密文缓存那一边同理（[ADR-0049]）：调小上限就**立刻**回收一次。它是异步的（全盘扫描，
+   * 不能让界面等），因此这里只发起、不等待 —— `enforceCacheLimit()` 自己永不抛错。
+   */
+  if ('cacheMaxBytes' in patch) void enforceCacheLimit(next.cacheMaxBytes)
+
   logger.info('settings updated', { keys: Object.keys(patch).join(',') })
   return presentSettings(next)
 }
@@ -336,7 +342,17 @@ export function registerIpcHandlers(): void {
     return revealPath(record.hash, record.storedName)
   })
 
-  guard(CHANNELS.archiveStats, () => archiveStore().stats())
+  guard(CHANNELS.archiveStats, async () => {
+    /**
+     * 两份统计在**这一层**组合（[ADR-0049]）：`archive/` 不得 import `capture/`
+     * （`ai/CONVENTIONS.md` 第 2 节的方向），因此缓存占用由这里补进 `cacheBytes` ——
+     * 在此之前它一直是写死的 0，界面上那个数字从来不存在。
+     */
+    const stats = archiveStore().stats()
+    const cache = await cacheUsage()
+
+    return { ...stats, cacheBytes: cache.bytes }
+  })
 
   // --- 设置 -----------------------------------------------------------------
 
@@ -452,6 +468,7 @@ export function registerIpcHandlers(): void {
       const outcome = await switchCiphertextCache(
         planned.plan,
         session.fromPartition(SESSION_PARTITION),
+        getSettings,
         () => {
           updateSettings({ enableCiphertextCache: input })
         },

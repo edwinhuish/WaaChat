@@ -786,11 +786,11 @@ check('拿不准时不动作（既没有开关也没有会话信息）', !usesWa
 //
 // 两层断言。
 //
-// **状态**：归档上限**已经会被执行**（`store.enforceLimit()`，[ADR-0048]），缓存上限还
-// 没有（`protocol.ts` 里是 TODO(M3)）—— 界面上那两行必须如实说出来。反过来，把"尚未生效"
-// 钉死在没有上限的配置上同样是错的 —— 默认的 `archiveMaxBytes` 就是 0（不限制），而
-// "不限制"恰恰是**正在照配置执行**的那一种：它字面意思就是不清理。徽标只在"设了上限却
-// 不会被执行"时出现。
+// **状态**：两项上限**今天都已经会被执行**（归档 = `store.enforceLimit()`，[ADR-0048]；
+// 缓存 = `enforceCacheLimit()`，[ADR-0049]）—— 界面上那两行必须如实说出来。反过来，把
+// "尚未生效"钉死在没有上限的配置上同样是错的 —— 默认的 `archiveMaxBytes` 就是 0（不限制），
+// 而"不限制"恰恰是**正在照配置执行**的那一种：它字面意思就是不清理。徽标只在"设了上限却
+// 不会被执行"时出现，因此下面两条"未实现"分支的断言要**显式传 `false`** 才能构造出来。
 //
 // **区域**：容量项必须与它管辖的那个开关在同一个区域里（"2 GB"离开开关就读不懂它是给谁
 // 设的上限），且每个设置项恰好有一行 —— 漏掉一个等于它在界面上消失，而那是没人会发现的
@@ -834,8 +834,8 @@ check(
     describeSizeLimit('cacheMaxBytes', -1, false).unlimited,
 )
 check(
-  '当前事实与文档一致：归档上限已执行，缓存上限还没有',
-  SIZE_LIMIT_ENFORCED.archiveMaxBytes && !SIZE_LIMIT_ENFORCED.cacheMaxBytes,
+  '当前事实与文档一致：两项上限都已执行（任一退回未实现，这条会红）',
+  SIZE_LIMIT_ENFORCED.archiveMaxBytes && SIZE_LIMIT_ENFORCED.cacheMaxBytes,
 )
 
 const cacheSection = sectionOfRow('cacheMaxBytes')

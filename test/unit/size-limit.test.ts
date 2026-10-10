@@ -89,11 +89,11 @@ describe('describeSizeLimit（密文缓存）', () => {
 })
 
 describe('describeSizeLimit（值的处理）', () => {
-  it('归档上限已执行、缓存上限还没有（改这里必须同时改界面文案的断言）', () => {
-    // 断言事实而不是断言宣传：这两项落地时，这条用例会红，提醒把 `SIZE_LIMIT_ENFORCED`
-    // 与 docs/usage.md 一起改掉。
+  it('两项上限今天都已执行（改这里必须同时改界面文案的断言）', () => {
+    // 断言事实而不是断言宣传：某一项退回"未实现"时，这条用例会红，提醒把
+    // `SIZE_LIMIT_ENFORCED` 与 docs/usage.md 一起改掉。
     expect(SIZE_LIMIT_ENFORCED.archiveMaxBytes).toBe(true)
-    expect(SIZE_LIMIT_ENFORCED.cacheMaxBytes).toBe(false)
+    expect(SIZE_LIMIT_ENFORCED.cacheMaxBytes).toBe(true)
   })
 
   it('负数 / NaN 一律按不限制处理（配置被改坏时，唯一安全的解释是不清理）', () => {

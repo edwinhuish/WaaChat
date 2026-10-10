@@ -44,10 +44,15 @@ export const APP_ID = 'io.github.edwinhuish.waachat'
 /** 归档目录中临时文件的前缀。启动时会清扫，见 archive/blobs.ts。 */
 export const TEMP_FILE_PREFIX = '.part-'
 
-/** 归档与缓存的容量约束。超限时的行为见 docs/media-capture.md 第 3 节。 */
+/**
+ * 内核层接管的硬约束。容量上限**不在这里**：它是用户可改的设置
+ * （`Settings.archiveMaxBytes` / `Settings.cacheMaxBytes`，默认值见 `DEFAULT_SETTINGS`），
+ * 超限时的行为见 `docs/media-capture.md` 第 3 节与 [ADR-0048] / [ADR-0049]。
+ *
+ * 这里曾经有一份同值的 `cacheBytes`，但**一个读者都没有** —— 两个常量说同一件事，
+ * 改动时必然漏一个。删除由 ADR-0049 一并记录。
+ */
 export const LIMITS = {
-  /** 密文缓存上限。超限先淘汰，仍不够则退化为直通。 */
-  cacheBytes: 2 * 1024 * 1024 * 1024,
   /** 单次接管的文件大小上限，超过则退回原生下载（避免误吞超大文件）。 */
   captureFileBytes: 4 * 1024 * 1024 * 1024,
 } as const

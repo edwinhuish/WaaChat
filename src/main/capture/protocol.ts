@@ -23,6 +23,10 @@
  *     请求，因此必须用 `ses.fetch` 而不是默认会话的 `net.fetch` —— cookie 罐子、代理与证书
  *     配置、连接池都挂在会话上，重发到别的会话等于把同一份流量拆成两套（实测：响应里的
  *     `Set-Cookie` 会进错罐子）。连接层失败交给 `retry.ts` 的有限重试。
+ *
+ *  6. **容量上限在这里收口**（[ADR-0049]）：命中时更新正文的 `mtime`（"最久未用优先淘汰"
+ *     唯一的输入）、落盘完成后按**字节节流**地淘汰一次、**一份本身就超上限的内容不落盘**。
+ *     超限只降级（少一份缓存）、不报错，也绝不把请求卡住。
  */
 
 import { createHash } from 'node:crypto'
@@ -40,12 +44,18 @@ import { pipeline } from 'node:stream/promises'
 
 import type { Session } from 'electron'
 
+import type { Settings } from '../../shared/types'
 import {
   CACHE_DIR_MODE,
   CACHE_VERSION,
   cacheEntryPaths,
+  cacheSweepInterval,
   currentCacheMonthDir,
+  enforceCacheLimit,
+  fileBytes,
   findCacheEntry,
+  shouldCacheEntry,
+  touchCacheEntry,
 } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
@@ -66,7 +76,7 @@ interface CachedMeta {
   readonly storedAt: number
 }
 
-export function attachCiphertextCache(ses: Session): void {
+export function attachCiphertextCache(ses: Session, getSettings: () => Settings): void {
   /**
    * 一次会话里同一个 scheme 只能注册一次（重复注册会抛错）。切换流程会在两个方向上来回
    * 切，因此记得住"现在挂着没有"比事后去猜要可靠 —— 也让这个调用是幂等的。
@@ -100,6 +110,11 @@ export function attachCiphertextCache(ses: Session): void {
     if (entry !== null) {
       const cached = readCached(entry.body, entry.meta)
       if (cached !== null) {
+        /**
+         * 命中留痕：这是"最久未用优先淘汰"唯一的输入（[ADR-0049]）。放在**返回响应之前**，
+         * 因此"这一次命中"一定会被算进 LRU 顺序里。
+         */
+        touchCacheEntry(entry.body)
         logger.debug('capture: ciphertext cache hit')
         // 这一层返回给页面的响应都要过一遍 PDF 规则：缓存键只认得媒体 CDN（密文），
         // 理论上不会出现 PDF 条目 —— 但"理论上"不该是安全性的依据（[ADR-0029]）。
@@ -115,7 +130,7 @@ export function attachCiphertextCache(ses: Session): void {
       mkdirSync(monthDir, { recursive: true, mode: CACHE_DIR_MODE })
 
       const { body: bodyPath, meta: metaPath } = cacheEntryPaths(monthDir, id)
-      persist(bodyPath, metaPath, request.url, response)
+      persist(bodyPath, metaPath, request.url, response, getSettings)
     }
 
     return response
@@ -123,10 +138,6 @@ export function attachCiphertextCache(ses: Session): void {
 
   attached = true
   logger.info('capture: ciphertext layer attached', { dir })
-
-  // TODO(M3)：容量上限与淘汰。当前实现只增不减，达到上限时会无声地吃掉磁盘。
-  // 实现要点见 docs/media-capture.md 第 3 节：超限先淘汰，仍不够则退化为直通，
-  // 而不是让请求失败。
 }
 
 /**
@@ -255,9 +266,28 @@ function dropEntry(bodyPath: string, metaPath: string): void {
  *
  * 刻意**不** await：页面不该为了让缓存写盘而变慢。写失败只记日志 ——
  * 缓存是纯派生数据，它的失败绝不允许影响功能正确性。
+ *
+ * [ADR-0049] 的两条容量规则都挂在这里：**单份超上限就不落盘**（前后各判一次），
+ * 以及**写完之后按字节节流地**淘汰一次。
  */
-function persist(bodyPath: string, metaPath: string, url: string, response: Response): void {
+function persist(
+  bodyPath: string,
+  metaPath: string,
+  url: string,
+  response: Response,
+  getSettings: () => Settings,
+): void {
   const headers = carriedHeaders(response.headers)
+
+  /**
+   * 先按 `content-length` 判一次（[ADR-0049] 决定 4）。**必须**在写之前判：淘汰按 LRU
+   * 排序，最新写下的那份排在最后 —— 一旦只剩它一个，它会先把整个缓存清空、再删掉自己。
+   * 提前不写就没有这个问题；缺 `content-length` 时这次判断落空，写完再按实际大小兜一次。
+   */
+  if (!shouldCacheEntry(Number(headers['content-length'] ?? 0), getSettings().cacheMaxBytes)) {
+    logger.debug('capture: entry exceeds the cache limit, not caching')
+    return
+  }
 
   /**
    * 必须 clone。
@@ -280,15 +310,53 @@ function persist(bodyPath: string, metaPath: string, url: string, response: Resp
   }
 
   void pipeline(Readable.fromWeb(body as never), createWriteStream(bodyPath))
-    .then(() => {
+    .then(async () => {
+      const size = fileBytes(bodyPath)
+
+      // 写完之后的第二次判断：`content-length` 缺失（分块传输）或不可信时，以磁盘上的
+      // 实际大小为准。**必须删掉**刚写下的这一份，否则下一次淘汰会为了它清空整个缓存。
+      if (!shouldCacheEntry(size, getSettings().cacheMaxBytes)) {
+        dropEntry(bodyPath, metaPath)
+        logger.debug('capture: entry exceeds the cache limit, dropped')
+        return
+      }
+
       // 元信息写在正文之后：若元信息先落地而正文写了一半，缓存会稳定命中到坏数据，
       // 表现为"这个文件永远打不开"——比不缓存严重得多。
       writeFileSync(metaPath, `${JSON.stringify(meta)}\n`, 'utf8')
       logger.debug('capture: ciphertext cached')
+
+      await maybeEnforceLimit(size, getSettings().cacheMaxBytes)
     })
     .catch((error: unknown) => {
       logger.warn('capture: failed to persist ciphertext', {
         reason: (error as Error).name,
       })
     })
+}
+
+/**
+ * 自上次全盘扫描以来，写入路径落盘了多少字节（[ADR-0049] 决定 3）。
+ *
+ * 进程内的状态就够了：它的作用只是"别每写一个文件就扫一遍全盘"，重启后归零没有任何后果
+ * —— 启动对账之后本来就会扫一次。
+ */
+let pendingBytes = 0
+
+/**
+ * 写入之后**可能**淘汰一次。
+ *
+ * 节流是必需的：算总量要 readdir + 每个条目 stat 一次，而缓存按设计可以有几万条 ——
+ * 每个请求都扫一遍等于主进程在一次下载里被反复打断（[ADR-0049] 理由 2）。
+ */
+async function maybeEnforceLimit(writtenBytes: number, maxBytes: number): Promise<void> {
+  const interval = cacheSweepInterval(maxBytes)
+  if (interval === 0) return // 不限制
+
+  pendingBytes += writtenBytes
+  if (pendingBytes < interval) return
+
+  // 先清账再扫：扫描期间发生的写入属于**下一轮**，不该被这一次吞掉。
+  pendingBytes = 0
+  await enforceCacheLimit(maxBytes)
 }

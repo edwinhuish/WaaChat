@@ -245,6 +245,13 @@ export class ArchiveStore {
     }))
   }
 
+  /**
+   * 归档的统计。
+   *
+   * `cacheBytes` 在这里**恒为 0**：缓存属于 `capture/`，而 `archive/` 不得 import 它
+   * （`ai/CONVENTIONS.md` 第 2 节的方向）。真实的数字由 IPC 层组合上去
+   * （`ipc/index.ts` 的 `archive:stats`，[ADR-0049]）—— 界面上那一项显示的必须是它。
+   */
   stats(): ArchiveStats {
     const { bytes, files } = usage()
     return { fileCount: files, totalBytes: bytes, cacheBytes: 0 }

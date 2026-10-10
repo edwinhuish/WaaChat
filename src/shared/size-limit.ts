@@ -31,7 +31,8 @@ export type SizeLimitKey = 'archiveMaxBytes' | 'cacheMaxBytes'
  *   - `archiveMaxBytes`：**已实现**（[ADR-0048]）。`archive/store.ts` 的 `enforceLimit()`
  *     在三个触发点被调用（启动 / 每次归档落盘前 / 改上限设置时），超限时按最久未访问
  *     淘汰内容并同步删索引记录；
- *   - `cacheMaxBytes`：`capture/protocol.ts` 里是 `TODO(M3)`，当前缓存**只增不减**。
+ *   - `cacheMaxBytes`：**已实现**（[ADR-0049]）。`capture/protocol.ts` 在命中时更新 mtime、
+ *     落盘后按字节节流地调 `enforceCacheLimit()`，单份超上限的内容直接不落盘。
  *
  * 实现落地时把对应的值改成 `true`：徽标会消失、提示会换成"超过之后会发生什么"，
  * 输入框也会**解除禁用**（能改就说明它真的会被执行 —— 见 `views/settings.ts`）。
@@ -39,7 +40,7 @@ export type SizeLimitKey = 'archiveMaxBytes' | 'cacheMaxBytes'
  */
 export const SIZE_LIMIT_ENFORCED: Readonly<Record<SizeLimitKey, boolean>> = {
   archiveMaxBytes: true,
-  cacheMaxBytes: false,
+  cacheMaxBytes: true,
 }
 
 /** 一项上限的叙述材料（与"是否执行"无关的固定部分）。 */
@@ -56,13 +57,18 @@ interface SizeLimitFacts {
   readonly growsText: string
 }
 
+/**
+ * 两项的叙述材料。
+ *
+ * ⚠️ **两项今天都已经实现**，因此 `milestone` 与 `growsText`（"还没实现"那一支的措辞）
+ * 在生产路径上不会再出现 —— 它们只服务 `describeSizeLimit(key, bytes, false)` 那条分支，
+ * 而那条分支存在是为了让"设了上限却不会被执行"的文案仍然可被断言（[ADR-0048] / [ADR-0049]）。
+ * 不要把它们当成"还没实现"的证据。
+ */
 const FACTS: Readonly<Record<SizeLimitKey, SizeLimitFacts>> = {
   archiveMaxBytes: {
     subject: '归档',
     feature: '自动淘汰',
-    // 这一项**已经实现**：`milestone` 与 `growsText` 只在 `enforced=false` 那条分支里出现，
-    // 而生产路径永远不会给它传 false（[ADR-0048]）。留着它们是为了那条分支仍可被断言 ——
-    // 也是下一项（缓存）落地前，这套叙述材料本身的样板。
     milestone: 'M2',
     // 与 `store.enforceLimit()` / `blobs.evictToFit()` 的文档一致（"按最久未访问优先淘汰"）。
     enforcedHint: (limit) => `超过 ${limit} 后按最久未访问优先淘汰。`,
@@ -72,7 +78,7 @@ const FACTS: Readonly<Record<SizeLimitKey, SizeLimitFacts>> = {
     subject: '缓存',
     feature: '容量控制',
     milestone: 'M3',
-    // 与 `shared/constants.ts` 的 `LIMITS.cacheBytes` 注释一致（"超限先淘汰，仍不够则退化为直通"）。
+    // 与 `cache-files.ts` 的 `evictCacheToFit()` / `shouldCacheEntry()` 一致。
     enforcedHint: (limit) =>
       `超过 ${limit} 后先淘汰最久未用的条目，仍不够时退化为直通（不写缓存，照常下载）。`,
     growsText: '缓存只增不减，会继续占用磁盘',

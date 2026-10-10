@@ -191,7 +191,15 @@ async function renderFooter(records: readonly ArchiveRecord[], footer: HTMLEleme
   try {
     const stats = await bridge().archiveStats()
     const shown = records.length === PAGE_SIZE ? `（仅显示最近 ${PAGE_SIZE} 条）` : ''
-    footer.textContent = `${stats.fileCount} 个文件，占用 ${formatBytes(stats.totalBytes)}${shown}`
+
+    /**
+     * 密文缓存的占用**必须**显出来（[ADR-0049]）：它有一个可调的上限，而"现在占了多少"是
+     * 用户判断那个上限该设多大的唯一依据 —— 在此之前这个数字根本不存在（`cacheBytes` 写死 0）。
+     * 缓存关掉时它是 0，也就不显示。
+     */
+    const cache = stats.cacheBytes > 0 ? `；密文缓存 ${formatBytes(stats.cacheBytes)}` : ''
+
+    footer.textContent = `${stats.fileCount} 个文件，占用 ${formatBytes(stats.totalBytes)}${cache}${shown}`
   } catch {
     // 统计失败不影响列表本身 —— 页脚清空而不是留一句过期的数字。
     footer.textContent = ''
