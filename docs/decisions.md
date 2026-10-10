@@ -2136,7 +2136,8 @@ app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己�
 
 - **依赖与打包**：新增 `whatsapp-web.js`（及其 `puppeteer`）。⚠️ **最大的未实测项**：puppeteer 默认把
   Chromium 下到 `~/.cache/puppeteer`，deb / AppImage 不能假设那个目录存在。打包方案（内置、复用系统、
-  还是首次运行下载）必须先实测再定，见 `docs/packaging.md`。
+  还是首次运行下载）必须先实测再定，见 `docs/packaging.md`；三个方案的对比与建议见
+  [`research/browser-runtime-assessment.md`](research/browser-runtime-assessment.md)。
 - `src/main/index.ts` / `window.ts` / `session.ts`：承载窗口与分区会话改造。`app.setDesktopName` 与
   `StartupWMClass` 的同源要求（ADR-0022）对**本地界面窗口**仍然成立。
 - `src/main/capture/**`：`protocol.ts` / `cache-files.ts` / `cache-switch.ts` / `cachekey.ts` /
