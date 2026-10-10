@@ -1,8 +1,10 @@
 #!/bin/bash
 # generate-changelog.sh —— 从提交历史生成 Release 的发布说明。
 #
-# 由 `.github/workflows/release.yml` 调用，产物写到 `electron-builder.yml` 的
-# `releaseInfo.releaseNotesFile` 指定的路径；electron-builder 建 Release 时把它读成 body。
+# 由 `.github/workflows/release.yml` 调用，产物（默认 release-notes.md）由工作流用
+# `gh release edit --notes-file` 写入 Release body —— **不**经过 electron-builder 的
+# `releaseInfo.releaseNotesFile`：那个键刻意不设（显式点名一个缺失的资源会**抛错**，
+# 而且每次构建都会读它）。见 electron-builder.yml 的注释与 ADR-0014。
 #
 # 用法:
 #   ./generate-changelog.sh <当前标签> [前一个标签] [输出文件]
