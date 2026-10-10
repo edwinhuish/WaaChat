@@ -17,10 +17,14 @@ import { describe, expect, it } from 'vitest'
 
 import {
   decodeFilehash,
+  encodeFilehash,
   pageLookupExpression,
+  pageMessageIdExpression,
   pickContentHash,
+  pickMessageId,
   pickSingle,
   readPageHashes,
+  readPageMessageIds,
 } from '../../src/main/capture/early-identity'
 
 /** 真机实测里 `DZ2602 freight cost.xlsx` 的那一对：base64 与 hex 是同一个值。 */
@@ -35,7 +39,9 @@ interface FakeMessage {
   filename?: string
   size?: number
   filehash?: string
-  mediaData?: { size?: number; mimetype?: string }
+  /** `msg.id`：真机上是 `{fromMe, remote, id, $1}`；也允许直接是字符串。 */
+  id?: string | { id?: string; _serialized?: string; remote?: string }
+  mediaData?: { size?: number; mimetype?: string; filehash?: string }
 }
 
 /**
@@ -51,6 +57,16 @@ function runOnPage(messages: readonly FakeMessage[], name: string, bytes: number
 
   // 表达式本身是个 IIFE，`new Function` 的函数体只是"求值一条语句"，因此必须显式 `return`。
   return new Function('window', `return ${pageLookupExpression(name, bytes)}`)(target) as string
+}
+
+/** 同上，但跑的是"按内容哈希取消息ID"那段脚本（[ADR-0052]）。 */
+function runOnPageForId(messages: readonly FakeMessage[], filehash: string): string {
+  const target = {
+    require: (moduleName: string) =>
+      moduleName === 'WAWebCollections' ? { Msg: { getModelsArray: () => messages } } : undefined,
+  }
+
+  return new Function('window', `return ${pageMessageIdExpression(filehash)}`)(target) as string
 }
 
 const hashesOf = (raw: string): string[] => readPageHashes(raw)
@@ -192,5 +208,92 @@ describe('H1：页面脚本（真跑一遍）', () => {
     const empty = new Function('window', `return ${pageLookupExpression('x.pdf', 1)}`)({}) as string
 
     expect(hashesOf(empty)).toEqual([])
+  })
+})
+
+/**
+ * 消息ID（[ADR-0052]）：归档路径 `<账号>/<消息ID>/files/` 需要它。
+ *
+ * 这一层决定**文件落进谁的消息目录**，因此与 H1 同样是"错就错得很安静"的一类。
+ * 两条纪律：只认**哈希逐字相同**的那条消息；候选多于一个就放弃（调用方回落
+ * `unknown-message`）—— 宁可分不出，不可分错。
+ */
+describe('ADR-0052：filehash → 消息ID', () => {
+  const idsOf = (raw: string): string[] => readPageMessageIds(raw)
+
+  it('hex → 页面用的 base64，与 decodeFilehash 互为逆运算', () => {
+    expect(encodeFilehash(REAL_HEX)).toBe(REAL_BASE64)
+    expect(decodeFilehash(encodeFilehash(REAL_HEX) ?? '')).toBe(REAL_HEX)
+  })
+
+  it('不是 64 位小写 hex 一律不认', () => {
+    expect(encodeFilehash('')).toBeNull()
+    expect(encodeFilehash(REAL_HEX.toUpperCase())).toBeNull()
+    expect(encodeFilehash(REAL_HEX.slice(0, 63))).toBeNull()
+    expect(encodeFilehash('z'.repeat(64))).toBeNull()
+  })
+
+  it('按哈希精确命中，取 `msg.id.id`', () => {
+    const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
+    ;(messages[0] as FakeMessage).id = { id: '3EB0A1B2C3D4E5F6', remote: 'x@c.us' }
+
+    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['3EB0A1B2C3D4E5F6'])
+  })
+
+  it('`msg.id` 直接是字符串时也能取（_serialized 缺失的兜底）', () => {
+    const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
+    ;(messages[0] as FakeMessage).id = '3EB0-STRING-ID'
+
+    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['3EB0-STRING-ID'])
+  })
+
+  it('哈希对不上 / 拿不到消息集合 ⇒ 空（安静失败，不抛错）', () => {
+    const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
+    ;(messages[0] as FakeMessage).id = { id: 'X' }
+
+    expect(idsOf(runOnPageForId(messages, OTHER_BASE64))).toEqual([])
+
+    const empty = new Function('window', `return ${pageMessageIdExpression(REAL_BASE64)}`)(
+      {},
+    ) as string
+
+    expect(idsOf(empty)).toEqual([])
+  })
+
+  it('同一份内容被转发（两条消息）⇒ 两个 id ⇒ 放弃，回落到 unknown-message', () => {
+    const first: FakeMessage = {
+      ...documentMessage('报告.pdf', 10, REAL_BASE64),
+      id: { id: 'AAA' },
+    }
+    const second: FakeMessage = {
+      ...documentMessage('报告.pdf', 10, REAL_BASE64),
+      id: { id: 'BBB' },
+    }
+
+    const raw = runOnPageForId([first, second], REAL_BASE64)
+
+    expect(idsOf(raw)).toEqual(['AAA', 'BBB'])
+    expect(pickMessageId(raw)).toBeNull()
+  })
+
+  it('两条消息指同一个 id（同一份内容重复出现）仍算唯一', () => {
+    const first: FakeMessage = {
+      ...documentMessage('报告.pdf', 10, REAL_BASE64),
+      id: { id: 'AAA' },
+    }
+    const second: FakeMessage = {
+      ...documentMessage('报告.pdf', 10, REAL_BASE64),
+      id: { id: 'AAA' },
+    }
+
+    expect(pickMessageId(runOnPageForId([first, second], REAL_BASE64))).toBe('AAA')
+  })
+
+  it('页面回复解析失败一律当成"没有"', () => {
+    expect(readPageMessageIds('{ not json')).toEqual([])
+    expect(readPageMessageIds(undefined)).toEqual([])
+    expect(readPageMessageIds('{}')).toEqual([])
+    expect(readPageMessageIds('{"ids":"x"}')).toEqual([])
+    expect(readPageMessageIds('{"ids":["a",1,null]}')).toEqual(['a'])
   })
 })

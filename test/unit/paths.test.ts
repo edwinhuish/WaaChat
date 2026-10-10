@@ -14,7 +14,6 @@ import {
   accountKey,
   archiveAccountDir,
   archiveDir,
-  archiveFilesDir,
   ciphertextCacheDir,
   defaultArchiveDir,
   indexDbPath,
@@ -144,7 +143,6 @@ describe('accountKey', () => {
 
     expect(accountKey()).toBe('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
     expect(archiveAccountDir()).toBe('/srv/files/a1b2c3d4-e5f6-7890-abcd-ef1234567890')
-    expect(archiveFilesDir()).toBe('/srv/files/a1b2c3d4-e5f6-7890-abcd-ef1234567890/files')
     // 密文缓存的**根**不随归档位置移动（ADR-0008），但那一层账号目录要跟上。
     expect(ciphertextCacheDir().endsWith('/cache')).toBe(true)
     expect(accountKey()).not.toBe('')
@@ -153,6 +151,6 @@ describe('accountKey', () => {
   it('设成不可用的值时回到回落值，而不是让目录名变成空串', () => {
     setAccountKey('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
     expect(setAccountKey('.')).toBe('unknown-account')
-    expect(archiveFilesDir().endsWith('/unknown-account/files')).toBe(true)
+    expect(archiveAccountDir().endsWith('/unknown-account')).toBe(true)
   })
 })

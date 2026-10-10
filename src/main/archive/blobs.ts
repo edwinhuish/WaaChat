@@ -14,12 +14,13 @@
  *   2. **同一份内容**：只存一份。名字相同时丢掉临时文件；名字不同时给已有内容**再挂一个
  *      名字**（硬链接，不额外占字节）。因此 `usage()` 必须按 inode 去重统计。
  *
- * ── 落进哪一层：年 / 月 ──
+ * ── 落进哪一层：账号 / 消息ID / files ──
  *
- * 正文落在 `<归档目录>/<年>/<月>/`（[ADR-0037]），这两个目录由 `ensureArchiveFolder()`
- * 按需创建并收到 `0700`。**同名的判据因此变成"同一个年月目录内"**：`合同.pdf` 在
- * `2026/09` 与 `2026/10` 各有一份互不干扰 —— 跨月不再需要哈希后缀，这是分区带来的好处；
- * 而同一份内容跨月出现时仍然是硬链接（不同目录、同一个 inode），占用不变。
+ * 正文落在 `<归档目录>/<账号>/<消息ID>/files/`（[ADR-0052]），这些目录由
+ * `ensureArchiveFolder()` 按需创建并收到 `0700`。**同名的判据因此变成"同一条消息的目录内"**：
+ * 两条消息各发来一份 `合同.pdf`，各自落在自己的消息目录里、互不干扰 —— 不再需要哈希后缀，
+ * 这是分区带来的好处；而同一份**内容**出现在两条消息里时仍然是硬链接（不同目录、同一个
+ * inode），占用不变、但每条消息都认得自己的那一份。
  *
  * 临时文件**始终落在归档目录根**：`rename` 要求同一文件系统（根与年月子目录必然同盘），
  * 而 `sweepTempFiles()` 因此不必递归。
@@ -54,7 +55,13 @@ import { join } from 'node:path'
 import { TEMP_FILE_PREFIX } from '../../shared/constants'
 import { hashPrefix, logger, redactPath } from '../logger'
 import { accountKey, archiveDir } from '../paths'
-import { FILES_SEGMENT, archiveStoredPath, folderFor, normalizeStoredPath } from './layout'
+import {
+  FILES_SEGMENT,
+  MESSAGE_FALLBACK,
+  archiveStoredPath,
+  normalizeMessageId,
+  normalizeStoredPath,
+} from './layout'
 import { archiveNameCandidates } from './naming'
 
 /** 归档目录权限：仅本人可读写执行。里面的文件是**解密后的明文**。 */
@@ -93,12 +100,13 @@ export function ensureArchiveDir(): void {
 }
 
 /**
- * 确保归档目录里的某个**容器**（相对路径，如 `<账号>/files/2026-10`）存在，权限正确（`0700`）。
+ * 确保归档目录里的某个**容器**（相对路径，如 `<账号>/<消息ID>/files`）存在，权限正确（`0700`）。
  * 幂等。
  *
- * 只由落盘路径调用（[ADR-0037] / [ADR-0039]）。它**不做净化**：这里的输入全部由我们自己
- * 拼出来（账号名已由 `paths.normalizeAccountKey()` 净化过、月份由 `folderFor()` 生成），
- * 若它不成形，说明调用方写错了 —— 那时 `mkdir` 会老老实实建出一个怪目录，比抛错更难查。
+ * 只由落盘路径调用（[ADR-0052]）。它**不做净化**：这里的输入全部由我们自己
+ * 拼出来（账号名已由 `paths.normalizeAccountKey()` 净化过、消息ID 已由
+ * `layout.normalizeMessageId()` 净化过），若它不成形，说明调用方写错了 —— 那时 `mkdir`
+ * 会老老实实建出一个怪目录，比抛错更难查。
  */
 export function ensureArchiveFolder(folder: string): void {
   ensureDir(archiveFilePath(folder))
@@ -107,10 +115,10 @@ export function ensureArchiveFolder(folder: string): void {
 /**
  * 归档目录里某个文件（或年月子目录）的完整路径。
  *
- * @param storedName 相对归档目录的**路径**：现在是 `<账号>/files/<年-月>/<文件名>`
- *   （如 `18665597400/files/2026-10/合同.pdf`，[ADR-0039]）；旧记录是 `2026/10/…`
- *   （[ADR-0037]）或裸文件名（原文名 / 内容哈希）。
- *   两种形态都对，因为这里做的就是把它接到归档目录后面。调用方从
+ * @param storedName 相对归档目录的**路径**：现在是 `<账号>/<消息ID>/files/<文件名>`
+ *   （如 `18665597400/3EB0A1B2…/files/合同.pdf`，[ADR-0052]）；旧记录是
+ *   `<账号>/files/<年-月>/…`（[ADR-0039]）、`2026/10/…`（[ADR-0037]）或裸文件名。
+ *   各形态都对，因为这里做的就是把它接到归档目录后面。调用方从
  *   `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值拿到它。
  */
 export function archiveFilePath(storedName: string): string {
@@ -201,9 +209,9 @@ export function sha256File(path: string): Promise<string> {
 export interface CommitResult {
   readonly hash: string
   /**
-   * 磁盘上的实际路径**相对归档目录**：`<账号>/files/<年-月>/<文件名>`
-   * （如 `18665597400/files/2026-10/合同.pdf`；同名冲突时文件名带一小段哈希后缀，
-   * [ADR-0031] / [ADR-0039]）。
+   * 磁盘上的实际路径**相对归档目录**：`<账号>/<消息ID>/files/<文件名>`
+   * （如 `18665597400/3EB0A1B2…/files/合同.pdf`；同名冲突时文件名带一小段哈希后缀，
+   * [ADR-0031] / [ADR-0052]）。
    */
   readonly storedName: string
   readonly bytes: number
@@ -224,25 +232,44 @@ export interface CommitOptions {
   readonly findStored?: (hash: string) => string | null
 
   /**
-   * 归档时间（Unix 毫秒），决定文件落在哪个年月子目录（[ADR-0037]）。默认"现在"。
+   * 消息ID（原始值，未净化）。决定文件落在哪个 `<账号>/<消息ID>/files/` 下（[ADR-0052]）。
    *
-   * ⚠️ 调用方**必须**把同一个值交给索引（`store.record({ openedAt })`）：两处各取一次
-   * 时钟，跨月的那一毫秒就会得到"索引说 10 月、文件在 9 月"。
+   * 它与 {@link CommitOptions.resolveMessageId} 二选一：只有在算完哈希之后才知道消息ID
+   * 时（生产路径就是这种）用后者。两者都缺、或净化后不可用 ⇒ 回落到 {@link MESSAGE_FALLBACK}。
+   */
+  readonly messageId?: string
+
+  /**
+   * 算完内容哈希之后再去问页面"这条消息的 ID 是多少"。返回原始值（未净化）。
+   *
+   * 为什么是一个回调而不是一个值：消息ID 的查找要以**内容哈希**为键（页面上的
+   * `msg.filehash` 就是明文的 SHA-256），而哈希由本函数算出来 —— 调用方在调用之前拿不到它，
+   * 自己再哈希一遍等于对大文件算两遍。
+   *
+   * **注入**而不是直接 import `capture/`：`archive/` 内部的方向是 `capture → archive`，
+   * 反过来 import 会成环，也会把 electron 拖进这个本可单测的模块。
+   */
+  readonly resolveMessageId?: (hash: string) => Promise<string | null>
+
+  /**
+   * 归档时间（Unix 毫秒）。它只进索引（`store.record({ openedAt })`），**不再参与分区**
+   * （[ADR-0052] 取代了 [ADR-0037] 的年月目录）。默认"现在"。
    */
   readonly openedAt?: number
 }
 
 /**
- * 把临时文件提交进归档：落在 `<归档目录>/<年>/<月>/`，文件名用**原文名**（[ADR-0031]）。
+ * 把临时文件提交进归档：落在 `<归档目录>/<账号>/<消息ID>/files/`，文件名用**原文名**
+ * （[ADR-0031] / [ADR-0052]）。
  *
  * 顺序不要重排：
  *
- *   算哈希 → 定年月目录与名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字"
+ *   算哈希 → 定消息ID 与名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字"
  *   → 否则原子改名 → 置只读
  *
  * 用 rename 而不是 copy，是为了让归档目录里**永远不存在半成品**：要么文件不存在，要么它是
- * 完整的。前提是临时文件与目标在同一个文件系统上 —— 临时文件始终在归档目录**根**，而年月
- * 子目录是它的下级，因此这个前提由构造保证。
+ * 完整的。前提是临时文件与目标在同一个文件系统上 —— 临时文件始终在归档目录**根**，
+ * 目标子目录是它的下级，因此这个前提由构造保证。
  *
  * @param temp 位于归档目录内的临时文件（`capture/download.ts` 下载时指定）
  * @param rawName 打开时的原始文件名，**不可信输入**（由对端发送者决定），由 `naming.ts` 净化
@@ -256,18 +283,26 @@ export async function commitFromTemp(
   const bytes = statSync(temp).size
 
   const account = accountKey()
-  const folder = folderFor(options.openedAt ?? Date.now())
 
-  // 容器链一次建齐：`<账号>/files/<年-月>`（[ADR-0039]）。`rename` 不会建目录，
+  /**
+   * 消息ID：先看调用方直接给的，再问页面要（以哈希为键），都不可用就回落。
+   *
+   * 顺序是刻意的 —— 消息ID 决定"同一份内容在别的消息里要不要再挂一个名字"，
+   * 因此必须在构造路径之前定下来。
+   */
+  const requested = options.messageId ?? (await options.resolveMessageId?.(hash))
+  const messageId = normalizeMessageId(requested) ?? MESSAGE_FALLBACK
+
+  // 容器链一次建齐：`<账号>/<消息ID>/files`（[ADR-0052]）。`rename` 不会建目录，
   // 因此这一步必须在落盘之前 —— 权限同样是 0700（见 ensureDir 里那段说明）。
-  ensureArchiveFolder(`${account}/${FILES_SEGMENT}/${folder}`)
+  ensureArchiveFolder(`${account}/${messageId}/${FILES_SEGMENT}`)
 
-  // 同一份内容可能已经在归档里（可能叫别的名字、可能在别的月份、也可能在别的账号目录下）——
-  // 那就只多挂一个名字，不再写一份字节。
+  // 同一份内容可能已经在归档里（可能叫别的名字、可能在别的消息目录、也可能在别的账号目录下）
+  // —— 那就只多挂一个名字，不再写一份字节。
   const existing = findExisting(hash, bytes, options)
 
   for (const candidate of archiveNameCandidates(rawName, hash)) {
-    const storedName = archiveStoredPath(account, folder, candidate)
+    const storedName = archiveStoredPath(account, messageId, candidate)
     const target = archiveFilePath(storedName)
 
     if (existsSync(target)) {

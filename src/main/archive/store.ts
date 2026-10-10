@@ -68,6 +68,20 @@ function addMissingColumns(db: Database.Database): void {
   }
 }
 
+/**
+ * 一条记录的**容器**：磁盘路径里最后一段之前的部分（没有 `/` 时是空串）。
+ *
+ * 新布局（[ADR-0052]）里它就是"这条记录属于哪条消息"（`<账号>/<消息ID>/files`）；旧布局里
+ * 它是年月目录（`<账号>/files/<年-月>`）或空串（裸文件名 / 内容哈希名）。判重用它而不是整条
+ * `stored_name`：候选名会变（同名冲突时带哈希后缀），消息不会。
+ *
+ * 纯函数，因此"什么算同一条消息"这条判据能被直接断出来。
+ */
+function containerOf(storedName: string): string {
+  const slash = storedName.lastIndexOf('/')
+  return slash === -1 ? '' : storedName.slice(0, slash)
+}
+
 export class ArchiveStore {
   readonly #db: Database.Database
 
@@ -88,18 +102,32 @@ export class ArchiveStore {
   /**
    * 记录一次归档。
    *
-   * 同一个 (hash, name) 重复出现时**更新打开时间**而非新增行 ——
-   * 否则用户每打开一次同一个文件，搜索里就多一条重复条目。
+   * 判重键是 `(hash, name, 容器)`，其中"容器"= 磁盘路径里最后一段之前的部分
+   * （{@link containerOf}）。新布局里它就是 `<账号>/<消息ID>/files` —— 也就是**哪条消息**：
+   *
+   *   - 同一份文件在**同一条消息**里重复打开 ⇒ 更新打开时间而非新增行（否则用户每打开一次，
+   *     搜索里就多一条重复条目）；`stored_name` 随候选名更新（[ADR-0031]）。
+   *   - 同一份内容出现在**不同消息**里 ⇒ 容器不同 ⇒ 各留一条记录（磁盘上是硬链接，只占一份
+   *     字节，[ADR-0052]）。否则只有最新那条路径被索引认识，其余路径会变成"磁盘上有、索引
+   *     不知道"的孤儿，永远不会被淘汰（[ADR-0048]）。
+   *
+   * 为什么按容器而不是整条 `stored_name` 判重：候选名会变（同名冲突时带哈希后缀），消息不会。
+   * 按整条路径判重会在"同一条消息里同名文件换了候选名"时多出一条重复记录。
    */
   record(record: Omit<ArchiveRecord, 'id'>): ArchiveRecord {
-    const existing = this.#db
-      .prepare('SELECT id FROM files WHERE hash = ? AND name = ?')
-      .get(record.hash, record.name) as { id: number } | undefined
+    const sameKey = this.#db
+      .prepare('SELECT id, stored_name FROM files WHERE hash = ? AND name = ?')
+      .all(record.hash, record.name) as { id: number; stored_name: string | null }[]
+
+    const target = containerOf(record.storedName)
+    // `stored_name` 为空 ⇒ 旧布局下正文就是哈希名（与 `toRecord()` 的回落一致）——
+    // 那种名字里没有 `/`，容器是空串，因此不会与今天写下的任何路径撞上。
+    const existing = sameKey.find((row) => containerOf(row.stored_name ?? record.hash) === target)
 
     if (existing !== undefined) {
       /**
-       * 顺带更新磁盘名：同一个 `(hash, name)` 再次打开时，磁盘上的名字可能已经变了
-       * （原来那个文件被删掉后重新下载，冲突候选算出了另一个名字）—— 索引必须跟着走，
+       * 顺带更新磁盘名：同一条消息里同一个 `(hash, name)` 再次打开时，磁盘上的名字可能已经
+       * 变了（原来那个文件被删掉后重新下载，冲突候选算出了另一个名字）—— 索引必须跟着走，
        * 否则就是"搜得到但打不开"（[ADR-0031]）。
        */
       this.#db

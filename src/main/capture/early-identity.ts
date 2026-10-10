@@ -21,6 +21,17 @@
  *   命中之后还要再对一次大小（见 `download.ts` 的 `findArchivedByHash`）。
  * - **拿不准一律返回 `null`**，让调用方回落到今天的行为 —— 这条路线**允许失效，
  *   不允许静默错命中**（`media-capture.md`：宁可漏命中，不可错命中）。
+ *
+ * ── 同一个通道还回答第二个问题：这条文件属于哪条消息（[ADR-0052]）──
+ *
+ * 归档路径要按 `<账号>/<消息ID>/files/` 分层，而消息ID 只存在于页面模型里。因此这里除了
+ * {@link pageLookupExpression}（按"文件名 + 大小"找内容哈希）之外，还导出
+ * {@link pageMessageIdExpression}：**按内容哈希**反查那条消息，取 `msg.id.id`。
+ *
+ * 用哈希而不是"文件名 + 大小"作键，是因为归档那一刻哈希已经算出来了（它就是归档的
+ * 内容身份），而哈希相等 ⇔ 内容相同 —— 比名字+大小精确得多。代价是：同一份内容出现在
+ * 两条消息里时会有两个 id，那时 {@link pickSingle} 判为不唯一、返回 `null`，
+ * 调用方回落到 `unknown-message`（宁可分不出，不可分错）。
  */
 
 /** 一份内容的明文 SHA-256 是 32 字节；base64 之后固定 44 个字符。 */
@@ -166,4 +177,90 @@ export function pickSingle(values: readonly (string | null)[]): string | null {
  */
 export function pickContentHash(raw: unknown): string | null {
   return pickSingle(readPageHashes(raw).map(decodeFilehash))
+}
+
+// ---------------------------------------------------------------------------
+// 消息ID（[ADR-0052]）
+// ---------------------------------------------------------------------------
+
+/**
+ * 归档用的内容哈希是 hex（`blobs.sha256File()` 的产物），而页面上的 `msg.filehash` 是
+ * **同一份明文的 base64**。这里把 hex 换回 base64，好让页面侧直接做字符串比较。
+ *
+ * 严格：不是 64 位小写 hex 就返回 `null`（调用方据此放弃，而不是拿一个乱值去比）。
+ */
+export function encodeFilehash(hex: string): string | null {
+  if (!/^[0-9a-f]{64}$/.test(hex)) return null
+
+  return Buffer.from(hex, 'hex').toString('base64')
+}
+
+/**
+ * 页面侧查询脚本：**按内容哈希**找那条消息，回传它的 ID。
+ *
+ * 与 {@link pageLookupExpression} 同样的纪律：只依赖消息模型本身、只读、拿不准返回空。
+ * 匹配条件只有一条 —— `filehash` 与我们算出的内容哈希逐字相同（两者都是明文的 SHA-256）。
+ *
+ * 返回 `{ ids: [...] }`：多于一个说明同一份内容出现在多条消息里，调用方会放弃并回落。
+ */
+export function pageMessageIdExpression(filehash: string): string {
+  const hashLiteral = quoteForPage(filehash)
+
+  return `(() => {
+  const HASH = ${hashLiteral};
+  try {
+    const collection = window.require ? window.require('WAWebCollections') : null;
+    const Msg = collection ? collection.Msg : null;
+    const messages = Msg && typeof Msg.getModelsArray === 'function' ? Msg.getModelsArray() : [];
+
+    const str = (holder, key) => {
+      try { const value = holder ? holder[key] : null; return typeof value === 'string' && value ? value : null; }
+      catch (error) { return null; }
+    };
+    const hashOf = (msg) => str(msg, 'filehash') || str(msg.mediaData, 'filehash') || str(msg.mediaObject, 'filehash');
+    const idOf = (msg) => {
+      const id = msg ? msg.id : null;
+      if (typeof id === 'string') return id;
+      return str(id, 'id') || str(id, '_serialized');
+    };
+
+    const ids = [];
+    for (const msg of messages) {
+      if (!msg) continue;
+      if (hashOf(msg) !== HASH) continue;
+      const id = idOf(msg);
+      if (id && ids.indexOf(id) === -1) ids.push(id);
+    }
+    return JSON.stringify({ ids: ids });
+  } catch (error) {
+    return JSON.stringify({ ids: [] });
+  }
+})()`
+}
+
+/**
+ * 页面送回来的是 `JSON.stringify({ ids })` 文本。解析失败一律当作"没有"。
+ */
+export function readPageMessageIds(raw: unknown): string[] {
+  if (typeof raw !== 'string') return []
+
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return []
+    const ids = (parsed as { ids?: unknown }).ids
+    return Array.isArray(ids)
+      ? ids.filter((value): value is string => typeof value === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 主进程拿到页面回复后的**唯一**入口：解析 → 取唯一值。
+ *
+ * 空、或有两个及以上不同的消息ID ⇒ `null`（无法判定），调用方回落到 `unknown-message`。
+ */
+export function pickMessageId(raw: unknown): string | null {
+  return pickSingle(readPageMessageIds(raw))
 }

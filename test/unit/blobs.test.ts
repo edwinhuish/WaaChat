@@ -6,8 +6,8 @@
  *   1. **归档目录里永远不存在半成品** —— 靠"先算哈希、再原子改名"的顺序拿到；
  *   2. **文件名是用户认得的原名**（同名冲突时带一小段哈希），否则目录就没法直接看（[ADR-0031]）；
  *   3. **正文只读**，而只读不妨碍删除（否则清理与淘汰都会在只读文件上失败）；
- *   4. **落在 `<年>/<月>/` 里**且那两级目录也是 `0700`（[ADR-0037]）——
- *      年月算错会让"按时间翻文件夹"不可信，目录权限没收紧则会让明文可被同机他人读取。
+ *   4. **落在 `<账号>/<消息ID>/files/` 里**且那几级目录也是 `0700`（[ADR-0052]）——
+ *      消息ID 拼错会让文件落进别人的消息目录，目录权限没收紧则会让明文可被同机他人读取。
  *
  * 因此测试跑在真实文件系统上（隔离在临时的归档目录里），而不是 mock `node:fs` —— mock 掉
  * fs 之后，被测的恰好就只剩"我有没有按顺序调用它们"，而顺序正是最容易看出来的东西。
@@ -63,21 +63,23 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-/** 这一轮用例用的归档时间：本地 2026 年 10 月，因此目录固定是 `2026-10`。 */
+/** 归档时间（Unix 毫秒）—— 从 [ADR-0052] 起它只进索引，不再决定落盘位置。 */
 const AT = new Date(2026, 9, 5, 12).getTime()
-/** 之后的两个月：用于跨月的行为（同名不冲突、同内容挂硬链接）。 */
-const AT_NEXT = new Date(2026, 10, 3, 12).getTime()
-const AT_LATER = new Date(2026, 11, 8, 12).getTime()
 
 /**
- * 这三轮用例没有设置账号标识（`setAccountKey` 只在 `paths.test.ts` 里用），
+ * 这些用例没有设置账号标识（`setAccountKey` 只在 `paths.test.ts` 里用），
  * 因此账号那一层是回落值 `unknown-account`（[ADR-0039]）。
  */
 const ACCOUNT = 'unknown-account'
-/** `stored_name` 的前缀：`<账号>/files/<年-月>`。 */
-const DIR = `${ACCOUNT}/files/2026-10`
-const DIR_NEXT = `${ACCOUNT}/files/2026-11`
-const DIR_LATER = `${ACCOUNT}/files/2026-12`
+/** 两条不同的消息：用来验证"同名不冲突 / 同内容挂硬链接"两条行为。
+ *  长度都在 8 以上，满足 `isMessageSegment()`（迁移的容器判据）。 */
+const MESSAGE = '3EB0A1B2C3D4E5F6A7B8'
+const MESSAGE_OTHER = '3EB0FFFFFFFFFFFFFFFF'
+/** `stored_name` 的前缀：`<账号>/<消息ID>/files`（[ADR-0052]）。 */
+const DIR = `${ACCOUNT}/${MESSAGE}/files`
+const DIR_OTHER = `${ACCOUNT}/${MESSAGE_OTHER}/files`
+/** 拿不到消息ID时的回落目录（与账号回落对称）。 */
+const DIR_FALLBACK = `${ACCOUNT}/unknown-message/files`
 
 /** 把一段内容写成归档目录内的临时文件，模拟下载完成后的状态。 */
 function staged(content: string): string {
@@ -90,12 +92,12 @@ function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
-/** 相对路径的最后一段（用例关心"叫什么名字"时用它把年月前缀摘掉）。 */
+/** 相对路径的最后一段（用例关心"叫什么名字"时用它把容器前缀摘掉）。 */
 function leaf(relative: string): string {
   return relative.slice(relative.lastIndexOf('/') + 1)
 }
 
-/** 归档目录里的**正文**，相对路径（`2026/10/合同.pdf`；旧布局则是裸文件名）。 */
+/** 归档目录里的**正文**，相对路径（`<账号>/<消息ID>/files/合同.pdf`）。 */
 function bodies(dir: string = archive, prefix = ''): string[] {
   const found: string[] = []
 
@@ -111,10 +113,13 @@ function bodies(dir: string = archive, prefix = ''): string[] {
 }
 
 describe('commitFromTemp', () => {
-  it('用原文名落盘，而不是哈希名；并落在 <年>/<月>/ 里', async () => {
+  it('用原文名落盘，而不是哈希名；并落在 <账号>/<消息ID>/files/ 里', async () => {
     const temp = staged('hello waachat')
 
-    const result = await commitFromTemp(temp, '报告 2026Q3.pdf', { openedAt: AT })
+    const result = await commitFromTemp(temp, '报告 2026Q3.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
 
     expect(result.created).toBe(true)
     expect(result.hash).toBe(sha256('hello waachat'))
@@ -124,21 +129,52 @@ describe('commitFromTemp', () => {
     expect(readFileSync(archiveFilePath(result.storedName), 'utf8')).toBe('hello waachat')
   })
 
-  it('账号 / files / 月份三层目录按需创建，且与归档目录同样是 0700', async () => {
-    await commitFromTemp(staged(`perm-${String(Date.now())}`), 'perm.pdf', { openedAt: AT })
+  it('账号 / 消息ID / files 三级目录按需创建，且与归档目录同样是 0700', async () => {
+    await commitFromTemp(staged(`perm-${String(Date.now())}`), 'perm.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
 
-    // 三层都是我们建的：mkdir 的 mode 只对新建的目录生效，因此这条断言守的是
-    // "里面是解密后的明文"那道权限线在子目录上也没漏（[ADR-0039]）。
+    // 三级都是我们建的：mkdir 的 mode 只对新建的目录生效，因此这条断言守的是
+    // "里面是解密后的明文"那道权限线在子目录上也没漏（[ADR-0052]）。
     expect(statSync(join(archive, ACCOUNT)).mode & 0o777).toBe(0o700)
-    expect(statSync(join(archive, ACCOUNT, 'files')).mode & 0o777).toBe(0o700)
-    expect(statSync(join(archive, ACCOUNT, 'files', '2026-10')).mode & 0o777).toBe(0o700)
+    expect(statSync(join(archive, ACCOUNT, MESSAGE)).mode & 0o777).toBe(0o700)
+    expect(statSync(join(archive, ACCOUNT, MESSAGE, 'files')).mode & 0o777).toBe(0o700)
+  })
+
+  it('拿不到消息ID时落进 unknown-message（与账号回落对称）', async () => {
+    const name = `无消息-${String(Date.now())}.pdf`
+
+    const result = await commitFromTemp(staged(`no-msg-${String(Date.now())}`), name, {
+      openedAt: AT,
+    })
+
+    expect(result.storedName).toBe(`${DIR_FALLBACK}/${name}`)
+    expect(existsSync(archiveFilePath(result.storedName))).toBe(true)
+  })
+
+  it('消息ID 需要净化时（含路径分隔符）先净化再当目录名', async () => {
+    const name = `净化-${String(Date.now())}.pdf`
+
+    const result = await commitFromTemp(staged(`sanitize-${String(Date.now())}`), name, {
+      messageId: '3EB0/A1B2',
+      openedAt: AT,
+    })
+
+    expect(result.storedName).toBe(`${ACCOUNT}/3EB0A1B2/files/${name}`)
   })
 
   it('同名同内容命中去重，并丢弃临时文件', async () => {
     const content = `dup-${String(Date.now())}`
 
-    const first = await commitFromTemp(staged(content), '合同.pdf', { openedAt: AT })
-    const second = await commitFromTemp(staged(content), '合同.pdf', { openedAt: AT })
+    const first = await commitFromTemp(staged(content), '合同.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
+    const second = await commitFromTemp(staged(content), '合同.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
 
     expect(first.created).toBe(true)
     expect(second.created).toBe(false)
@@ -148,11 +184,13 @@ describe('commitFromTemp', () => {
     expect(readdirSync(archive).filter((name) => name.startsWith('.part-'))).toHaveLength(0)
   })
 
-  it('同一个年月目录里同名不同内容时给后者加一段哈希后缀（绝不覆盖）', async () => {
+  it('同一条消息的目录里同名不同内容时给后者加一段哈希后缀（绝不覆盖）', async () => {
     const first = await commitFromTemp(staged(`first-${String(Date.now())}`), '合同.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
     })
     const second = await commitFromTemp(staged(`second-${String(Date.now())}`), '合同.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
     })
 
@@ -165,26 +203,34 @@ describe('commitFromTemp', () => {
     expect(readFileSync(archiveFilePath(second.storedName), 'utf8')).toContain('second-')
   })
 
-  it('跨月的同名文件互不冲突，各自用原名（分区带来的好处）', async () => {
-    // 名字带上时间戳：这条断言关心的是**两个月之间**没有冲突，不该被别的用例在同一
-    // 个月里留下的同名文件影响。
-    const name = `跨月合同-${String(Date.now())}.pdf`
+  it('不同消息里的同名文件互不冲突，各自用原名（分区带来的好处）', async () => {
+    // 名字带上时间戳：这条断言关心的是**两条消息之间**没有冲突，不该被别的用例留在同一条
+    // 消息目录里的同名文件影响。
+    const name = `跨消息合同-${String(Date.now())}.pdf`
 
-    const first = await commitFromTemp(staged(`oct-${String(Date.now())}`), name, { openedAt: AT })
-    const second = await commitFromTemp(staged(`nov-${String(Date.now())}`), name, {
-      openedAt: AT_NEXT,
+    const first = await commitFromTemp(staged(`one-${String(Date.now())}`), name, {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
+    const second = await commitFromTemp(staged(`two-${String(Date.now())}`), name, {
+      messageId: MESSAGE_OTHER,
+      openedAt: AT,
     })
 
     expect(first.storedName).toBe(`${DIR}/${name}`)
-    expect(second.storedName).toBe(`${DIR_NEXT}/${name}`)
-    expect(readFileSync(archiveFilePath(second.storedName), 'utf8')).toContain('nov-')
+    expect(second.storedName).toBe(`${DIR_OTHER}/${name}`)
+    expect(readFileSync(archiveFilePath(second.storedName), 'utf8')).toContain('two-')
   })
 
   it('同一份内容换个名字时只多一个名字，不多占字节', async () => {
     const content = `alias-${String(Date.now())}`
-    const first = await commitFromTemp(staged(content), '报告.pdf', { openedAt: AT })
+    const first = await commitFromTemp(staged(content), '报告.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
 
     const second = await commitFromTemp(staged(content), '报价单.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -197,21 +243,26 @@ describe('commitFromTemp', () => {
     )
   })
 
-  it('同一份内容跨月出现时，在另一个年月目录里挂硬链接（占用不变）', async () => {
-    const content = `cross-month-${String(Date.now())}`
-    const name = `跨月报告-${String(Date.now())}.pdf`
+  it('同一份内容出现在另一条消息里时，在新消息目录里挂硬链接（占用不变）', async () => {
+    const content = `cross-message-${String(Date.now())}`
+    const name = `跨消息报告-${String(Date.now())}.pdf`
 
-    const first = await commitFromTemp(staged(content), name, { openedAt: AT })
+    const first = await commitFromTemp(staged(content), name, {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
     const before = usage()
 
     const second = await commitFromTemp(staged(content), name, {
-      openedAt: AT_LATER,
+      messageId: MESSAGE_OTHER,
+      openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
 
     expect(second.created).toBe(false)
-    expect(second.storedName).toBe(`${DIR_LATER}/${name}`)
-    // 两个不同的目录、同一个 inode：目录按时间分区，但"同一份内容只存一份"这条不变量不变。
+    expect(second.storedName).toBe(`${DIR_OTHER}/${name}`)
+    // 两条消息各有一个名字、同一个 inode：目录按消息分区，但"同一份内容只存一份"这条
+    // 不变量不变（[ADR-0052]）。
     expect(statSync(archiveFilePath(second.storedName)).ino).toBe(
       statSync(archiveFilePath(first.storedName)).ino,
     )
@@ -222,6 +273,7 @@ describe('commitFromTemp', () => {
     const content = `stale-${String(Date.now())}`
 
     const result = await commitFromTemp(staged(content), 'x.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
       findStored: () => '早就没了的名字.pdf',
     })
@@ -232,6 +284,7 @@ describe('commitFromTemp', () => {
 
   it('落盘即只读，而只读不妨碍删除', async () => {
     const result = await commitFromTemp(staged(`read-only-${String(Date.now())}`), 'readonly.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
     })
     const path = archiveFilePath(result.storedName)
@@ -246,13 +299,14 @@ describe('commitFromTemp', () => {
 })
 
 describe('archiveFilePath', () => {
-  it('把相对路径接到归档目录后面（账号 / files / 月份都在 Path 里）', async () => {
+  it('把相对路径接到归档目录后面（账号 / 消息ID / files 都在 Path 里）', async () => {
     const result = await commitFromTemp(staged(`path-${String(Date.now())}`), 'p.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
     })
 
     expect(archiveFilePath(result.storedName)).toBe(
-      join(archive, ACCOUNT, 'files', '2026-10', 'p.pdf'),
+      join(archive, ACCOUNT, MESSAGE, 'files', 'p.pdf'),
     )
   })
 
@@ -293,11 +347,14 @@ describe('usage', () => {
     expect(usage()).toEqual(before)
   })
 
-  it('年月子目录里的正文照样计入（统计要递归）', async () => {
+  it('消息子目录里的正文照样计入（统计要递归）', async () => {
     const content = `counted-${String(Date.now())}`
     const before = usage()
 
-    const result = await commitFromTemp(staged(content), 'counted.pdf', { openedAt: AT })
+    const result = await commitFromTemp(staged(content), 'counted.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
     const after = usage()
 
     expect(statSync(archiveFilePath(result.storedName)).size).toBe(content.length)
@@ -305,12 +362,16 @@ describe('usage', () => {
     expect(after.bytes).toBe(before.bytes + content.length)
   })
 
-  it('同一份内容的多个名字只算一份（按 inode 去重，跨年月目录也成立）', async () => {
+  it('同一份内容的多个名字只算一份（按 inode 去重，跨消息目录也成立）', async () => {
     const content = `usage-alias-${String(Date.now())}`
-    const first = await commitFromTemp(staged(content), 'a.pdf', { openedAt: AT })
+    const first = await commitFromTemp(staged(content), 'a.pdf', {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
     const before = usage()
 
     await commitFromTemp(staged(content), 'b.pdf', {
+      messageId: MESSAGE,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -338,9 +399,11 @@ describe('evictToFit', () => {
   it('按最久未访问优先淘汰，而不是按候选给出的顺序', async () => {
     const stamp = Date.now()
     const old = await commitFromTemp(staged(`evict-old-${stamp}`), `旧-${stamp}.pdf`, {
+      messageId: MESSAGE,
       openedAt: AT,
     })
     const fresh = await commitFromTemp(staged(`evict-new-${stamp}`), `新-${stamp}.pdf`, {
+      messageId: MESSAGE,
       openedAt: AT,
     })
 
@@ -359,8 +422,12 @@ describe('evictToFit', () => {
   it('一份内容的全部磁盘名一起删（删一个硬链接名不释放任何字节）', async () => {
     const stamp = Date.now()
     const content = `evict-alias-${stamp}`
-    const first = await commitFromTemp(staged(content), `别名甲-${stamp}.pdf`, { openedAt: AT })
+    const first = await commitFromTemp(staged(content), `别名甲-${stamp}.pdf`, {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
     const second = await commitFromTemp(staged(content), `别名乙-${stamp}.pdf`, {
+      messageId: MESSAGE,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -378,6 +445,7 @@ describe('evictToFit', () => {
   it('只删候选里的名字：归档目录里索引不认识的文件一个都不碰', async () => {
     const stamp = Date.now()
     const known = await commitFromTemp(staged(`evict-known-${stamp}`), `已知-${stamp}.pdf`, {
+      messageId: MESSAGE,
       openedAt: AT,
     })
 
@@ -398,6 +466,7 @@ describe('evictToFit', () => {
   it('候选指向的文件已经不在时，回传它的哈希（清掉那条悬空记录就是修复）', async () => {
     const stamp = Date.now()
     const live = await commitFromTemp(staged(`evict-live-${stamp}`), `活着-${stamp}.pdf`, {
+      messageId: MESSAGE,
       openedAt: AT,
     })
     const dangling = 'a'.repeat(64)
@@ -420,6 +489,7 @@ describe('evictToFit', () => {
   it('上限 <= 0（不限制）或占用已达标时不删任何东西', async () => {
     const stamp = Date.now()
     const kept = await commitFromTemp(staged(`evict-keep-${stamp}`), `保留-${stamp}.pdf`, {
+      messageId: MESSAGE,
       openedAt: AT,
     })
 

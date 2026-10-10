@@ -22,7 +22,7 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
-import { ACCOUNT_FALLBACK, FILES_SEGMENT } from './archive/layout'
+import { ACCOUNT_FALLBACK } from './archive/layout'
 
 /** 应用标识在文件系统层面的名字，与 package.json 的 name 一致。 */
 const APP_DIR_NAME = 'waachat'
@@ -200,8 +200,11 @@ export const indexDbPath = (): string => join(archiveDir(), ARCHIVE_INDEX_FILE)
  */
 export const archiveAccountDir = (): string => join(archiveDir(), accountKey())
 
-/** 明文正文的容器：`<归档根>/<账号>/files`（[ADR-0039]）。 */
-export const archiveFilesDir = (): string => join(archiveAccountDir(), FILES_SEGMENT)
+/*
+ * 注意：不再有"明文正文的唯一容器"这个概念。正文从 [ADR-0052] 起落在
+ * `<归档根>/<账号>/<消息ID>/files/` —— 账号目录下是**多条消息目录**，没有一个是"那个 files"。
+ * 因此原先的 `archiveFilesDir()`（`<归档根>/<账号>/files`）被删除，而不是留着一个会骗人的 API。
+ */
 
 /**
  * 密文缓存目录（**根**）。

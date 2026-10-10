@@ -10,9 +10,13 @@
  * 本模块**不做**的事（INV-3 的边界）：
  *   - 不接触密钥、不做解密（流里已经是页面解密后的明文）
  *
- * ⚠️ 它**会**向页面问一件事："这条消息的媒体内容哈希是多少"（`early-identity.ts`，[ADR-0047]）。
- * 那只读消息模型上的一个字段，**不解析 DOM、不驱动页面动作**；INV-1 已由 [ADR-0043] 撤销，
- * 这个注入点沿用 [ADR-0046] 的方式（主进程 `executeJavaScript`，不给窗口加 preload）。
+ * ⚠️ 它**会**向页面问两件事，都只读消息模型上的字段、**不解析 DOM、不驱动页面动作**；
+ * INV-1 已由 [ADR-0043] 撤销，这些注入点沿用 [ADR-0046] 的方式（主进程
+ * `executeJavaScript`，不给窗口加 preload）：
+ *
+ *   1. **点击那一刻**：这条内容在归档里吗（按"文件名 + 大小"问 `filehash`，[ADR-0047]）。
+ *   2. **落盘那一刻**：这条文件属于哪条消息（按刚算出的内容哈希反查 `msg.id`，[ADR-0052]）
+ *      —— 归档路径 `<账号>/<消息ID>/files/` 需要它。
  */
 
 import { existsSync } from 'node:fs'
@@ -34,7 +38,13 @@ import { archiveStore, enforceArchiveLimit } from '../archive/store'
 import { failureReason } from '../errors'
 import { openPath } from '../integration/open'
 import { hashPrefix, logger } from '../logger'
-import { pageLookupExpression, pickContentHash } from './early-identity'
+import {
+  encodeFilehash,
+  pageLookupExpression,
+  pageMessageIdExpression,
+  pickContentHash,
+  pickMessageId,
+} from './early-identity'
 import { markCaptured, markFailure } from './health'
 
 export function attachDownloadCapture(ses: Session, getSettings: () => Settings): void {
@@ -113,7 +123,7 @@ function handleDownload(
       void unlink(temp).catch(() => undefined)
       return
     }
-    void finalize({ temp, name, mime, state, getSettings })
+    void finalize({ temp, name, mime, state, contents, getSettings })
   })
 
   void tryOpenFromArchive({
@@ -200,6 +210,29 @@ async function askPageForContentHash(
   }
 }
 
+/**
+ * 问页面"这条文件属于哪条消息"（[ADR-0052]），拿不到返回 `null`。
+ *
+ * 与 {@link askPageForContentHash} 同样保守：页面销毁、哈希不是合法 hex、注入超时、
+ * 值不唯一 —— 任何一步不成立都返回 `null`，由归档层回落到 `unknown-message`。
+ * **这条路线允许失败，不允许分错消息**（分错 = 文件落进别人的消息目录）。
+ */
+async function askPageForMessageId(contents: WebContents, hash: string): Promise<string | null> {
+  const filehash = encodeFilehash(hash)
+  if (filehash === null || contents.isDestroyed()) return null
+
+  try {
+    const reply = await withTimeout<unknown>(
+      contents.executeJavaScript(pageMessageIdExpression(filehash), true) as Promise<unknown>,
+      EARLY_LOOKUP_TIMEOUT_MS,
+    )
+    return pickMessageId(reply)
+  } catch (error) {
+    logger.warn('capture: message id lookup failed', { reason: failureReason(error) })
+    return null
+  }
+}
+
 /** 超时就当"没有"（`null`），**绝不把异常抛给调用方** —— 这条路线只该让点击更快或不变。 */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return new Promise((resolve) => {
@@ -222,11 +255,13 @@ interface FinalizeInput {
   readonly name: string
   readonly mime: string
   readonly state: string
+  /** 承载页面的上下文：用来反查这条文件属于哪条消息（[ADR-0052]）。 */
+  readonly contents: WebContents
   readonly getSettings: () => Settings
 }
 
 async function finalize(input: FinalizeInput): Promise<void> {
-  const { temp, name, mime, state } = input
+  const { temp, name, mime, state, contents } = input
 
   // 在最终落盘这一刻读设置，而不是在注册时读一份快照 ——
   // 否则用户改了"点击时自动打开"要重启才生效。
@@ -244,8 +279,8 @@ async function finalize(input: FinalizeInput): Promise<void> {
   let created: boolean
 
   /**
-   * 归档时间：既决定文件落在哪个年月子目录（[ADR-0037]），也是索引里的 `opened_at`。
-   * 只取**一次**时钟 —— 两处各取一次，跨月的那一毫秒就会得到"索引说 10 月、文件在 9 月"。
+   * 归档时间：索引里的 `opened_at`。从 [ADR-0052] 起它**不再决定**文件落在哪（分区改由
+   * 消息ID 承担），但它仍是"最后一次被打开"的依据（淘汰排序、界面排序）。
    */
   const openedAt = Date.now()
 
@@ -261,6 +296,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
   try {
     ;({ hash, storedName, bytes, created } = await commitFromTemp(temp, name, {
       findStored: findStoredName,
+      // 消息ID 只能在算出哈希之后按它反查（[ADR-0052]）；拿不到就由归档层回落到
+      // `unknown-message`，绝不阻断落盘。
+      resolveMessageId: (contentHash) => askPageForMessageId(contents, contentHash),
       openedAt,
     }))
   } catch (error) {
@@ -280,14 +318,14 @@ async function finalize(input: FinalizeInput): Promise<void> {
     archiveStore().record({
       hash,
       name,
-      // 磁盘上的实际路径（相对归档目录：`<账号>/files/<年-月>/<原名>`，冲突时文件名带哈希
-      // 后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0039）。
+      // 磁盘上的实际路径（相对归档目录：`<账号>/<消息ID>/files/<原名>`，冲突时文件名带哈希
+      // 后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0052）。
       storedName,
       bytes,
       mime,
       openedAt,
-      // chatLabel 刻意留空：我们不读取页面内部数据（INV-1），
-      // 因此没有可靠的会话来源。不要为了填上它而引入新的数据源。
+      // chatLabel 仍刻意留空：会话标签要有可靠的来源，而现在唯一会读的页面字段是
+      // 内容哈希与消息ID（ADR-0047 / ADR-0052）。不要为了填上它而引入新的数据源。
     })
   } catch (error) {
     logger.warn('capture: failed to index file', {
