@@ -16,6 +16,18 @@
  *   1. 上游的**文档预览页**（`*.whatsapp.net/pdf-viewer/…`）不再加载；
  *   2. `application/pdf` 的响应降级成 `application/octet-stream`，于是内核走下载。
  *
+ * ── 打开之后**实际**会发生什么（实测，[ADR-0041]）──
+ *
+ * 规则 2 如愿：PDF 不再被内核阅读器渲染，走下载 → 归档 → 系统阅读器。
+ *
+ * 规则 1 只挡住了**内容**：那个预览面板是上游页面自己的界面，不注入就改不了它（[INV-1]），
+ * 于是它打开之后停在加载态 —— 用户看到的正是"点 PDF 一直转圈"。实测还排除了两条更漂亮的做法：
+ * 把 `/pdf-viewer/…` 的请求 `redirectURL` 到 `about:blank` 或 `data:` 都被 Chromium 拒收
+ * （`ERR_UNSAFE_REDIRECT`），因此**没法**把一段自己的说明塞进那个面板里。
+ *
+ * 于是只剩一件事可做：**明确告诉用户该怎么做**（`hooks.onPreviewBlocked` → 系统通知：
+ * 回到聊天，用消息上的「下载」）。这比"点了没反应"好得多，也正是 [ADR-0041] 记录下来的取舍。
+ *
  * ── 两个挂点，各自覆盖一半 ──
  *
  * 理由是一条实测结论：**密文缓存那一层挂着时**（[ADR-0027]），会话里所有 https 都由
@@ -88,6 +100,18 @@ export function forceDownloadIfPdf(response: Response): Response {
   })
 }
 
+/** 这一层的可选副作用。注入而不是直接调用，是为了让本模块保持 electron-free（见文件头）。 */
+export interface PdfHandlingHooks {
+  /**
+   * 挡下一次预览时调用（**每次命中都调**，节流在实现里）。
+   *
+   * 存在的理由是可观察性（[ADR-0041]）：被挡掉之后，页面那个预览面板会停在加载态，而它是
+   * 上游的界面 —— 我们唯一能做的是**明确告诉用户改走消息上的「下载」**。没有这条提示，
+   * 用户看到的就只是"点了没反应"。
+   */
+  readonly onPreviewBlocked?: () => void
+}
+
 /**
  * 装上这一层。
  *
@@ -95,11 +119,18 @@ export function forceDownloadIfPdf(response: Response): Response {
  *
  * @param getSettings 读当前设置。**每个请求现读**（不在这里取快照）—— 开关必须改完立刻生效。
  */
-export function attachPdfHandling(ses: Session, getSettings: () => Settings): void {
+export function attachPdfHandling(
+  ses: Session,
+  getSettings: () => Settings,
+  hooks: PdfHandlingHooks = {},
+): void {
   pdfPreviewDisabled = () => getSettings().disablePdfPreview
 
   // 上游的文档预览页。窗口那一层在 `main/window.ts` 拒绝，这里挡**子框架**那一层 ——
   // 实测它确实会被嵌进 `web.whatsapp.com` 的 iframe（那次 COEP 症状见 ADR-0016 的背景）。
+  //
+  // 判据不细分"预览文档本身"还是"它加载的 SDK 资源"（两者都在 `/pdf-viewer/` 下）：一次点击
+  // 会引发一整串请求，逐条区分只会更脆；去重交给提示那一侧的节流（`shared/preview-notice.ts`）。
   ses.webRequest.onBeforeRequest((details, callback) => {
     if (!pdfPreviewDisabled() || !isDocumentPreviewPage(details.url)) {
       callback({})
@@ -109,6 +140,8 @@ export function attachPdfHandling(ses: Session, getSettings: () => Settings): vo
     logger.warn('capture: blocked the upstream document preview page', {
       host: hostOf(details.url),
     })
+    hooks.onPreviewBlocked?.()
+
     callback({ cancel: true })
   })
 

@@ -16,6 +16,7 @@ import { reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
 import { attachPdfHandling } from './capture/pdf'
 import { attachCiphertextCache } from './capture/protocol'
+import { announcePreviewBlocked } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
 
@@ -89,7 +90,7 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 这一层由设置 `disablePdfPreview` 控制，**默认关闭**（ADR-0030）：关着时上游的预览页照常
   // 加载、PDF 在应用内预览；打开后才有上面两条规则。判据每个请求现读，因此改完立刻生效 ——
   // 传的是**读取函数**而不是快照。
-  attachPdfHandling(ses, getSettings)
+  attachPdfHandling(ses, getSettings, { onPreviewBlocked: announcePreviewBlocked })
 
   logger.info('session configured', {
     ciphertextCache: settings.enableCiphertextCache,

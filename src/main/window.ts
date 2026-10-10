@@ -19,6 +19,7 @@ import { BrowserWindow, app, shell } from 'electron'
 
 import { SESSION_PARTITION, UPSTREAM_URL } from '../shared/constants'
 import { isDocumentPreviewPage, isUpstreamPage } from '../shared/upstream'
+import { announcePreviewBlocked } from './notice'
 import { buildUserAgent } from '../shared/user-agent'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { logger } from './logger'
@@ -135,6 +136,8 @@ export function createMainWindow(): BrowserWindow {
     // 每个窗口请求现读设置：开关改完必须立刻生效，不能等下次启动（ADR-0030）。
     if (getSettings().disablePdfPreview && isDocumentPreviewPage(url)) {
       logger.warn('window: blocked the upstream document preview window')
+      // 被拒绝的窗口不会给用户任何反馈，而"文件在哪儿"是唯一要传达的事（ADR-0041）。
+      announcePreviewBlocked()
       return { action: 'deny' }
     }
 

@@ -73,6 +73,11 @@ import {
 } from '../src/main/linux-gpu'
 import { ALLOWED_PERMISSIONS, isPermissionAllowed } from '../src/main/permissions'
 import { isDocumentPreviewPage } from '../src/shared/upstream'
+import {
+  PREVIEW_BLOCKED_BODY,
+  PREVIEW_NOTICE_COOLDOWN_MS,
+  shouldAnnouncePreviewBlocked,
+} from '../src/shared/preview-notice'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
   accountKey,
@@ -607,6 +612,20 @@ check(
     !isPdfResponse('application/octet-stream'),
 )
 check('降级方向是 octet-stream（内核据此走下载）', PDF_DOWNLOAD_MIME === 'application/octet-stream')
+
+// 被挡下之后用户看到的界面是**上游自己的预览面板**，它会停在加载态（实测见 ADR-0041）：
+// 我们既拦不住那个面板，也没法把说明塞进它里面（`redirectURL` 到 about:blank / data: 被
+// Chromium 拒收）。因此唯一能做的就是给出下一步动作 —— 这条提示是这件事的全部可见性。
+check(
+  '挡下预览时会给出提示，且按时间节流（一次点击会引发一串被挡的请求）',
+  shouldAnnouncePreviewBlocked(null, 1_000) &&
+    !shouldAnnouncePreviewBlocked(1_000, 1_001) &&
+    shouldAnnouncePreviewBlocked(1_000, 1_000 + PREVIEW_NOTICE_COOLDOWN_MS),
+)
+check(
+  '提示里说的是下一步动作（「下载」+ 去哪儿找文件），不是一句"已禁用"',
+  PREVIEW_BLOCKED_BODY.includes('下载') && PREVIEW_BLOCKED_BODY.includes('文件列表'),
+)
 
 // ---------------------------------------------------------------------------
 // 10. 网络：值得重试的错误
