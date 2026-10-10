@@ -14,11 +14,11 @@
 
 - [ ] `pnpm run check` 通过
 - [ ] 涉及打包、桌面集成、图标或依赖 → `pnpm run verify` 通过
-- [ ] **没有**触碰 [ai/INVARIANTS.md](ai/INVARIANTS.md) 里的硬约束（被 ESLint 拦下时**没有**改 lint 配置）
-- [ ] 设计变更已在 [docs/decisions.md](docs/decisions.md) 追加 ADR，而不是只写在提交信息里
+- [ ] **没有**触碰 [ai/INVARIANTS.md](../ai/INVARIANTS.md) 里的硬约束（被 ESLint 拦下时**没有**改 lint 配置）
+- [ ] 设计变更已在 [docs/decisions.md](../docs/decisions.md) 追加 ADR，而不是只写在提交信息里
 - [ ] 改了 `docs/` 就在同一 PR 同步了对应的 `ai/`（反之亦然）
 - [ ] 没有提交任何服务方的**视觉标识资产**（Logo / 图标 / 字体 / 官方配色）；非官方声明仍在 `README.md` 与 `DISCLAIMER.md` 里
-- [ ] 新增用户可见行为 → 已更新 [docs/usage.md](docs/usage.md)
+- [ ] 新增用户可见行为 → 已更新 [docs/usage.md](../docs/usage.md)
 
 ## 需要评审者特别关注的地方
 
