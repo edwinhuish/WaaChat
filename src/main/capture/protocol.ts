@@ -212,8 +212,8 @@ export function isCiphertextCacheAttached(): boolean {
  * 重发**必须**先把原请求的 fetch 元数据补回去（[ADR-0058]，判据在 `request-context.ts`）：
  * `ses.fetch` 发出去的那一份会被内核当成"主进程发起的无上下文请求"（`Sec-Fetch-Site: none`
  * / `Mode: no-cors` / `Dest: empty`，且 `Referer` 丢失），而**上游按这些头回不同的变体** ——
- * 文档预览页因此拿到一份没有 `cross-origin-resource-policy` 的响应，在
- * `web.whatsapp.com`（COEP: require-corp）里被判"不可嵌入"，报 `ERR_BLOCKED_BY_RESPONSE`。
+ * 文档预览页因此只拿到 Meta 的通用外壳（实测 183 KB，没有 viewer 的引导脚本），
+ * 表现是预览面板一直转圈。
  */
 async function passthrough(request: Request, ses: Session): Promise<Response> {
   applyRequestContext(request)

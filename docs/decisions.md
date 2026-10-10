@@ -3329,18 +3329,19 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
   （没有 referer）
 ```
 
-这不是"少几个头"那么轻：上游 `webtp.whatsapp.net/pdf-viewer/` 的响应带
-`vary: Sec-Fetch-Site, Sec-Fetch-Mode`，**按这些头决定回哪一份变体**。实测（用 curl 构造两种请求）：
+这不是"少几个头"那么轻：上游 `webtp.whatsapp.net/pdf-viewer/` **按这些头直接决定回哪一份**。实测
+（curl 构造两种请求，2026-10-10，同一 URL、同一时刻，只改这几个头）：
 
 | 请求 | 上游响应 |
 |---|---|
-| 像真浏览器导航（`Mode: navigate` / `Dest: iframe`） | 200，**带** `cross-origin-resource-policy: cross-origin` 与 `content-security-policy: frame-ancestors https://*.whatsapp.com` |
-| 无上下文（`Mode: no-cors` / `Dest: empty`，无 `Referer`） | 200，**没有** CORP，也没有 `frame-ancestors` |
+| 像真浏览器导航（`Mode: navigate` / `Dest: iframe` / 带 `Referer`） | 200，**59 KB** 的 `<html id="whatsapp-web-pdf-viewer">`（真正的 viewer）+ `cross-origin-resource-policy: cross-origin` + CSP（含 `frame-ancestors https://*.whatsapp.com`）+ `cache-control` |
+| 无上下文（`Mode: no-cors` / `Dest: empty`，无 `Referer`） | 200，**183 KB** 的 `<html id="facebook">` —— Meta 的通用外壳（无 CSP、无 CORP、无 `cache-control`） |
 
-那个预览页是被 `web.whatsapp.com`（带 `cross-origin-embedder-policy: require-corp`）用 iframe 嵌进去的。
-父文档启用 COEP 时，被嵌子文档也**必须**带 COEP/CORP，否则按"未启用、不可嵌入"拦截 —— 症状是
-`ERR_BLOCKED_BY_RESPONSE`、预览面板一直转圈，且**只在协议层挂着时出现**（关掉开关走原生路径时一切正常），
-报错内容指向不到这一层。这与 [ADR-0016](#adr-0016) 是同一类失手：漏一个头，页面**局部**坏掉而不报错。
+⚠️ 两份的 `Vary` 都只列 `Accept-Encoding`：这是**服务端按头分支**，不是内容协商缓存 —— 所以"少补一个头"
+每次都会拿到外壳，而不会被缓存里的好那份救回来。那个页面是被 `web.whatsapp.com`（带
+`cross-origin-embedder-policy: require-corp`）用 iframe 嵌进去的；拿着外壳时 viewer 的引导脚本根本不在，
+表现就是**预览面板一直转圈**，且**只在协议层挂着时出现**（关掉开关走原生路径时一切正常），报错内容
+指向不到这一层。这与 [ADR-0016](#adr-0016) 是同一类失手：漏一个头，页面**局部**坏掉而不报错。
 
 ⚠️ **补错了比不补坏得多，而"补错"的边界是内核定的。** 本 ADR 落地后立刻踩到了一次：换算表最初把
 `resourceType: 'xhr'` 也收进来、换算成真浏览器会发的 `cors`/`empty`，结果**分区里每一个 XHR / `fetch()`**

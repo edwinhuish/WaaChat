@@ -17,17 +17,18 @@
  *   （没有 referer）
  * ```
  *
- * 这不是"少几个头"那么轻：上游 `webtp.whatsapp.net/pdf-viewer/` 的响应带
- * `vary: Sec-Fetch-Site, Sec-Fetch-Mode`，**按这些头决定回哪一份**。实测（curl）：
+ * 这不是"少几个头"那么轻：上游 `webtp.whatsapp.net/pdf-viewer/` **按这些头直接决定回哪一份**。
+ * 实测（curl，2026-10-10；同一 URL、同一时刻，只改这几个请求头）：
  *
  * | 请求 | 上游响应 |
  * |---|---|
- * | 像真浏览器导航（`Mode: navigate` / `Dest: iframe`） | 200，**带** `cross-origin-resource-policy: cross-origin` 与 `content-security-policy: frame-ancestors https://*.whatsapp.com` |
- * | 无上下文（`Mode: no-cors` / `Dest: empty`，无 Referer） | 200，**没有** CORP、也没有 `frame-ancestors` |
+ * | 像真浏览器导航（`Mode: navigate` / `Dest: iframe` / 带 `Referer`） | 200，**59 KB** 的 `<html id="whatsapp-web-pdf-viewer">`（真正的 viewer），带 `cross-origin-resource-policy: cross-origin`、CSP（含 `frame-ancestors https://*.whatsapp.com`）与 `cache-control` |
+ * | 无上下文（`Mode: no-cors` / `Dest: empty`，无 `Referer`） | 200，**183 KB** 的 `<html id="facebook">` —— Meta 的通用外壳（没有 CSP、没有 CORP、没有 `cache-control`） |
  *
- * 那个文档预览页是被 `web.whatsapp.com`（带 `cross-origin-embedder-policy: require-corp`）
- * 用 iframe 嵌进去的，缺了 CORP 的子文档会被内核判为"不可嵌入"，报
- * `ERR_BLOCKED_BY_RESPONSE` —— 表现就是**预览面板一直转圈**（实测复现）。
+ * ⚠️ 两份的 `Vary` 都只列 `Accept-Encoding`：这是**服务端按头分支**，不是内容协商缓存 ——
+ * 因此"少补一个头"不会命中缓存里那份好的，而是每次拿到外壳。那个页面是被
+ * `web.whatsapp.com`（带 `cross-origin-embedder-policy: require-corp`）用 iframe 嵌进去的，
+ * 拿着外壳的表现就是**预览面板一直转圈**（外壳没有 viewer 的引导脚本）。
  *
  * ## 怎么补
  *
