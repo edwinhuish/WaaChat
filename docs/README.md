@@ -99,7 +99,7 @@ waachat/
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
-│   │   ├── notice.ts               主动提示用户：系统通知 + 节流（接管失效、PDF 预览被挡下）
+│   │   ├── notice.ts               主动提示用户：系统通知 + 节流（接管失效）
 │   │   ├── account.ts              账号标识：读页面记下的 WID / `wa_ul` cookie（ADR-0039）
 │   │   ├── paths.ts                目录布局：归档位置、账号层次目录、缓存根与索引路径
 │   │   ├── dev-probe.ts            **仅开发模式**：把只读探针注入聊天窗口（ADR-0046）
@@ -109,13 +109,13 @@ waachat/
 │   │   │   ├── cache-files.ts      缓存条目形态 + 转换/暂存区/启动对账 + 容量上限与 LRU 淘汰（ADR-0049，不导入 electron）
 │   │   │   ├── cache-switch.ts     切换开关的事务编排：转换 → 提交 → 收尾，失败回退
 │   │   │   ├── download.ts         下载事件接管 → 归档 + 打开
-│   │   │   ├── early-identity.ts   下载前的对账：读消息模型的 filehash，命中归档就打开并作废这次下载（ADR-0047）
+│   │   │   ├── early-identity.ts   下载前的对账：读消息模型的 filehash，命中归档就打开并作废这次下载（ADR-0047）；另按哈希反查会话ID（ADR-0055）
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
 │   │   │   └── health.ts           接管失效的事实源（markCaptured / markFailure / onHealthChange）
-│   │   ├── archive/                ★ 核心：本地归档（账号 / 月份分层，见 ADR-0039）
-│   │   │   ├── blobs.ts            归档落盘：原文名命名 + <年>/<月>/ 分层 + 只读 + 去重（硬链接）+ 清扫、淘汰（ADR-0048）
+│   │   ├── archive/                ★ 核心：本地归档（账号 / 会话ID 分层，见 ADR-0055）
+│   │   │   ├── blobs.ts            归档落盘：原文名命名 + <账号>/<会话ID>/files/ 分层 + 只读 + 去重（硬链接）+ 清扫、淘汰（ADR-0048）
 │   │   │   ├── naming.ts           文件名净化 + 同名冲突的候选名（纯函数，安全关键，可单测）
-│   │   │   ├── layout.ts           时间分区：年月推导 / 年月判据 / 相对路径净化（纯函数，可单测）
+│   │   │   ├── layout.ts           账号 × 会话分区：会话ID / 账号净化与容器判据、相对路径净化（纯函数，可单测）
 │   │   │   ├── store.ts            SQLite 索引（FTS5 全文搜索）
 │   │   │   └── schema.sql          表结构
 │   │   ├── ipc/
@@ -153,7 +153,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
-│       ├── notice.ts               主动提示用户的文案与判据：接管失效、PDF 预览被挡下（纯函数，可单测）
+│       ├── notice.ts               主动提示用户的文案与判据：接管失效（纯函数，可单测）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
@@ -181,8 +181,7 @@ waachat/
 ├── eslint.config.mjs               lint，并在此固化架构不变量
 ├── vitest.config.ts                单测配置（node 环境，禁止加载 Electron）
 ├── tsconfig.json                   main / preload / shared / scripts / test
-├── tsconfig.web.json               renderer + shared
-└── package.json                    依赖与底层 npm 脚本
+└── tsconfig.web.json               renderer + shared
 ```
 
 **读这份结构的三条要点**：
