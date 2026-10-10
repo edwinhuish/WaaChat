@@ -2522,6 +2522,9 @@ WA Web 上跑一段探针**来回答（客户端侧到底有没有 `fileSha256`�
   `enforceCacheLimit()`；单份超上限直接不落盘。`session.ts` 与
   `ipc/index.ts`（`cache:switch` 的两个方向）跟着传。
 - `ipc/index.ts`：`archive:stats` 组合出真实的 `cacheBytes`；文件列表窗口页脚显示它。
+  改动这个上限设置时也立刻回收一次。
+- `shared/constants.ts`：删掉 `LIMITS.cacheBytes`。它与 `DEFAULT_SETTINGS.cacheMaxBytes`
+  同值、**一个读者都没有** —— 两个常量说同一件事，改动时必然漏一个（本次差点就漏了）。
 - `shared/size-limit.ts`：`SIZE_LIMIT_ENFORCED.cacheMaxBytes` 改为 `true`（徽标消失、
   提示换成"超过之后会发生什么"、输入框解除禁用）。`scripts/check-capture.ts` 第 13 节、
   `test/unit/size-limit.test.ts`、`docs/usage.md`、`docs/roadmap.md` M3 同步。
