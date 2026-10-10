@@ -19,7 +19,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { ArchiveIdInput, WaaChatBridge } from '../shared/bridge'
+import type { ArchiveIdInput, ArchiveIdsInput, WaaChatBridge } from '../shared/bridge'
 import type {
   AppIconInput,
   ArchiveMigrationProgress,
@@ -38,6 +38,10 @@ const bridge: WaaChatBridge = {
   revealArchive: (input: ArchiveIdInput) => ipcRenderer.invoke(CHANNELS.archiveReveal, input),
 
   archiveStats: () => ipcRenderer.invoke(CHANNELS.archiveStats),
+
+  exportArchive: (input: ArchiveIdsInput) => ipcRenderer.invoke(CHANNELS.archiveExport, input),
+
+  deleteArchive: (input: ArchiveIdsInput) => ipcRenderer.invoke(CHANNELS.archiveDelete, input),
 
   getSettings: () => ipcRenderer.invoke(CHANNELS.settingsGet),
 

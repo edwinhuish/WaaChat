@@ -34,6 +34,7 @@ import {
   normalizeMessageId,
   normalizeStoredPath,
 } from '../src/main/archive/layout'
+import { isInsideArchive } from '../src/main/archive/export'
 import { isAllowedTarget } from '../src/main/archive/migrate'
 import { archiveNameCandidates, sanitizeFileName } from '../src/main/archive/naming'
 import {
@@ -308,6 +309,19 @@ check(
   '迁移目标允许同级或其它目录（前缀相同但不是子路径）',
   isAllowedTarget('/data/archive', '/data/archive2') &&
     isAllowedTarget('/data/archive', '/mnt/disk/x'),
+)
+// 导出的目标只挡"里"这一个方向（[ADR-0050]）：跑到归档的**上级**（`~/Documents`，归档就在
+// 它下面）完全正常，而"往归档里写副本"会被淘汰纪律原样放过 —— 那些文件永久占着磁盘、谁都
+// 不认领。判据放宽或收紧都会安静地做错事，因此它值得一条离线断言。
+check(
+  '导出的目标不能落在归档里面（含它本身），但允许在它上面',
+  isInsideArchive('/data/archive', '/data/archive') &&
+    isInsideArchive('/data/archive/sub', '/data/archive') &&
+    !isInsideArchive('/data', '/data/archive') &&
+    !isInsideArchive('/', '/data/archive') &&
+    // 前缀相同但不是子路径：漏掉结尾的斜杠就会把 `/data/archive2` 误判成子目录。
+    !isInsideArchive('/data/archive2', '/data/archive') &&
+    !isInsideArchive('', '/data/archive'),
 )
 
 const archive = archiveDir()
@@ -843,6 +857,25 @@ check(
   '悬停与禁用态也定义在同一处（两处按钮因此共用同一套交互反馈）',
   stylesheet.includes(`button.${ACTION_BUTTON_CLASS}:hover`) &&
     stylesheet.includes(`button.${ACTION_BUTTON_CLASS}[disabled]`),
+)
+
+// 批量操作那几样东西的样式（[ADR-0050] / [ADR-0053]）：类名写在文件列表的 HTML 与视图里，
+// 样式表里改了名**不会有任何报错** —— 复选框只是突然变成浏览器默认大小、已选条数忽然挤在
+// 搜索框旁边。与上面 `button.action` 同一条理由。
+check(
+  '批量操作的样式在样式表里有定义（勾选框 / 全选 / 已选条数）',
+  stylesheet.includes('.pick-all {') &&
+    stylesheet.includes('.selection {') &&
+    stylesheet.includes('ul.archive li .pick {'),
+  'styles.css 里找不到批量操作的那几条规则',
+)
+
+// 结果行必须**独立**于统计行（[ADR-0050] 决定 9）：共用一个元素时，结果刚写完就被紧随其后的
+// `refresh()` 用统计覆盖，于是"打开失败"这类提示事实上从未被人看见过（违反 CONVENTIONS 第 4 节）。
+// 而多行文案还依赖 `pre-line`，否则逐条失败会被折成一堵墙。
+check(
+  '结果行是独立元素，且保留换行（多行文案依赖 pre-line）',
+  stylesheet.includes('p.status {') && stylesheet.includes('white-space: pre-line'),
 )
 
 // ---------------------------------------------------------------------------

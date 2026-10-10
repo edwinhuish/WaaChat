@@ -39,6 +39,14 @@ export interface ElementProps {
   /** 复选框 / 单选框的选中态。 */
   readonly checked?: boolean
   /**
+   * 是否隐藏。
+   *
+   * 用 `hidden` 而不是"清空文字"：结果行（`.status`）清空之后仍然占着一行的间距，
+   * 而"这一行到底有没有内容"是**状态**，不是样式 —— 交给浏览器内建的语义比我们自己
+   * 用 class 表达更不容易出错。
+   */
+  readonly hidden?: boolean
+  /**
    * 事件回调的参数类型刻意是 `Event` 而不是 `MouseEvent`。
    *
    * 因为 `element` 的类型是 `HTMLElementTagNameMap[K]` 这样的泛型索引访问，
@@ -80,6 +88,7 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   if (props.alt !== undefined) element.setAttribute('alt', props.alt)
   if (props.disabled === true) element.setAttribute('disabled', '')
   if (props.checked === true) element.setAttribute('checked', '')
+  if (props.hidden !== undefined) element.hidden = props.hidden
   if (props.onClick !== undefined) element.addEventListener('click', props.onClick)
   if (props.onChange !== undefined) element.addEventListener('change', props.onChange)
   if (props.onInput !== undefined) element.addEventListener('input', props.onInput)

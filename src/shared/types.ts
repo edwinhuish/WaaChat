@@ -258,6 +258,59 @@ export type ArchiveExportResult =
   | { readonly ok: false; readonly reason: ArchiveExportRejection; readonly detail: string }
 
 // ---------------------------------------------------------------------------
+// 批量删除（[ADR-0053]）
+// ---------------------------------------------------------------------------
+
+/**
+ * 单条删除失败的结构化原因。文案只有一份，在 `shared/deletion.ts`。
+ *
+ * 只有两种，因为"为什么没删掉"对用户只有两种可行动的区别：**它本来就不在了**（不用管），
+ * 还是**删不动**（去看看磁盘/占用它的程序）。
+ */
+export type ArchiveDeleteFailure =
+  /** 这条记录已经不在索引里了（在选中与确认之间被淘汰、或被另一次删除带走）。 */
+  | 'missing'
+  /**
+   * 没能删掉：磁盘上的文件删不动（被占用、只读挂载、IO 错误），或索引记录没能删掉。
+   *
+   * ⚠️ 文件删不掉时**索引记录会保留**：两者必须一起走，否则会留下"搜得到但打不开"的
+   * 悬空记录（[ADR-0048]）。因此这条失败意味着**这一条什么都没被改动**。
+   */
+  | 'remove-failed'
+
+/** 逐条删除失败。`name` 为 `null` 表示这条记录本身已经取不到了（见 {@link ArchiveDeleteFailure}）。 */
+export interface ArchiveDeleteFailureItem {
+  readonly name: string | null
+  readonly reason: ArchiveDeleteFailure
+}
+
+/** 整次调用被拒绝的原因。这类失败**一个文件都没删**。 */
+export type ArchiveDeleteRejection =
+  /** 选中的条数超过一次删除的上限。 */
+  'too-many'
+
+/**
+ * 一次批量删除的结果。
+ *
+ * 三态（与 {@link ArchiveExportResult} 同构）：
+ *   - `null`（不在这个类型里）：用户在确认框里点了"取消" —— 不是错误，界面不留任何痕迹；
+ *   - `ok: false`：整次调用被拒绝，一个文件都没删；
+ *   - `ok: true`：真的删了，可能**部分失败**（`failed` 逐条给出）。
+ *
+ * ⚠️ 删除**不可逆**，而且**按记录**进行：同一份内容被多条消息引用时（[ADR-0052] 的硬链接），
+ * 删掉一条只少一个名字、**不会释放字节**，其余消息那一份照旧在。要腾空间请用「归档大小上限」
+ * （[ADR-0048]）。
+ */
+export type ArchiveDeleteResult =
+  | {
+      readonly ok: true
+      /** 真正删掉的**记录**条数。 */
+      readonly deleted: number
+      readonly failed: readonly ArchiveDeleteFailureItem[]
+    }
+  | { readonly ok: false; readonly reason: ArchiveDeleteRejection; readonly detail: string }
+
+// ---------------------------------------------------------------------------
 // 密文缓存的切换（静默转换，见 ADR-0027 / ADR-0028）
 // ---------------------------------------------------------------------------
 

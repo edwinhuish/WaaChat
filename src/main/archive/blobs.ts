@@ -188,6 +188,41 @@ export function setReadOnly(path: string): void {
   }
 }
 
+/**
+ * 删掉归档里的**一条正文**（只删这一个名字）。
+ *
+ * 与 `evictToFit()` 的区别在语义，不要合并：
+ *   - 淘汰要的是"这份内容不再占字节"，因此把**一个哈希下的全部名字**一起删（[ADR-0048]）；
+ *   - 这里是用户点着**某一行**说"删掉它"，只动那一行指着的那**一个**名字 —— 同一份内容被
+ *     别的消息引用时（[ADR-0052] 的硬链接），那些名字属于用户没选的别的行，必须原样留着。
+ *
+ * ⚠️ 名字指向的不是普通文件（目录、符号链接、设备）时**不动它**：`unlinkSync` 对目录会抛错，
+ * 而"递归删掉一个目录"意味着可能删掉一整棵我们不认识的子树。这不是一个清理函数。
+ *
+ * @returns `true` 表示"这个文件现在不在磁盘上了"（删掉了，或本来就不在）。调用方**只能**
+ *   在拿到 `true` 时删除索引记录 —— 记录被删而文件还在，会留下一份"没有索引指向的正文"，
+ *   既不会被淘汰也不会再被看见（[ADR-0048]）；反过来，`false` 时必须连记录一起留着，
+ *   否则会得到"搜得到但打不开"的悬空记录。
+ */
+export function removeStoredFile(storedName: string): boolean {
+  const path = archiveFilePath(storedName)
+
+  try {
+    // lstat 而不是 stat：归档目录内不跟随符号链接（INVARIANTS G-4）。
+    if (!lstatSync(path).isFile()) return false
+
+    unlinkSync(path)
+    return true
+  } catch (error) {
+    // 已经不在了：那是目标状态本身 —— 索引记录此时是悬空的，删掉记录正是修复。
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+
+    // 只记原因类型：错误消息里可能带**完整路径与文件名**（INVARIANTS G-3）。
+    logger.warn('archive: could not remove a stored file', { reason: (error as Error).name })
+    return false
+  }
+}
+
 /** 生成一个位于归档目录内的随机临时路径。 */
 export function tempPath(): string {
   const random = Math.random().toString(36).slice(2, 10)
@@ -382,7 +417,7 @@ async function sameContent(path: string, hash: string, bytes: number): Promise<b
  * 进程被 kill 会留下它们。应在启动时调用一次。
  * 返回清掉的数量，便于日志确认。
  *
- * 只看归档目录**根**：临时文件永远落在这里（年月子目录里不会出现 `.part-*`，
+ * 只看归档目录**根**：临时文件永远落在这里（分层容器里不会出现 `.part-*`，
  * 见 `tempPath()` 与 `commitFromTemp()`），因此不必递归。
  */
 export function sweepTempFiles(): number {
@@ -415,11 +450,12 @@ export function usage(): { bytes: number; files: number } {
   const inodes = new Set<number>()
 
   /**
-   * 递归：正文现在在 `<年>/<月>/` 里（[ADR-0037]）。
+   * 递归：正文在 `<账号>/<消息ID>/files/` 里（[ADR-0052]，历史布局还有 `<年-月>/`、
+   * `<年>/<月>/` 与裸文件名）。
    *
    * 跳过点开头的条目（`.part-*` 半成品、`.index.sqlite*` 索引、旧版 `.open/`）与符号链接
    * （INVARIANTS G-4：归档目录内不跟随符号链接）。inode 集合**跨目录**共用 —— 硬链接可以
-   * 指向另一个年月目录里的正文，按目录分别去重会让占用翻倍。
+   * 指向另一条消息目录里的正文，按目录分别去重会让占用翻倍。
    */
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -464,7 +500,7 @@ export function wipeArchive(): number {
   let removed = 0
 
   for (const entry of readdirSync(archiveDir())) {
-    // 连残留的 `.part-*`、旧版本的 `.open/` 与年月子目录一起清掉：前两者是派生物，
+    // 连残留的 `.part-*`、旧版本的 `.open/` 与分层容器一起清掉：前两者是派生物，
     // 后者是正文的容器 —— 清空归档就是连容器一起清。
     try {
       rmSync(join(archiveDir(), entry), { recursive: true, force: true })

@@ -18,6 +18,21 @@ export const CHANNELS = {
   archiveReveal: 'archive:reveal',
   /** 归档统计（文件数、占用空间）。 */
   archiveStats: 'archive:stats',
+  /**
+   * 批量导出到用户选的目录（[ADR-0050]）。
+   *
+   * 参数是一串**记录 id**。目录**不从这里进来**：它只能由主进程的对话框产生
+   * （见 `archiveDirPick` 与 ai/CONVENTIONS.md 第 6 节），否则等于把"往任意路径写文件"
+   * 交给界面。导出是**复制**，归档里那份一个字节都不动。
+   */
+  archiveExport: 'archive:export',
+  /**
+   * 批量删除（[ADR-0053]）。
+   *
+   * 同样只接受一串记录 id。主进程会先弹确认框 —— 这一步**不可逆**（磁盘上的正文也会被删），
+   * 因此确认框是流程的一部分，不是装饰。
+   */
+  archiveDelete: 'archive:delete',
 
   /** 读取设置。 */
   settingsGet: 'settings:get',

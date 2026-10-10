@@ -12,12 +12,17 @@ import { fatal } from './fatal'
 import { mountArchiveView } from './views/archive'
 
 function main(): void {
-  const view = mountArchiveView(
-    part(document, 'archive-list'),
-    part(document, 'archive-footer'),
-    part<HTMLInputElement>(document, 'archive-search'),
-    part<HTMLButtonElement>(document, 'archive-refresh'),
-  )
+  const view = mountArchiveView({
+    list: part(document, 'archive-list'),
+    footer: part(document, 'archive-footer'),
+    status: part(document, 'archive-status'),
+    search: part<HTMLInputElement>(document, 'archive-search'),
+    refreshButton: part<HTMLButtonElement>(document, 'archive-refresh'),
+    selectAll: part<HTMLInputElement>(document, 'archive-select-all'),
+    selection: part(document, 'archive-selection'),
+    exportButton: part<HTMLButtonElement>(document, 'archive-export'),
+    deleteButton: part<HTMLButtonElement>(document, 'archive-delete'),
+  })
 
   void view.refresh()
 }

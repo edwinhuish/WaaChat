@@ -36,9 +36,26 @@
           placeholder="按文件名搜索（中文支持任意子串）"
           aria-label="按文件名搜索"
         />
+        <!--
+          批量：每行一个复选框，这里负责"全选/取消全选"与已经选了几项。
+          「导出…」与「删除…」都带省略号 —— 它们都会再弹一次对话框（选目录 / 确认），
+          而省略号正是"还要再问一步"的通用写法（[ADR-0050] / [ADR-0053]）。
+        -->
+        <label class="pick-all">
+          <input type="checkbox" data-role="archive-select-all" />
+          全选
+        </label>
+        <span class="selection" data-role="archive-selection"></span>
+        <button type="button" class="action" data-role="archive-export">导出…</button>
+        <button type="button" class="action" data-role="archive-delete">删除…</button>
         <button type="button" class="action" data-role="archive-refresh">刷新</button>
       </div>
       <ul class="archive" data-role="archive-list"></ul>
+      <!--
+        结果行与统计行是**两个**元素（[ADR-0050] 决定 9）。曾经共用一个：结果刚写完就被
+        紧随其后的统计覆盖，于是那些提示事实上从未被人看见过。
+      -->
+      <p class="status" data-role="archive-status" hidden></p>
       <footer class="hint" data-role="archive-footer"></footer>
     </main>
 

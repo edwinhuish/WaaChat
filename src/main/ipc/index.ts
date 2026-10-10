@@ -12,6 +12,7 @@
  * 通道名一律来自 `channels.ts`，本文件不出现字符串字面量。
  */
 
+import { realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import {
@@ -19,6 +20,7 @@ import {
   dialog,
   ipcMain,
   session,
+  type BrowserWindow,
   type IpcMainInvokeEvent,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
@@ -26,19 +28,27 @@ import {
 } from 'electron'
 
 import { ICON_DIALOG_EXTENSIONS } from '../../shared/appicon'
-import type { ArchiveIdInput } from '../../shared/bridge'
+import type { ArchiveIdInput, ArchiveIdsInput } from '../../shared/bridge'
 import { SESSION_PARTITION } from '../../shared/constants'
+import { describeDeleteConfirmation } from '../../shared/deletion'
 import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure } from '../../shared/migration'
 import type {
   AppIconInput,
   AppIconPickResult,
   AppIconResult,
+  ArchiveDeleteFailureItem,
+  ArchiveDeleteResult,
+  ArchiveExportResult,
   ArchiveQuery,
+  ArchiveRecord,
   CacheSwitchFailure,
   CacheSwitchResult,
   Settings,
 } from '../../shared/types'
+import { removeStoredFile } from '../archive/blobs'
+import { DELETE_MAX_ITEMS, deleteRecords } from '../archive/delete'
+import { EXPORT_MAX_ITEMS, exportRecords, isInsideArchive } from '../archive/export'
 import { planMigration } from '../archive/migrate'
 import { relocateArchive } from '../archive/relocate'
 import { archiveStore, enforceArchiveLimit } from '../archive/store'
@@ -57,7 +67,7 @@ import { getTray } from '../integration/tray'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { getSettings, updateSettings } from '../settings'
-import { getSettingsWindow } from '../window'
+import { getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
 /**
@@ -110,6 +120,68 @@ function toId(value: unknown): number | null {
   if (typeof value !== 'object' || value === null) return null
   const id = (value as Partial<ArchiveIdInput>).id
   return typeof id === 'number' && Number.isInteger(id) && id > 0 ? id : null
+}
+
+/**
+ * 一串 `id`：每个都必须是正整数。批量操作的入参。
+ *
+ * 两个额外的收紧，都是"界面不该送、但送了也不能信"：
+ *
+ *   - **去重**：重复的 id 会让同一条记录被处理两次，第二次必然落在"记录已经不在"上 ——
+ *     结果行里就多出一条莫名其妙的失败；
+ *   - **逐项校验类型**，而不是只判 `Array.isArray`：含 `'x'` 的数组若被放过，会一路走到
+ *     `WHERE id = ?` 才炸，那时错误信息已经指不回入参了。长度上限不在这里判（那是业务规则，
+ *     由调用方译成 `too-many`），因此入参形状必须**先**干净。
+ */
+function toIds(value: unknown): number[] | null {
+  if (typeof value !== 'object' || value === null) return null
+
+  const ids = (value as Partial<ArchiveIdsInput>).ids
+  if (!Array.isArray(ids)) return null
+
+  const unique = new Set<number>()
+  for (const id of ids) {
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) return null
+    unique.add(id)
+  }
+
+  return [...unique]
+}
+
+/**
+ * 把一串 id 解析成记录（批量导出与批量删除共用的第一步）。
+ *
+ * 取不到的 id **不抛错**：它们译成逐条失败 `missing`，与"逐条处理失败"走同一条路 ——
+ * 用户是按自己选了几条来对账的，静默少一条会让"3 个成功"变成谎话（`ai/CONVENTIONS.md`
+ * 第 4 节）。这条路径是真实可达的：选中与点击之间可能刚好有一次容量淘汰（[ADR-0048]）。
+ *
+ * `missingReason` 由调用方给：导出与删除各有自己的失败原因类型，但"这条记录已经不在"这一点
+ * 两边的名字相同（`'missing'`），因此这里只负责配对。
+ */
+function resolveRecords<Reason extends string>(
+  ids: readonly number[],
+  missingReason: Reason,
+): {
+  readonly found: readonly ArchiveRecord[]
+  readonly failed: readonly { readonly name: null; readonly reason: Reason }[]
+} {
+  const store = archiveStore()
+  const found: ArchiveRecord[] = []
+  let missing = 0
+
+  for (const id of ids) {
+    const record = store.byId(id)
+    if (record === null) {
+      missing += 1
+      continue
+    }
+    found.push(record)
+  }
+
+  return {
+    found,
+    failed: Array.from({ length: missing }, () => ({ name: null, reason: missingReason })),
+  }
 }
 
 function toQuery(value: unknown): ArchiveQuery {
@@ -211,35 +283,63 @@ function applySettings(value: unknown): Settings {
  * 继续点「更改…」，两个迁移互相踩同一个目录。没有窗口时（理论上不会发生）退化为
  * 无父窗口的对话框，而不是放弃这一步。
  *
- * ⚠️ 父窗口是**设置窗口**：这一层的三处对话框（迁移确认、选择保存目录、选择图标图片）
- * 全部由设置项发起（[ADR-0025]）。将来若出现从文件列表发起的对话框，给它加一个 owner
- * 参数 —— 不要在这里改成"随便找一扇本地窗口"，那正是拆分窗口要消灭的猜测。
+ * ⚠️ 父窗口由**发起方**决定，而不是这里"随便找一扇本地窗口"——那正是拆分窗口（[ADR-0025]）
+ * 要消灭的猜测，猜错的症状是对话框跑到另一扇窗口后面，用户以为按钮没反应：
+ *
+ *   - 设置项发起的（迁移确认、选择保存位置、选择图标）→ **设置窗口**；
+ *   - 文件列表发起的（导出到哪个目录、确认删除）→ **文件列表窗口**（[ADR-0050] / [ADR-0053]）。
  */
-async function showBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
-  const window = getSettingsWindow()
-  return window === null || window.isDestroyed()
+async function showBox(
+  options: MessageBoxOptions,
+  owner: BrowserWindow | null,
+): Promise<MessageBoxReturnValue> {
+  return owner === null || owner.isDestroyed()
     ? await dialog.showMessageBox(options)
-    : await dialog.showMessageBox(window, options)
+    : await dialog.showMessageBox(owner, options)
 }
 
-/** 让用户挑一个目录。取消时返回 `null`。父窗口见 {@link showBox} 的说明。 */
-async function chooseDirectory(defaultPath: string): Promise<string | null> {
+/** 一次目录选择要问用户的全部东西。`owner` 见 {@link showBox} 的说明。 */
+interface DirectoryRequest {
+  readonly title: string
+  readonly buttonLabel: string
+  readonly defaultPath: string
+  readonly owner: BrowserWindow | null
+}
+
+/** 让用户挑一个目录。取消时返回 `null`。 */
+async function chooseDirectory(request: DirectoryRequest): Promise<string | null> {
   const options: OpenDialogOptions = {
-    title: '选择文件的保存位置',
-    buttonLabel: '选择此目录',
+    title: request.title,
+    buttonLabel: request.buttonLabel,
     // createDirectory 让用户在对话框里就能建一个新目录（默认位置就是这么来的）。
     properties: ['openDirectory', 'createDirectory'],
-    defaultPath,
+    defaultPath: request.defaultPath,
   }
 
-  const window = getSettingsWindow()
+  const owner = request.owner
   const result =
-    window === null || window.isDestroyed()
+    owner === null || owner.isDestroyed()
       ? await dialog.showOpenDialog(options)
-      : await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(owner, options)
 
   if (result.canceled || result.filePaths.length === 0) return null
   return result.filePaths[0]
+}
+
+/**
+ * 导出对话框的默认目录：系统的「下载」目录。
+ *
+ * **不能**默认到归档目录 —— 那正好会被 `isInsideArchive()` 拒绝，用户一进去就要吃一次错。
+ *
+ * 精简的 Linux 环境（容器、部分最小桌面）没有配全 XDG 用户目录，此时 `getPath('downloads')`
+ * 会**抛错**；退到「家」目录，而不是让整次调用失败 —— 默认值只是方便，不是前置条件。
+ */
+function defaultExportDir(): string {
+  try {
+    return app.getPath('downloads')
+  } catch {
+    return app.getPath('home')
+  }
 }
 
 /**
@@ -354,13 +454,123 @@ export function registerIpcHandlers(): void {
     return { ...stats, cacheBytes: cache.bytes }
   })
 
+  /**
+   * 批量导出（[ADR-0050]）。
+   *
+   * 与迁移的流程差别是根本性的：导出**没有回滚**（它只往用户的目录里写副本，归档那边一个
+   * 字节都不动），因此这里不需要"先算计划"那一步，只有"拿目录 → 逐条复制 → 报告"。
+   *
+   * ⚠️ `realpath` 必须在 `isInsideArchive()` **之前**做：纯字符串比较挡不住一条指向归档内部的
+   * 符号链接（`export.ts` 的注释写着这条前提，由调用方负责）。目标目录是用户刚在对话框里选的，
+   * 因此正常情况 `realpath` 必然成功 —— 失败就是"这个目录用不了"，不是异常。
+   */
+  guard(CHANNELS.archiveExport, async (input: unknown): Promise<ArchiveExportResult | null> => {
+    const ids = toIds(input)
+    if (ids === null || ids.length === 0) return null
+
+    if (ids.length > EXPORT_MAX_ITEMS) {
+      return { ok: false, reason: 'too-many', detail: String(EXPORT_MAX_ITEMS) }
+    }
+
+    const { found, failed } = resolveRecords(ids, 'missing')
+
+    const chosen = await chooseDirectory({
+      title: '选择导出到哪个目录',
+      buttonLabel: '导出到此处',
+      defaultPath: defaultExportDir(),
+      // 导出由文件列表发起（[ADR-0050] 决定 4）。
+      owner: getFilesWindow(),
+    })
+
+    // 取消不是错误：界面不留任何痕迹，归档一个字节都没动。
+    if (chosen === null) return null
+
+    try {
+      const target = await realpath(chosen)
+      if (isInsideArchive(target, await realpath(archiveDir()))) {
+        return { ok: false, reason: 'inside-archive', detail: target }
+      }
+
+      const summary = await exportRecords(found, target)
+
+      return {
+        ok: true,
+        dir: target,
+        exported: summary.exported,
+        failed: [...failed, ...summary.failed],
+      }
+    } catch (error) {
+      /**
+       * `exportRecords()` 只在目标目录读不了时抛错（它开头是一个 `readdir`）。那一刻**一个文件
+       * 都还没写**，因此这是"整次调用被拒绝"，与"写了一半、有几条失败"不是一回事。
+       */
+      logger.warn('archive: export rejected', { reason: (error as Error).name })
+      return { ok: false, reason: 'target-unusable', detail: chosen }
+    }
+  })
+
+  /**
+   * 批量删除（[ADR-0053]）。
+   *
+   * 流程：解析记录 → **确认** → 逐条"先删文件、成功了才删索引记录"。
+   *
+   * 确认框不是装饰：这一步**不可逆**（磁盘上的明文也一起删掉）。因此默认按钮落在"取消"上，
+   * 与迁移确认框同一条理由 —— 一次回车不该毁掉用户选中的东西。
+   *
+   * 全部选中的记录都已经不在时（两次点击之间被淘汰），**不弹框**：没有任何东西可以删，
+   * 弹一个"删除 0 个文件？"只会让人困惑。结果照常逐条报 `missing`。
+   */
+  guard(CHANNELS.archiveDelete, async (input: unknown): Promise<ArchiveDeleteResult | null> => {
+    const ids = toIds(input)
+    if (ids === null || ids.length === 0) return null
+
+    if (ids.length > DELETE_MAX_ITEMS) {
+      return { ok: false, reason: 'too-many', detail: String(DELETE_MAX_ITEMS) }
+    }
+
+    const { found, failed } = resolveRecords(ids, 'missing')
+    const missing: ArchiveDeleteFailureItem[] = [...failed]
+
+    if (found.length === 0) return { ok: true, deleted: 0, failed: missing }
+
+    const confirmed = await showBox(
+      {
+        type: 'warning',
+        title: '从归档里删除',
+        message: `删除选中的 ${found.length} 个文件？`,
+        detail: describeDeleteConfirmation(
+          found.length,
+          formatBytes(found.reduce((total, record) => total + record.bytes, 0)),
+        ),
+        buttons: ['删除', '取消'],
+        // 默认落在"取消"上：删除不可逆，不该被一次回车误触发。
+        defaultId: 1,
+        cancelId: 1,
+      },
+      getFilesWindow(),
+    )
+
+    // 取消不是错误：返回 null，界面保持原样，一条记录都没动。
+    if (confirmed.response !== 0) return null
+
+    const store = archiveStore()
+    const summary = deleteRecords(found, removeStoredFile, (id) => store.deleteById(id))
+
+    return { ok: true, deleted: summary.deleted, failed: [...missing, ...summary.failed] }
+  })
+
   // --- 设置 -----------------------------------------------------------------
 
   guard(CHANNELS.settingsGet, () => presentSettings(getSettings()))
   guard(CHANNELS.settingsSet, (patch: unknown) => applySettings(patch))
 
   guard(CHANNELS.archiveDirPick, async () => {
-    const chosen = await chooseDirectory(archiveDir())
+    const chosen = await chooseDirectory({
+      title: '选择文件的保存位置',
+      buttonLabel: '选择此目录',
+      defaultPath: archiveDir(),
+      owner: getSettingsWindow(),
+    })
     if (chosen === null) return null
 
     /**
@@ -370,33 +580,39 @@ export function registerIpcHandlers(): void {
      */
     const planned = planMigration(archiveDir(), chosen)
     if (!planned.ok) {
-      await showBox({
-        type: 'error',
-        title: '无法迁移归档',
-        message: describeMigrationFailure(planned.failure, planned.detail),
-        buttons: ['知道了'],
-      })
+      await showBox(
+        {
+          type: 'error',
+          title: '无法迁移归档',
+          message: describeMigrationFailure(planned.failure, planned.detail),
+          buttons: ['知道了'],
+        },
+        getSettingsWindow(),
+      )
       return null
     }
 
     const { plan } = planned
-    const confirmed = await showBox({
-      type: 'question',
-      title: '迁移归档文件',
-      message: '把归档迁移到新位置？',
-      detail: [
-        `从：${plan.source}`,
-        `到：${plan.target}`,
-        '',
-        `共 ${plan.summary.files} 个文件，${formatBytes(plan.summary.bytes)}。`,
-        '迁移完成后原位置不再保留归档，迁移期间请不要退出应用。',
-        '归档是解密后的明文，请不要把新位置放在云同步盘里。',
-      ].join('\n'),
-      buttons: ['迁移', '取消'],
-      // 默认落在"取消"上：这是一次真实的文件搬动，不该被一次回车误触发。
-      defaultId: 1,
-      cancelId: 1,
-    })
+    const confirmed = await showBox(
+      {
+        type: 'question',
+        title: '迁移归档文件',
+        message: '把归档迁移到新位置？',
+        detail: [
+          `从：${plan.source}`,
+          `到：${plan.target}`,
+          '',
+          `共 ${plan.summary.files} 个文件，${formatBytes(plan.summary.bytes)}。`,
+          '迁移完成后原位置不再保留归档，迁移期间请不要退出应用。',
+          '归档是解密后的明文，请不要把新位置放在云同步盘里。',
+        ].join('\n'),
+        buttons: ['迁移', '取消'],
+        // 默认落在"取消"上：这是一次真实的文件搬动，不该被一次回车误触发。
+        defaultId: 1,
+        cancelId: 1,
+      },
+      getSettingsWindow(),
+    )
 
     // 取消不是错误：返回 null，界面保持原样，存储位置一点都不变。
     if (confirmed.response !== 0) return null

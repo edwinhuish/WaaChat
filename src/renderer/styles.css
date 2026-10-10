@@ -119,6 +119,53 @@ button.action[disabled] {
   cursor: not-allowed;
 }
 
+/* --- 批量操作（[ADR-0050] / [ADR-0053]）----------------------------------- */
+
+/*
+ * 批量操作的第一步是"选哪些"。因此这些规则全部围绕一件事：让**选中集**在界面上看得见 ——
+ * 每行一个复选框、工具条上是"全选 + 已选 N 项"、两个批量按钮在没有选中时禁用。
+ */
+
+/* 「全选」标签：与搜索框同一行，因此不参与拉伸。 */
+.pick-all {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 已经选了几项。留一个最小宽度，否则条数在 9 与 10 之间跳动时整条工具条会左右抖一下。 */
+.selection {
+  flex: none;
+  min-width: 4.5em;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 行首的复选框：尺寸与设置页那些保持一致，但不要它们的 `margin-top`（那些是竖排的）。 */
+ul.archive li .pick {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+/*
+ * 结果行（[ADR-0050] 决定 9）。它与统计行（`footer.hint`）是**两个**元素：写进同一个时，
+ * 结果刚写完就被紧随其后的 `refresh()` 用统计覆盖，于是那些提示事实上从未被人看见过。
+ *
+ * `white-space: pre-line`：文案是**多行**的（逐条失败按原因各占一行），而默认的 `normal`
+ * 会把换行折叠成空格，读起来就成了一堵墙。
+ */
+p.status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  white-space: pre-line;
+}
+
 /* --- 归档列表 ------------------------------------------------------------ */
 
 ul.archive {

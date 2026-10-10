@@ -11,8 +11,10 @@
  *   - 参数只接受**主进程产生的标识**（记录 id），永远不接受路径、URL、命令。
  *   - 没有"执行任意操作"的通用入口（没有 `invoke(channel, ...args)` 这种反射式桥）。
  *     反过来说：**新增一个能力 = 新增一个具名方法 + 一条通道**，没有捷径可走。
- *   - 数据只从主进程流向界面（读）。写操作只有两个，且都不接受路径：改设置（白名单字段），
- *     以及提交一张已裁剪好的图标（纯字节，落盘位置由主进程决定）。
+ *   - 数据只从主进程流向界面（读）。写操作有四个，**都不接受路径**：改设置（白名单字段）、
+ *     提交一张已裁剪好的图标（纯字节，落盘位置由主进程决定）、把选中的记录导出到**对话框
+ *     选出的**目录（[ADR-0050]）、以及从归档删除选中的记录（[ADR-0053]）—— 后两者的目标与
+ *     对象都由主进程自己确定，渲染进程送进来的只有记录 id。
  */
 
 import type {
@@ -20,6 +22,8 @@ import type {
   AppIconPickResult,
   AppIconResult,
   AppIconState,
+  ArchiveDeleteResult,
+  ArchiveExportResult,
   ArchiveMigrationProgress,
   ArchiveMigrationResult,
   ArchiveQuery,
@@ -36,6 +40,16 @@ export interface ArchiveIdInput {
   readonly id: number
 }
 
+/**
+ * 按**一串** id 操作时的入参（批量导出 / 批量删除）。
+ *
+ * 与 {@link ArchiveIdInput} 同样的理由，外加一条：数组让"批量"这个意图在类型上就看得见 ——
+ * 主进程据此做上限检查，界面也据此判断按钮该不该亮。
+ */
+export interface ArchiveIdsInput {
+  readonly ids: readonly number[]
+}
+
 export interface WaaChatBridge {
   // --- 归档 -----------------------------------------------------------------
 
@@ -49,6 +63,25 @@ export interface WaaChatBridge {
   revealArchive(input: ArchiveIdInput): Promise<RevealOutcome>
   /** 归档占用统计。 */
   archiveStats(): Promise<ArchiveStats>
+  /**
+   * 把选中的记录**复制**到用户挑的目录（[ADR-0050]）。
+   *
+   * 三种结果：导出完成（可能部分失败，`failed` 逐条给出）、整次调用被拒绝（`ok: false`）、
+   * 以及 `null` —— 用户在目录对话框里**取消**。取消不是错误，界面不该留下任何痕迹。
+   *
+   * 渲染进程只能传 id：目录由主进程的对话框产生。**归档里那份一个字节都不动**。
+   */
+  exportArchive(input: ArchiveIdsInput): Promise<ArchiveExportResult | null>
+  /**
+   * 把选中的记录**从归档里删掉**（[ADR-0053]）。
+   *
+   * 同样三种结果，`null` 这次表示用户在**确认框**里取消。删除**不可逆** —— 磁盘上的正文也会
+   * 被删除（需要时重新在聊天里点一次即可再次归档），因此主进程一定会先确认。
+   *
+   * ⚠️ 删的是**选中的那些行**：同一份内容被别的消息引用时，那些消息里的那一份不受影响
+   * （[ADR-0052] 的硬链接）。因此删除**未必**会减少占用。
+   */
+  deleteArchive(input: ArchiveIdsInput): Promise<ArchiveDeleteResult | null>
 
   // --- 设置 -----------------------------------------------------------------
 

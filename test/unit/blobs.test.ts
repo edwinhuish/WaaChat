@@ -35,6 +35,7 @@ import {
   commitFromTemp,
   ensureArchiveDir,
   evictToFit,
+  removeStoredFile,
   sweepTempFiles,
   tempPath,
   usage,
@@ -379,6 +380,67 @@ describe('usage', () => {
     // 多了一个名字，但占用不变 —— 这正是硬链接的意义，也是"按 inode 去重"存在的理由。
     expect(bodies()).toContain(`${DIR}/b.pdf`)
     expect(usage()).toEqual(before)
+  })
+})
+
+describe('removeStoredFile', () => {
+  it('删掉正文，磁盘上的那个名字确实不见了，占用跟着降下来', async () => {
+    const name = `删掉-${String(Date.now())}.pdf`
+    const result = await commitFromTemp(staged(`doomed-${String(Date.now())}`), name, {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
+    const path = archiveFilePath(result.storedName)
+    const before = usage()
+
+    expect(existsSync(path)).toBe(true)
+    expect(removeStoredFile(result.storedName)).toBe(true)
+
+    expect(existsSync(path)).toBe(false)
+    expect(usage().files).toBe(before.files - 1)
+  })
+
+  it('只删这一个名字：同一份内容的另一个名字（硬链接）不受影响，也不释放字节', async () => {
+    const content = `shared-${String(Date.now())}`
+    const first = await commitFromTemp(staged(content), `共享甲-${String(Date.now())}.pdf`, {
+      messageId: MESSAGE,
+      openedAt: AT,
+    })
+    const second = await commitFromTemp(staged(content), `共享乙-${String(Date.now())}.pdf`, {
+      messageId: MESSAGE_OTHER,
+      openedAt: AT,
+      findStored: (hash) => (hash === first.hash ? first.storedName : null),
+    })
+    const before = usage()
+
+    expect(removeStoredFile(first.storedName)).toBe(true)
+
+    expect(existsSync(archiveFilePath(first.storedName))).toBe(false)
+    // 另一个消息里那一份还在，占用一个字节都没少 —— "删一条 ≠ 腾空间"（[ADR-0053]）。
+    expect(existsSync(archiveFilePath(second.storedName))).toBe(true)
+    expect(usage()).toEqual(before)
+  })
+
+  it('名字本来就不在时也算成功（那正是目标状态，不是失败）', () => {
+    expect(removeStoredFile(`${ACCOUNT}/${MESSAGE}/files/从来就没有过.pdf`)).toBe(true)
+  })
+
+  it('名字指向目录时拒绝，并且**不**递归删（那不是我们写下的正文）', () => {
+    const relative = `${ACCOUNT}/${MESSAGE}/files/是个目录-${String(Date.now())}`
+    mkdirSync(archiveFilePath(relative), { recursive: true })
+
+    expect(removeStoredFile(relative)).toBe(false)
+    expect(existsSync(archiveFilePath(relative))).toBe(true)
+  })
+
+  it('索引被改坏时删不到归档外面去（`..` 会被剥掉）', () => {
+    // 归档目录**外面**的文件：一次路径穿越就会毁掉用户的别的东西。
+    const outside = join(root, 'outside.txt')
+    writeFileSync(outside, 'keep me')
+
+    expect(removeStoredFile('../../outside.txt')).toBe(true)
+
+    expect(existsSync(outside)).toBe(true)
   })
 })
 
