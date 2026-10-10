@@ -22,10 +22,8 @@ const RENDERER_SIDE = ['src/renderer/**/*.ts', 'src/shared/**/*.ts']
 /**
  * INV-3 的守卫（`ai/INVARIANTS.md`）：**我们自己的代码不经手密钥与加密**。
  *
- * 为什么现在才加：接入 `whatsapp-web.js` 之前必须回答"解密还在不在我们手里"。抽样审计的结论是
- * **在** —— 解密由上游页面代码（`msg.downloadMedia()`）完成，该库自身不含对称解密实现（逐条证据
- * 与作废条件见 `docs/research/inv3-assessment.md`）。那条结论有一个前提：**我们自己不去实现它**。
- * 本守卫就是那个前提的看守。
+ * 解密由上游页面代码完成，我们只观察"解密完成之后"的结果 —— 这条判断有一个前提：
+ * **我们自己不去实现它**，本守卫就是那个前提的看守。
  *
  * 只禁"写法"，不禁"能力"：`createHash` 是允许的例外（内容寻址用 sha256，见 INV-3 的说明）。
  * 依赖那一半 —— 在 **Node 侧**解密的库会让解密离开上游 —— lint 拦不住，由 `pnpm run selfcheck`
@@ -47,7 +45,7 @@ const cryptoGuards = {
       createHmac: '不做认证码运算。',
       hkdf: '不实现密钥派生。',
       subtle: '不碰 WebCrypto（crypto.subtle）。',
-      mediaKey: '不解析 mediaKey —— 包括不读取该库暴露的 Message.mediaKey 字段。',
+      mediaKey: '不解析 mediaKey —— 包括页面对象上以该名字暴露的字段。',
     }).map(([name, reason]) => ({
       /**
        * 用 `Identifier` 而不是 `MemberExpression`：`o.mediaKey` 与 `import { mediaKey } …`
@@ -59,7 +57,7 @@ const cryptoGuards = {
   ],
 }
 
-/** INV-3 管的是**我们的代码**（`src/`）。`scripts/` 与 `test/` 里出现这些词是自检与文档需要。 */
+/** 守卫管的是**我们的代码**（`src/`）。`scripts/` 与 `test/` 里出现这些词是自检与文档需要。 */
 const PROJECT_CODE = ['src/**/*.ts']
 
 /**
@@ -76,15 +74,85 @@ const PROJECT_CODE = ['src/**/*.ts']
 const PAGE_CONTEXT_FIXTURE = ['test/fixtures/**/*.js']
 
 /**
- * INV-1 与 INV-2 的守卫曾落在这里（`no-restricted-syntax` 拦 `executeJavaScript` /
- * `insertCSS`，`no-restricted-imports` 拦 puppeteer 家族 / `whatsapp-web.js` / 协议库）。
+ * INV-1 / INV-2 的守卫（`ai/INVARIANTS.md`）：把两条被否决的技术路线编码成 CI 会红的东西，
+ * 而不是靠评审者记得。放宽这里的任何一条都先写 ADR。
  *
- * **已由 [ADR-0043](../../docs/decisions.md) 撤销** —— 项目改用 `whatsapp-web.js` 承载会话与媒体，
- * 那两条约束与承载方式不再兼容，因此整段移除（撤销的完整理由与迁移清单见该 ADR）。
+ * INV-1 有一条**明示例外**：只读元数据求值 —— `capture/download.ts` 在下载前问页面一句
+ * "这份内容的哈希 / 它属于哪个会话"（[ADR-0047](../../docs/decisions.md) /
+ * [ADR-0055](../../docs/decisions.md)），以及 `dev-probe.ts` 在**未打包时**装一个只读探针
+ * （[ADR-0046](../../docs/decisions.md)）。例外**不是**靠放宽 selector 得到的，而是在调用点用
+ * 行内 `eslint-disable-next-line no-restricted-syntax` 显式声明 —— 每多一处都看得见。
+ * 恢复约束与这条例外的来龙去脉见 [ADR-0057](../../docs/decisions.md)。
  *
- * 仍然生效的边界是**渲染进程的进程边界**（G-1，见下面 RENDERER_SIDE 那段）：渲染进程不得
- * import `electron` / `node:fs` / `node:path`。那不是本次要动的约束。
+ * 另有一条**独立的**进程边界在下面 RENDERER_SIDE 那段（G-1：渲染进程不得 import
+ * `electron` / `node:fs` / `node:path`），它与这里的注入面是两回事。
  */
+const invariantGuards = {
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector: "MemberExpression[property.name='executeJavaScript']",
+      message:
+        'INV-1: 不在被承载的页面里求值脚本。只读元数据求值是唯一例外 —— 请在调用点行内 disable 并注明 ADR-0057。',
+    },
+    {
+      selector: "MemberExpression[property.name='executeJavaScriptInIsolatedWorld']",
+      message: 'INV-1: 同 executeJavaScript —— 附着到 Electron 内核层，不要在页面里跑脚本。',
+    },
+    {
+      selector: "MemberExpression[property.name='insertCSS']",
+      message: 'INV-1: 给远程页面注入样式同样是改页面。本地界面放 src/renderer，不要注入远程文档。',
+    },
+  ],
+  'no-restricted-imports': [
+    'error',
+    {
+      paths: [
+        {
+          name: 'puppeteer',
+          message: 'INV-1: 浏览器自动化客户端整族都在范围之外。',
+        },
+        {
+          name: 'puppeteer-core',
+          message: 'INV-1: 浏览器自动化客户端整族都在范围之外。',
+        },
+        {
+          name: 'puppeteer-in-electron',
+          message: 'INV-1: 浏览器自动化客户端整族都在范围之外。',
+        },
+        {
+          name: 'whatsapp-web.js',
+          message: 'INV-1: 用 CDP 驱动页面是本项目拒绝的路线（引入它的计划已由 ADR-0057 放弃）。',
+        },
+        {
+          name: 'wwebjs-electron',
+          message: 'INV-1: 用 CDP 驱动页面是本项目拒绝的路线。',
+        },
+      ],
+      patterns: [
+        {
+          group: ['*/baileys', '@whiskeysockets/*', 'whatsmeow*'],
+          message: 'INV-2: 重实现传输协议被拒绝（见 docs/decisions.md ADR-0001）。',
+        },
+      ],
+    },
+  ],
+}
+
+/**
+ * 把 INV-1 / INV-2 与 INV-3 的 `no-restricted-syntax` **拼进同一个 config 块**。
+ *
+ * 分成两个块会让后一个**整体覆盖**前一个 —— flat config 的同名规则键是"替换"不是"合并"。
+ * 实测踩过：先写 invariantGuards 再写 cryptoGuards，INV-1 的 selector 静默失效、只有 INV-3 在跑，
+ * 而那几处只读例外反被报成"Unused eslint-disable directive"。
+ */
+const projectGuards = {
+  'no-restricted-syntax': [
+    ...invariantGuards['no-restricted-syntax'],
+    ...cryptoGuards['no-restricted-syntax'],
+  ],
+  'no-restricted-imports': invariantGuards['no-restricted-imports'],
+}
 
 export default new FlatConfigComposer()
   .append({
@@ -126,10 +194,10 @@ export default new FlatConfigComposer()
     files: PAGE_CONTEXT_FIXTURE,
     languageOptions: { globals: { ...globals.browser } },
   })
-  // INV-3：我们自己的代码不经手密钥与加密（解密由上游页面代码完成）。
+  // INV-1 / INV-2 / INV-3：守卫全部落在 src/**，拼在一起发（见 projectGuards 的说明）。
   .append({
     files: PROJECT_CODE,
-    rules: cryptoGuards,
+    rules: projectGuards,
   })
   .append({
     files: RENDERER_SIDE,

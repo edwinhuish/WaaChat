@@ -10,9 +10,9 @@
  * 本模块**不做**的事（INV-3 的边界）：
  *   - 不接触密钥、不做解密（流里已经是页面解密后的明文）
  *
- * ⚠️ 它**会**向页面问两件事，都只读消息模型上的字段、**不解析 DOM、不驱动页面动作**；
- * INV-1 已由 [ADR-0043] 撤销，这些注入点沿用 [ADR-0046] 的方式（主进程
- * `executeJavaScript`，不给窗口加 preload）：
+ * ⚠️ 它**会**向页面问两件事，都只读消息模型上的字段、**不解析 DOM、不驱动页面动作**。
+ * 这是 INV-1 的**唯一例外**（[ADR-0057]）：只读元数据求值，沿用 [ADR-0046] 的方式
+ * （主进程 `executeJavaScript`，不给窗口加 preload），且每个调用点都在行内注明：
  *
  *   1. **点击那一刻**：这条内容在归档里吗（按"文件名 + 大小"问 `filehash`，[ADR-0047]）。
  *   2. **落盘那一刻**：这条文件属于哪条**会话**（按刚算出的内容哈希反查 `msg.id.remote`，
@@ -200,6 +200,7 @@ async function askPageForContentHash(
 ): Promise<string | null> {
   try {
     const reply = await withTimeout<unknown>(
+      // eslint-disable-next-line no-restricted-syntax -- 只读元数据求值：问页面要内容哈希（ADR-0057 例外）
       contents.executeJavaScript(pageLookupExpression(name, bytes), true) as Promise<unknown>,
       EARLY_LOOKUP_TIMEOUT_MS,
     )
@@ -226,6 +227,7 @@ async function askPageForChatId(contents: WebContents, hash: string): Promise<st
 
   try {
     const reply = await withTimeout<unknown>(
+      // eslint-disable-next-line no-restricted-syntax -- 只读元数据求值：按哈希反查会话ID（ADR-0057 例外）
       contents.executeJavaScript(pageChatIdExpression(filehash), true) as Promise<unknown>,
       EARLY_LOOKUP_TIMEOUT_MS,
     )

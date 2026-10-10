@@ -11,8 +11,8 @@
  *
  * 那扇窗口**不挂 preload** 是一条**结构性**保证：远程内容在结构上无法触达本地能力
  * （见 `window.ts` 顶部与 `docs/security.md` T1）。为了调试给它加一个 preload，等于把
- * "结构上不可能"换成"靠代码正确性"。从主进程注入页面则是 [ADR-0043] 撤销 INV-1 之后
- * 明确允许的做法 —— 这也是撤销之后**第一次真正用它**（理由与被否决的方案见 ADR-0046）。
+ * "结构上不可能"换成"靠代码正确性"。从主进程注入页面则是 INV-1 的**明示例外**：只读元数据
+ * 求值，且**只在未打包时**（例外由 [ADR-0057] 划定，[ADR-0046] 是它第一次使用）。
  *
  * ── 纪律 ──
  *
@@ -136,6 +136,7 @@ type Evaluation = { readonly ok: true; readonly value: unknown } | { readonly ok
  */
 async function evaluate(window: BrowserWindow, code: string): Promise<Evaluation> {
   try {
+    // eslint-disable-next-line no-restricted-syntax -- 只读元数据探针，且只在未打包时（ADR-0057 例外）
     return { ok: true, value: await window.webContents.executeJavaScript(code) }
   } catch (error) {
     logger.warn('dev probe: evaluation failed', { reason: failureReason(error) })
