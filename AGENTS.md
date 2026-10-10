@@ -8,31 +8,32 @@
 
 ## 0. 这个项目是什么
 
-WaaChat 是一个 Linux 桌面聊天客户端：会话与媒体由 **`whatsapp-web.js`** 驱动（它通过调试协议驱动网页版），归档层在这一层之上把文件按内容哈希落盘，避免重复占用、避免链接过期后打不开。
+WaaChat 是一个 Linux 桌面聊天客户端：**Electron 承载官方网页版**，在浏览器内核层接管下载与网络；归档层在这一层之上把文件按内容哈希落盘，避免重复占用、避免链接过期后打不开。
 
-**一句话判据**：我们交付的是「一个由网页版能力驱动的桌面客户端」。随着 [ADR-0043](docs/decisions.md#adr-0043) 撤销了 INV-1 / INV-2，原先那条「不做模拟客户端」的判据已不再成立 —— 现行边界只剩 INV-3 与 INV-4。
-
-> 注：本仓库正处于 [ADR-0043](docs/decisions.md#adr-0043) 记录的**迁移期**。`whatsapp-web.js` 尚未接入，`src/main/capture/**` 仍是旧路线（内核层接管）的实现；迁移清单见该 ADR 的「影响」一节。
+**一句话判据**：我们交付的是「一个由网页版能力驱动的桌面客户端」—— Electron 承载官方网页版，在浏览器内核层接管「下载文件」这一个动作。INV-1 / INV-2 曾被 [ADR-0043](docs/decisions.md#adr-0043) 撤销，现已由 [ADR-0057](docs/decisions.md#adr-0057) **恢复**：现行边界是全部四条硬约束（INV-1 附带一条只读元数据例外）。引入 `whatsapp-web.js` 那条路线**已经放弃**。
 
 ## 1. 硬约束（先读这个，再读别的）
 
-以下四条里，**INV-3 与 INV-4 仍不可协商**（违反的改动必须被拒绝，而不是讨论）；**INV-1 与 INV-2 已由 [ADR-0043](docs/decisions.md#adr-0043) 撤销**。
+四条**全部不可协商**（违反的改动必须被拒绝，而不是讨论）。其中 INV-1 与 INV-2 曾被 [ADR-0043](docs/decisions.md#adr-0043) 撤销，现已由 [ADR-0057](docs/decisions.md#adr-0057) 恢复。
 
 <!-- 与 ai/INVARIANTS.md 保持同步 -->
 
 | 编号 | 约束 | 一句话理由 |
 |---|---|---|
-| **INV-1**（**已撤销**） | ~~绝不向被承载的页面注入脚本。~~ 撤销后**允许** CDP 驱动页面、注入脚本与样式，允许引入 puppeteer 家族 / `whatsapp-web.js` / `wwebjs-electron`。 | 原理由是"页面逐字节等同官方网页版"；承载方式改变后该立论随之失效 —— 见 `docs/decisions.md` ADR-0043 |
-| **INV-2**（**已撤销**） | ~~绝不重实现传输协议。~~ 撤销后**允许**依赖网页版内部 API 与协议驱动型客户端库。 | 原理由是"协议级客户端是被重点识别的一类"；该风险已由项目所有者明确接受 —— 见 `docs/decisions.md` ADR-0043 |
+| **INV-1** | **绝不向被承载的页面注入脚本**（附一条**只读元数据例外**）。不通过 CDP 驱动页面、不注入样式、不引入 puppeteer 家族 / `whatsapp-web.js` / `wwebjs-electron`。 | 立身之本是「页面逐字节等同官方网页版」；只读例外削弱了这条强表述，但「不主动注入、不给远程内容本地能力」这条实质不变 —— 见 `docs/decisions.md` ADR-0057 |
+| **INV-2** | **绝不重实现传输协议**：不引入 whatsmeow / Baileys / WPPConnect / Venom 之类协议库，不自行实现握手、密钥协商与消息编解码。 | 协议级客户端是被重点识别的一类，能力缺口是结构性的；这条与承载方式无关，因此没有理由放弃 —— 见 `docs/decisions.md` ADR-0001 / ADR-0057 |
 | **INV-3** | **绝不经手密钥与加密。** 不解析 mediaKey、不修改加密流量、不做自己的解密实现。解密只由官方页面代码完成。 | 触碰加密会把项目从「宿主」变成「破解工具」，性质完全不同 |
 | **INV-4** | **绝不使用服务方的视觉标识资产。** 不用 WhatsApp / Meta 的 Logo、图标、字体、吉祥物、官方配色，也不用其素材做应用图标。项目名 `WaaChat` 不含服务方名称，但强制义务不变：非官方声明必须同时出现在 `README.md`、`DISCLAIMER.md` 与安装产物中。 | 名称与知名服务近似，而应用承载的正是那个服务——声明义务是"不做官方外观"之外的第二道防线；视觉资产则成本为零、风险最高，因此始终是红线 —— 见 `docs/decisions.md` ADR-0020 |
 
-**现在由 ESLint 强制的是 INV-3**：`eslint.config.mjs` 的 `cryptoGuards`（作用于 `src/**`）禁止解密原语
-（`createDecipher*` / `createCipher*` / `createHmac` / `hkdf` / `subtle`）与密钥字段（`mediaKey` / `filehash`）；
-`pnpm run selfcheck` 第 15 节再加一道同样的文本扫描，并断言依赖里没有在 Node 侧解密的库。
+**ESLint 强制 INV-1 / INV-2 / INV-3**：`eslint.config.mjs` 的 `projectGuards`（作用于 `src/**`）把三组规则
+合并发出 —— INV-1 禁 `executeJavaScript` / `executeJavaScriptInIsolatedWorld` / `insertCSS`，INV-2 禁 puppeteer
+家族 / `whatsapp-web.js` / `wwebjs-electron` 与 `*/baileys` 等协议库，INV-3 禁解密原语
+（`createDecipher*` / `createCipher*` / `createHmac` / `hkdf` / `subtle`）与密钥字段（`mediaKey` / `filehash`）。
+**INV-1 的只读例外**在调用点用行内 `eslint-disable-next-line no-restricted-syntax` 显式声明（当前两处：
+`capture/download.ts`、`dev-probe.ts`，见 [ADR-0057](docs/decisions.md#adr-0057)）。
+`pnpm run selfcheck` 第 15 节再加一道 INV-3 的文本扫描，并断言依赖里没有在 Node 侧解密的库。
 
-**INV-1 与 INV-2 的守卫已随 [ADR-0043](docs/decisions.md#adr-0043) 移除**（原 `invariantGuards` 里那两段）。
-渲染侧的**进程边界不在撤销范围**：渲染进程仍不得 import `electron` / `node:fs` / `node:path`（G-1），仍然由 ESLint 强制。
+渲染侧的**进程边界**（G-1）：渲染进程仍不得 import `electron` / `node:fs` / `node:path`，仍由 ESLint 强制。
 
 要改任何一条守卫：不要直接改 lint 配置，先在 `docs/decisions.md` 里追加一条 ADR 并说明理由。
 

@@ -5,49 +5,62 @@
 
 四条硬约束对应四条被否决的技术路线。它们不是为了"好看"而立的规矩，每一条都排除掉一整类风险。
 
-> **现状（[ADR-0043](../docs/decisions.md#adr-0043)）**：**INV-1 与 INV-2 已撤销**（项目改用
-> `whatsapp-web.js`）；仍生效的是 **INV-3 与 INV-4**。被撤销的两节保留在下面，作为历史说明。
+> **现状**：四条**全部生效** —— INV-1 与 INV-2 曾被 [ADR-0043](../docs/decisions.md#adr-0043) 撤销，
+> 已由 [ADR-0057](../docs/decisions.md#adr-0057) 恢复。其中 INV-1 附带一条**只读元数据例外**（见下）。
 
 ---
 
-## INV-1 · ~~绝不向被承载的页面注入脚本~~（**已撤销**）
+## INV-1 · 绝不向被承载的页面注入脚本
 
-**状态**：**已由 [ADR-0043](../docs/decisions.md#adr-0043) 撤销**。现行路线以 `whatsapp-web.js`
-承载会话与媒体，而该库本身就通过调试协议（CDP）驱动页面，因此本约束及其 ESLint 守卫都已移出
-（`eslint.config.mjs` 的 `invariantGuards` 里那段 `no-restricted-syntax`）。
+**状态**：**已生效**（曾被 [ADR-0043](../docs/decisions.md#adr-0043) 撤销，由
+[ADR-0057](../docs/decisions.md#adr-0057) 恢复），**附带一条只读例外**。
 
-**原陈述**（历史，保留以便追溯）：不使用 `webContents.executeJavaScript`、
-`executeJavaScriptInIsolatedWorld`、`insertCSS`；不让 preload 直连页面世界
-（`contextIsolation: false`）；不通过调试协议（CDP）驱动页面；不引入浏览器自动化库
-（puppeteer 家族、whatsapp-web.js 家族）。
+**陈述**：不使用 `webContents.executeJavaScript`、`executeJavaScriptInIsolatedWorld`、
+`insertCSS`；不让 preload 直连页面世界（`contextIsolation: false`）；不通过调试协议（CDP）驱动页面；
+不引入浏览器自动化库（puppeteer 家族、whatsapp-web.js 家族）。
 
-**原理由**：本项目的立身之本是"页面里跑的东西与上游逐字节一致"。一旦注入，这条立论消失，
-产品性质从"宿主进程"变成"修改过的客户端"。**该立论随承载方式改变而失效**，这是撤销的依据。
+**只读例外**：允许**只读地**在页面里求值一个表达式，取回消息模型上的元数据（`filehash`、
+`msg.id.remote`）—— 不得解析 DOM、不得驱动页面动作、不得给承载窗口加 preload；每个调用点必须在行内
+声明（`eslint-disable-next-line no-restricted-syntax`，注明 [ADR-0057](../docs/decisions.md#adr-0057)）。
+当前只有两处：`capture/download.ts`（下载前问内容哈希与会话ID）与 `dev-probe.ts`（仅开发模式的只读
+探针，[ADR-0046](../docs/decisions.md#adr-0046)）。
 
-**原自查**（历史；下面的命令如今**应当有输出**，不再代表违规）：
+**为什么**：本项目的立身之本是"页面里跑的东西与上游逐字节一致" —— ⚠️ 这条例外的存在已经让该**强表述**
+不再成立（见 [ADR-0057](../docs/decisions.md#adr-0057) 的"已知限制"）；但约束的实质仍然成立：**不主动
+注入、不改页面行为、不给远程内容任何本地能力**。一旦全面注入，产品性质就从"宿主进程"变成"修改过的
+客户端"。
+
+**例外仍然是注入面**：取回的值只留在主进程侧使用，**绝不回传页面**（T1 的判断在这里同样适用）。
+
+**自查**：
 
 ```bash
-rg -n 'executeJavaScript|insertCSS|contextIsolation:\s*false|webSecurity:\s*false' src/
+# 应当只列出那两处只读求值（每一处都带 eslint-disable 与 ADR-0057 的注解）：
+rg -n 'executeJavaScript' src/
+# 除下面两处，其余任何一处都是越界：
+#   src/main/capture/download.ts（filehash / 会话ID 反查）
+#   src/main/dev-probe.ts（仅开发模式的只读探针）
 rg -n "from '(puppeteer|puppeteer-core|puppeteer-in-electron|whatsapp-web\.js|wwebjs-electron)'" src/
 ```
 
 ---
 
-## INV-2 · ~~绝不重实现传输协议~~（**已撤销**）
+## INV-2 · 绝不重实现传输协议
 
-**状态**：**已由 [ADR-0043](../docs/decisions.md#adr-0043) 撤销**。现行路线允许依赖网页版内部 API
-与协议驱动型客户端库；`eslint.config.mjs` 里那段 `no-restricted-imports` 已随之移除。
+**状态**：**已生效**（曾被 [ADR-0043](../docs/decisions.md#adr-0043) 撤销，由
+[ADR-0057](../docs/decisions.md#adr-0057) 恢复）。
 
-**原陈述**（历史）：不引入 whatsmeow、Baileys、WPPConnect、Venom 之类的协议库；不调用网页版的
-内部 API；不自行实现握手、密钥协商、消息编解码。
+**陈述**：不引入 whatsmeow、Baileys、WPPConnect、Venom 之类的协议库；不自行实现握手、密钥协商、
+消息编解码。会话与加解密继续由官方网页版代码承担。
 
-**原理由**：见 [ADR-0001](../docs/decisions.md#adr-0001)。协议级客户端的能力缺口是结构性的
-（无音视频通话、应用状态只读、广播列表不支持），且是被重点识别的一类客户端。
-**该风险已由项目所有者明确接受**（[ADR-0043](../docs/decisions.md#adr-0043) 理由 3）。
+**为什么**：见 [ADR-0001](../docs/decisions.md#adr-0001)。协议级客户端的能力缺口是结构性的
+（无音视频通话、应用状态只读、广播列表不支持），且是被重点识别的一类客户端 —— 这条与承载方式
+无关，因此没有理由放弃它。
 
-**原自查**（历史；如今**应当有输出**，不再代表违规）：
+**自查**：
 
 ```bash
+# 应当无输出：
 rg -n "whatsmeow|baileys|@whiskeysockets|WPPConnect|venom" --glob '!docs/**' --glob '!ai/**' .
 rg -n 'WAWeb|window\.Store|internalStore' src/
 ```
@@ -81,10 +94,10 @@ rg -n "from 'node:crypto'" src/     # 允许，但用途只能是 sha256（内�
 - `pnpm run selfcheck` 第 15 节：对 `src/` 做一次同样的文本扫描（含上述标识符），并对
   `package.json` 断言**没有**在 Node 侧解密的库。lint 拦"写法"，自检拦"结果 + 依赖"。
 
-**接口在承载方式改变后的加码**：接入 `whatsapp-web.js` 后，解密仍由上游页面代码
-（`msg.downloadMedia()`）完成 —— 抽样审计见 [`../docs/research/inv3-assessment.md`](../docs/research/inv3-assessment.md)。
-但该库把 `this.mediaKey = data.mediaKey` 作为 `Message` 的**公开属性**暴露，因此本约束多一条明确的
-禁止项：**不读取 `Message.mediaKey`**（写下它的那一刻就已经是"解析 mediaKey"）。
+**一条明确的禁止项**：**不读取以 `mediaKey` 命名的字段**（含页面对象上的公开属性）—— 写下它的那一刻
+就已经是"解析 mediaKey"。这条来自 [ADR-0045](../docs/decisions.md#adr-0045) 的加固，其抽样审计见
+[`../docs/research/inv3-assessment.md`](../docs/research/inv3-assessment.md)。那次审计写于"打算接入
+驱动型客户端库"之时，那条计划已由 [ADR-0057](../docs/decisions.md#adr-0057) 放弃，但**加固本身不变**。
 
 ---
 
