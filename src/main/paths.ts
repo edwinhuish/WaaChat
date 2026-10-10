@@ -202,7 +202,8 @@ export const archiveAccountDir = (): string => join(archiveDir(), accountKey())
 
 /*
  * 注意：不再有"明文正文的唯一容器"这个概念。正文从 [ADR-0052] 起落在
- * `<归档根>/<账号>/<消息ID>/files/` —— 账号目录下是**多条消息目录**，没有一个是"那个 files"。
+ * `<归档根>/<账号>/<会话ID>/files/`（[ADR-0055] 把第二级定为会话ID）—— 账号目录下是
+ * **多个会话目录**，没有一个是"那个 files"。
  * 因此原先的 `archiveFilesDir()`（`<归档根>/<账号>/files`）被删除，而不是留着一个会骗人的 API。
  */
 

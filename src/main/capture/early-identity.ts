@@ -22,16 +22,17 @@
  * - **拿不准一律返回 `null`**，让调用方回落到今天的行为 —— 这条路线**允许失效，
  *   不允许静默错命中**（`media-capture.md`：宁可漏命中，不可错命中）。
  *
- * ── 同一个通道还回答第二个问题：这条文件属于哪条消息（[ADR-0052]）──
+ * ── 同一个通道还回答第二个问题：这条文件属于哪条会话（[ADR-0055]）──
  *
- * 归档路径要按 `<账号>/<消息ID>/files/` 分层，而消息ID 只存在于页面模型里。因此这里除了
+ * 归档路径要按 `<账号>/<会话ID>/files/` 分层，而会话ID 只存在于页面模型里。因此这里除了
  * {@link pageLookupExpression}（按"文件名 + 大小"找内容哈希）之外，还导出
- * {@link pageMessageIdExpression}：**按内容哈希**反查那条消息，取 `msg.id.id`。
+ * {@link pageChatIdExpression}：**按内容哈希**反查那条消息，取它所属会话的 **JID**
+ * （`msg.id.remote`，如 `18665597400@c.us`）。
  *
  * 用哈希而不是"文件名 + 大小"作键，是因为归档那一刻哈希已经算出来了（它就是归档的
  * 内容身份），而哈希相等 ⇔ 内容相同 —— 比名字+大小精确得多。代价是：同一份内容出现在
- * 两条消息里时会有两个 id，那时 {@link pickSingle} 判为不唯一、返回 `null`，
- * 调用方回落到 `unknown-message`（宁可分不出，不可分错）。
+ * **不同会话**里时会得到两个 JID，那时 {@link pickSingle} 判为不唯一、返回 `null`，
+ * 调用方回落到 `unknown-chat`（宁可分不出，不可分错）。
  */
 
 /** 一份内容的明文 SHA-256 是 32 字节；base64 之后固定 44 个字符。 */
@@ -180,7 +181,7 @@ export function pickContentHash(raw: unknown): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// 消息ID（[ADR-0052]）
+// 会话ID（[ADR-0055]，取代 [ADR-0052] 的消息ID）
 // ---------------------------------------------------------------------------
 
 /**
@@ -196,14 +197,19 @@ export function encodeFilehash(hex: string): string | null {
 }
 
 /**
- * 页面侧查询脚本：**按内容哈希**找那条消息，回传它的 ID。
+ * 页面侧查询脚本：**按内容哈希**找那条消息，回传它所属**会话**的 JID。
  *
  * 与 {@link pageLookupExpression} 同样的纪律：只依赖消息模型本身、只读、拿不准返回空。
  * 匹配条件只有一条 —— `filehash` 与我们算出的内容哈希逐字相同（两者都是明文的 SHA-256）。
  *
- * 返回 `{ ids: [...] }`：多于一个说明同一份内容出现在多条消息里，调用方会放弃并回落。
+ * ⚠️ **取的是 `msg.id.remote`（会话 JID），不是 `msg.id.id`（消息ID）**，也不是
+ * `msg.id._serialized`（那个串是 `<fromMe>_<remote>_<消息ID>`，把它当会话用会把每条消息
+ * 都变成一个"会话"）。`remote` 在页面上是 Wid 对象，因此字符串与 `._serialized` 两种形态都读；
+ * 都取不到时回落 `msg.from`（同一个 JID 的另一种写法）。
+ *
+ * 返回 `{ ids: [...] }`：多于一个说明同一份内容出现在**不同会话**里，调用方会放弃并回落。
  */
-export function pageMessageIdExpression(filehash: string): string {
+export function pageChatIdExpression(filehash: string): string {
   const hashLiteral = quoteForPage(filehash)
 
   return `(() => {
@@ -218,17 +224,22 @@ export function pageMessageIdExpression(filehash: string): string {
       catch (error) { return null; }
     };
     const hashOf = (msg) => str(msg, 'filehash') || str(msg.mediaData, 'filehash') || str(msg.mediaObject, 'filehash');
-    const idOf = (msg) => {
-      const id = msg ? msg.id : null;
-      if (typeof id === 'string') return id;
-      return str(id, 'id') || str(id, '_serialized');
+    // 会话 JID：msg.id.remote 优先（它是 MsgKey 的一部分），再回落 msg.from。
+    const chatOf = (msg) => {
+      if (!msg) return null;
+      const remote = msg.id ? msg.id.remote : null;
+      if (typeof remote === 'string' && remote) return remote;
+      const serialized = str(remote, '_serialized');
+      if (serialized) return serialized;
+      if (typeof msg.from === 'string' && msg.from) return msg.from;
+      return str(msg.from, '_serialized');
     };
 
     const ids = [];
     for (const msg of messages) {
       if (!msg) continue;
       if (hashOf(msg) !== HASH) continue;
-      const id = idOf(msg);
+      const id = chatOf(msg);
       if (id && ids.indexOf(id) === -1) ids.push(id);
     }
     return JSON.stringify({ ids: ids });
@@ -241,7 +252,7 @@ export function pageMessageIdExpression(filehash: string): string {
 /**
  * 页面送回来的是 `JSON.stringify({ ids })` 文本。解析失败一律当作"没有"。
  */
-export function readPageMessageIds(raw: unknown): string[] {
+export function readPageChatIds(raw: unknown): string[] {
   if (typeof raw !== 'string') return []
 
   try {
@@ -259,8 +270,8 @@ export function readPageMessageIds(raw: unknown): string[] {
 /**
  * 主进程拿到页面回复后的**唯一**入口：解析 → 取唯一值。
  *
- * 空、或有两个及以上不同的消息ID ⇒ `null`（无法判定），调用方回落到 `unknown-message`。
+ * 空、或有两个及以上不同的会话ID ⇒ `null`（无法判定），调用方回落到 `unknown-chat`。
  */
-export function pickMessageId(raw: unknown): string | null {
-  return pickSingle(readPageMessageIds(raw))
+export function pickChatId(raw: unknown): string | null {
+  return pickSingle(readPageChatIds(raw))
 }

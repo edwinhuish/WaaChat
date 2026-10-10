@@ -24,14 +24,14 @@ import { fileURLToPath } from 'node:url'
 
 import { ARCHIVE_FILE_MODE } from '../src/main/archive/blobs'
 import {
+  CHAT_FALLBACK,
   FILES_SEGMENT,
-  MESSAGE_FALLBACK,
   archiveStoredPath,
   folderFor,
   isAccountSegment,
   isArchiveMonthDir,
-  isMessageSegment,
-  normalizeMessageId,
+  isChatSegment,
+  normalizeChatId,
   normalizeStoredPath,
 } from '../src/main/archive/layout'
 import { isInsideArchive } from '../src/main/archive/export'
@@ -219,11 +219,12 @@ check(
   archiveNameCandidates('合同.pdf', sampleHash).every((name) => name.endsWith('.pdf')),
 )
 
-// 归档的分层（ADR-0039 / ADR-0052）：正文在 `<账号>/<消息ID>/files/` 里，"账号"来自页面写下
-// 的 `wa_ul`（一个 UUID）。这几条都属于"改了没人会立刻发现"的那一类 —— 消息ID 净化漏掉会让
-// 页面给的值变成路径穿越点，容器判据放宽则会让迁移把用户自己的目录当成正文搬走（收紧则会让
-// 自己的归档迁移不了）。月份相关的断言保留着：密文缓存仍按 `<账号>/<年-月>/` 分层，而旧布局
-// 必须继续被迁移认出来。
+// 归档的分层（ADR-0039 / ADR-0052 / ADR-0055）：正文在 `<账号>/<会话ID>/files/` 里，"账号"
+// 来自页面写下的 `wa_ul`（一个 UUID），"会话ID"是页面上的会话 JID。这几条都属于"改了没人会
+// 立刻发现"的那一类 —— 会话ID 净化漏掉会让页面给的值变成路径穿越点，容器判据放宽则会让迁移
+// 把用户自己的目录当成正文搬走（收紧则会让自己的归档、以及 [ADR-0052] 时期的消息ID 目录迁移
+// 不了）。月份相关的断言保留着：密文缓存仍按 `<账号>/<年-月>/` 分层，而旧布局必须继续被迁移
+// 认出来。
 const sampleAccount = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
 check(
   '密文缓存的月份目录仍按本地时间算（单层、年-月）',
@@ -248,29 +249,34 @@ check(
     !isAccountSegment('stuff', sampleAccount) &&
     !isAccountSegment('2026-10', sampleAccount),
 )
-const sampleMessage = '3EB0A1B2C3D4E5F6A7B8'
+const sampleChat = '18665597400@c.us'
+/** [ADR-0052] 时期的第二级：消息ID。它必须继续被认成我们的容器（老归档要能迁移）。 */
+const sampleLegacyMessage = '3EB0A1B2C3D4E5F6A7B8'
 check(
-  '`stored_name` 的形态：账号 / 消息ID / files / 文件名',
-  archiveStoredPath(sampleAccount, sampleMessage, '合同.pdf') ===
-    `${sampleAccount}/${sampleMessage}/${FILES_SEGMENT}/合同.pdf`,
+  '`stored_name` 的形态：账号 / 会话ID / files / 文件名',
+  archiveStoredPath(sampleAccount, sampleChat, '合同.pdf') ===
+    `${sampleAccount}/${sampleChat}/${FILES_SEGMENT}/合同.pdf`,
 )
-// 消息ID 来自页面（`msg.id`），因此是**不可信输入**，与账号名走同一条净化纪律；
-// 分不出是哪条消息时统一回落到 unknown-message（[ADR-0052]）。
+// 会话ID 来自页面（`msg.id.remote`），因此是**不可信输入**，与账号名走同一条净化纪律；
+// 分不出是哪条会话时统一回落到 unknown-chat（[ADR-0055]）。
 check(
-  '消息ID 净化：白名单之外的字符删掉，清不干净的整条拒掉',
-  normalizeMessageId('3EB0-A1B2_C3') === '3EB0-A1B2_C3' &&
-    normalizeMessageId('a/b\\c') === 'abc' &&
-    normalizeMessageId('../../etc/passwd') === null &&
-    normalizeMessageId('.hidden') === null &&
-    normalizeMessageId('   ') === null,
+  '会话ID 净化：白名单之外的字符删掉（`@` 必须留下），清不干净的整条拒掉',
+  normalizeChatId('18665597400@c.us') === '18665597400@c.us' &&
+    normalizeChatId('120363012345678901@g.us') === '120363012345678901@g.us' &&
+    normalizeChatId('a/b@c.us') === 'ab@c.us' &&
+    normalizeChatId('../../etc/passwd') === null &&
+    normalizeChatId('.hidden') === null &&
+    normalizeChatId('   ') === null,
 )
 check(
-  '消息目录判据：合法段 + 足够长度才算我们的容器（迁移的安全边界）',
-  isMessageSegment(sampleMessage) &&
-    isMessageSegment(MESSAGE_FALLBACK) &&
-    !isMessageSegment('files') &&
-    !isMessageSegment('stuff') &&
-    !isMessageSegment('2026-10'),
+  '会话目录判据：合法段 + 足够长度才算我们的容器，且同时认下 ADR-0052 的消息ID（迁移的安全边界）',
+  isChatSegment(sampleChat) &&
+    isChatSegment(CHAT_FALLBACK) &&
+    isChatSegment(sampleLegacyMessage) &&
+    isChatSegment('unknown-message') &&
+    !isChatSegment('files') &&
+    !isChatSegment('stuff') &&
+    !isChatSegment('2026-10'),
 )
 // 账号那一层来自 cookie（页面写的），因此是**不可信输入**：路径分隔符与控制字符必须被剥掉，
 // 否则 `join(归档目录, stored_name)` 又多一个穿越点。
@@ -329,7 +335,8 @@ const archive = archiveDir()
 /**
  * 递归列出归档目录里的**正文**与**分层容器**（相对路径）。
  *
- * 必须递归：正文在 `<账号>/<消息ID>/files/` 里（[ADR-0052]，历史上还在 `<年>/<月>/` 里）。
+ * 必须递归：正文在 `<账号>/<会话ID>/files/` 里（[ADR-0055]，历史上还在
+ * `<账号>/<消息ID>/files/` 与 `<年>/<月>/` 里）。
  * 点开头的条目一律跳过 —— `.part-*` 是半成品、`.index.sqlite*` 是索引、`.open/` 是旧版本的
  * 影子目录，它们都不是正文，也不该被算进这里的任何一条断言。
  */

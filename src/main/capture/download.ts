@@ -15,8 +15,8 @@
  * `executeJavaScript`，不给窗口加 preload）：
  *
  *   1. **点击那一刻**：这条内容在归档里吗（按"文件名 + 大小"问 `filehash`，[ADR-0047]）。
- *   2. **落盘那一刻**：这条文件属于哪条消息（按刚算出的内容哈希反查 `msg.id`，[ADR-0052]）
- *      —— 归档路径 `<账号>/<消息ID>/files/` 需要它。
+ *   2. **落盘那一刻**：这条文件属于哪条**会话**（按刚算出的内容哈希反查 `msg.id.remote`，
+ *      [ADR-0055]）—— 归档路径 `<账号>/<会话ID>/files/` 需要它。
  */
 
 import { existsSync } from 'node:fs'
@@ -40,10 +40,10 @@ import { openPath } from '../integration/open'
 import { hashPrefix, logger } from '../logger'
 import {
   encodeFilehash,
+  pageChatIdExpression,
   pageLookupExpression,
-  pageMessageIdExpression,
+  pickChatId,
   pickContentHash,
-  pickMessageId,
 } from './early-identity'
 import { markCaptured, markFailure } from './health'
 
@@ -211,27 +211,27 @@ async function askPageForContentHash(
 }
 
 /**
- * 问页面"这条文件属于哪条消息"（[ADR-0052]），拿不到返回 `null`。
+ * 问页面"这条文件属于哪条会话"（[ADR-0055]），拿不到返回 `null`。
  *
  * 与 {@link askPageForContentHash} 同样保守：页面销毁、哈希不是合法 hex、注入超时、
- * 值不唯一 —— 任何一步不成立都返回 `null`，由归档层回落到 `unknown-message`。
- * **这条路线允许失败，不允许分错消息**（分错 = 文件落进别人的消息目录）。
+ * 值不唯一 —— 任何一步不成立都返回 `null`，由归档层回落到 `unknown-chat`。
+ * **这条路线允许失败，不允许分错会话**（分错 = 文件落进别人那个会话的目录）。
  *
  * 触发时机与上面那条不同：**每次归档都会调一次**，且不受"打开时归档"开关影响 ——
- * 消息ID 是落盘路径的一部分，不是一次可跳过的优化。
+ * 会话ID 是落盘路径的一部分，不是一次可跳过的优化。
  */
-async function askPageForMessageId(contents: WebContents, hash: string): Promise<string | null> {
+async function askPageForChatId(contents: WebContents, hash: string): Promise<string | null> {
   const filehash = encodeFilehash(hash)
   if (filehash === null || contents.isDestroyed()) return null
 
   try {
     const reply = await withTimeout<unknown>(
-      contents.executeJavaScript(pageMessageIdExpression(filehash), true) as Promise<unknown>,
+      contents.executeJavaScript(pageChatIdExpression(filehash), true) as Promise<unknown>,
       EARLY_LOOKUP_TIMEOUT_MS,
     )
-    return pickMessageId(reply)
+    return pickChatId(reply)
   } catch (error) {
-    logger.warn('capture: message id lookup failed', { reason: failureReason(error) })
+    logger.warn('capture: chat id lookup failed', { reason: failureReason(error) })
     return null
   }
 }
@@ -258,7 +258,7 @@ interface FinalizeInput {
   readonly name: string
   readonly mime: string
   readonly state: string
-  /** 承载页面的上下文：用来反查这条文件属于哪条消息（[ADR-0052]）。 */
+  /** 承载页面的上下文：用来反查这条文件属于哪条会话（[ADR-0055]）。 */
   readonly contents: WebContents
   readonly getSettings: () => Settings
 }
@@ -283,7 +283,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
 
   /**
    * 归档时间：索引里的 `opened_at`。从 [ADR-0052] 起它**不再决定**文件落在哪（分区改由
-   * 消息ID 承担），但它仍是"最后一次被打开"的依据（淘汰排序、界面排序）。
+   * 会话ID 承担），但它仍是"最后一次被打开"的依据（淘汰排序、界面排序）。
    */
   const openedAt = Date.now()
 
@@ -299,9 +299,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
   try {
     ;({ hash, storedName, bytes, created } = await commitFromTemp(temp, name, {
       findStored: findStoredName,
-      // 消息ID 只能在算出哈希之后按它反查（[ADR-0052]）；拿不到就由归档层回落到
-      // `unknown-message`，绝不阻断落盘。
-      resolveMessageId: (contentHash) => askPageForMessageId(contents, contentHash),
+      // 会话ID 只能在算出哈希之后按它反查（[ADR-0055]）；拿不到就由归档层回落到
+      // `unknown-chat`，绝不阻断落盘。
+      resolveChatId: (contentHash) => askPageForChatId(contents, contentHash),
       openedAt,
     }))
   } catch (error) {

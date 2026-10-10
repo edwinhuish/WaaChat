@@ -1,36 +1,40 @@
 /**
- * 归档分层的单测（[ADR-0037] / [ADR-0039] / [ADR-0052]）。
+ * 归档分层的单测（[ADR-0037] / [ADR-0039] / [ADR-0052] / [ADR-0055]）。
  *
  * 这一层是**纯函数**，所以每条断言都直接对应一个具体的坏结果：
  *
- *   1. **消息ID 不净化**（页面给的值直接当目录名）→ 路径穿越点，或一个含 `/`、控制字符的
+ *   1. **会话ID 不净化**（页面给的值直接当目录名）→ 路径穿越点，或一个含 `/`、控制字符的
  *      怪目录名；
  *   2. **相对路径不净化** → `join(归档目录, stored_name)` 变成路径穿越点；
- *   3. **容器判据放太宽**（把用户自己的 `stuff/` 也认成账号目录 / 消息目录）→ 迁移会把不
- *      属于我们的目录当成正文搬走；放太紧则会让**自己写下的**目录被判成异常、迁移直接失败。
+ *   3. **容器判据放太宽**（把用户自己的 `stuff/` 也认成账号目录 / 会话目录）→ 迁移会把不
+ *      属于我们的目录当成正文搬走；放太紧则会让**自己写下的**目录被判成异常、迁移直接失败
+ *      —— [ADR-0052] 时期的消息ID 目录就是这种"放太紧就会被判成异常"的旧数据。
  *
  * 月份相关的断言保留着（[ADR-0037] / [ADR-0039]）：写入侧已不再产生月份目录（[ADR-0052]
- * 换成了消息ID），但**密文缓存仍在用 `folderFor()`**，而旧数据必须继续被迁移认出来。
+ * 换成了消息/会话），但**密文缓存仍在用 `folderFor()`**，而旧数据必须继续被迁移认出来。
  */
 
 import { describe, expect, it } from 'vitest'
 
 import {
   ACCOUNT_FALLBACK,
-  MESSAGE_FALLBACK,
+  CHAT_FALLBACK,
   archiveStoredPath,
   folderFor,
   isAccountSegment,
   isArchiveMonthDir,
+  isChatSegment,
   isLegacyMonthDir,
   isLegacyYearDir,
-  isMessageSegment,
-  normalizeMessageId,
+  normalizeChatId,
   normalizeStoredPath,
 } from '../../src/main/archive/layout'
 
 const UUID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
-const MESSAGE = '3EB0A1B2C3D4E5F6A7B8'
+/** 会话ID：页面上的会话 JID（个人会话 / 群会话 / LID 三种形态都出现过）。 */
+const CHAT = '18665597400@c.us'
+/** [ADR-0052] 时期的第二级：消息ID。老归档里全是这种目录，迁移必须照样认。 */
+const LEGACY_MESSAGE = '3EB0A1B2C3D4E5F6A7B8'
 
 describe('folderFor', () => {
   it('按本地时间给出单层的 年-月', () => {
@@ -87,54 +91,62 @@ describe('容器判据', () => {
     expect(isAccountSegment('a1b2c3d4e5f67890abcdef1234567890', UUID)).toBe(false)
   })
 
-  it('消息目录要"已是合法段 + 足够长"，短名 / 非我段一律不算', () => {
-    expect(isMessageSegment(MESSAGE)).toBe(true)
-    expect(isMessageSegment(MESSAGE_FALLBACK)).toBe(true)
-    // 短名（含我们自己那个 `files` 段）不算：它是账号层的旧布局容器，不是消息目录。
-    expect(isMessageSegment('files')).toBe(false)
-    expect(isMessageSegment('stuff')).toBe(false)
-    // 月份名长度不够，也不会被当成消息目录。
-    expect(isMessageSegment('2026-10')).toBe(false)
-    // 含需净化的字符 ⇒ 与 normalizeMessageId 的结果不同 ⇒ 不算。
-    expect(isMessageSegment('3EB0/../A1B2C3D4')).toBe(false)
+  it('会话目录要"已是合法段 + 足够长"，短名 / 非我段一律不算', () => {
+    expect(isChatSegment(CHAT)).toBe(true)
+    expect(isChatSegment('120363012345678901@g.us')).toBe(true)
+    expect(isChatSegment('123456789012345@lid')).toBe(true)
+    expect(isChatSegment(CHAT_FALLBACK)).toBe(true)
+    // [ADR-0052] 的消息ID 目录必须继续算 —— 老归档还在磁盘上，认不出就迁移不了。
+    expect(isChatSegment(LEGACY_MESSAGE)).toBe(true)
+    expect(isChatSegment('unknown-message')).toBe(true)
+    // 短名（含我们自己那个 `files` 段）不算：它是账号层的旧布局容器，不是会话目录。
+    expect(isChatSegment('files')).toBe(false)
+    expect(isChatSegment('stuff')).toBe(false)
+    // 月份名长度不够，也不会被当成会话目录。
+    expect(isChatSegment('2026-10')).toBe(false)
+    // 含需净化的字符 ⇒ 与 normalizeChatId 的结果不同 ⇒ 不算。
+    expect(isChatSegment('18665597400/@c.us')).toBe(false)
   })
 })
 
-describe('normalizeMessageId', () => {
-  it('保留大小写、只去掉白名单之外的字符', () => {
-    expect(normalizeMessageId('3EB0-A1B2_C3')).toBe('3EB0-A1B2_C3')
-    expect(normalizeMessageId('a/b\\c')).toBe('abc')
-    expect(normalizeMessageId('  3EB0A1B2  ')).toBe('3EB0A1B2')
+describe('normalizeChatId', () => {
+  it('保留大小写与 `@`，只去掉白名单之外的字符', () => {
+    // `@` 必须留下：它就是会话标识的一部分，抹掉之后目录名再也对不上会话。
+    expect(normalizeChatId(CHAT)).toBe(CHAT)
+    expect(normalizeChatId('120363012345678901@g.us')).toBe('120363012345678901@g.us')
+    expect(normalizeChatId('3EB0-A1B2_C3')).toBe('3EB0-A1B2_C3')
+    expect(normalizeChatId('a/b\\c')).toBe('abc')
+    expect(normalizeChatId(`  ${CHAT}  `)).toBe(CHAT)
   })
 
   it('清不干净的整条拒掉（与账号名同一条纪律）', () => {
-    expect(normalizeMessageId('../../etc/passwd')).toBe(null)
-    expect(normalizeMessageId('.hidden')).toBe(null)
-    expect(normalizeMessageId('..')).toBe(null)
-    expect(normalizeMessageId('   ')).toBe(null)
-    expect(normalizeMessageId(undefined)).toBe(null)
-    expect(normalizeMessageId(null)).toBe(null)
+    expect(normalizeChatId('../../etc/passwd')).toBe(null)
+    expect(normalizeChatId('.hidden')).toBe(null)
+    expect(normalizeChatId('..')).toBe(null)
+    expect(normalizeChatId('   ')).toBe(null)
+    expect(normalizeChatId(undefined)).toBe(null)
+    expect(normalizeChatId(null)).toBe(null)
   })
 
   it('超长截断（不留一个会撞上路径长度限制的名字）', () => {
-    expect(normalizeMessageId('a'.repeat(200))).toHaveLength(128)
+    expect(normalizeChatId('a'.repeat(200))).toHaveLength(128)
   })
 })
 
 describe('archiveStoredPath', () => {
-  it('把账号、消息ID、files 与文件名拼成写进索引的相对路径', () => {
-    expect(archiveStoredPath(UUID, MESSAGE, '合同.pdf')).toBe(`${UUID}/${MESSAGE}/files/合同.pdf`)
+  it('把账号、会话ID、files 与文件名拼成写进索引的相对路径', () => {
+    expect(archiveStoredPath(UUID, CHAT, '合同.pdf')).toBe(`${UUID}/${CHAT}/files/合同.pdf`)
   })
 
   it('拿不到账号时用 unknown-account（那是个正常状态，不是错误）', () => {
-    expect(archiveStoredPath(ACCOUNT_FALLBACK, MESSAGE, '合同.pdf')).toBe(
-      `unknown-account/${MESSAGE}/files/合同.pdf`,
+    expect(archiveStoredPath(ACCOUNT_FALLBACK, CHAT, '合同.pdf')).toBe(
+      `unknown-account/${CHAT}/files/合同.pdf`,
     )
   })
 
-  it('拿不到消息ID时用 unknown-message（与账号回落对称）', () => {
-    expect(archiveStoredPath(UUID, MESSAGE_FALLBACK, '合同.pdf')).toBe(
-      `${UUID}/unknown-message/files/合同.pdf`,
+  it('拿不到会话ID时用 unknown-chat（与账号回落对称）', () => {
+    expect(archiveStoredPath(UUID, CHAT_FALLBACK, '合同.pdf')).toBe(
+      `${UUID}/unknown-chat/files/合同.pdf`,
     )
   })
 })

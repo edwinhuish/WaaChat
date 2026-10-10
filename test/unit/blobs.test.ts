@@ -6,8 +6,8 @@
  *   1. **归档目录里永远不存在半成品** —— 靠"先算哈希、再原子改名"的顺序拿到；
  *   2. **文件名是用户认得的原名**（同名冲突时带一小段哈希），否则目录就没法直接看（[ADR-0031]）；
  *   3. **正文只读**，而只读不妨碍删除（否则清理与淘汰都会在只读文件上失败）；
- *   4. **落在 `<账号>/<消息ID>/files/` 里**且那几级目录也是 `0700`（[ADR-0052]）——
- *      消息ID 拼错会让文件落进别人的消息目录，目录权限没收紧则会让明文可被同机他人读取。
+ *   4. **落在 `<账号>/<会话ID>/files/` 里**且那几级目录也是 `0700`（[ADR-0052] / [ADR-0055]）——
+ *      会话ID 拼错会让文件落进别人那个会话的目录，目录权限没收紧则会让明文可被同机他人读取。
  *
  * 因此测试跑在真实文件系统上（隔离在临时的归档目录里），而不是 mock `node:fs` —— mock 掉
  * fs 之后，被测的恰好就只剩"我有没有按顺序调用它们"，而顺序正是最容易看出来的东西。
@@ -74,15 +74,15 @@ const AT = new Date(2026, 9, 5, 12).getTime()
  * 因此账号那一层是回落值 `unknown-account`（[ADR-0039]）。
  */
 const ACCOUNT = 'unknown-account'
-/** 两条不同的消息：用来验证"同名不冲突 / 同内容挂硬链接"两条行为。
- *  长度都在 8 以上，满足 `isMessageSegment()`（迁移的容器判据）。 */
-const MESSAGE = '3EB0A1B2C3D4E5F6A7B8'
-const MESSAGE_OTHER = '3EB0FFFFFFFFFFFFFFFF'
-/** `stored_name` 的前缀：`<账号>/<消息ID>/files`（[ADR-0052]）。 */
-const DIR = `${ACCOUNT}/${MESSAGE}/files`
-const DIR_OTHER = `${ACCOUNT}/${MESSAGE_OTHER}/files`
-/** 拿不到消息ID时的回落目录（与账号回落对称）。 */
-const DIR_FALLBACK = `${ACCOUNT}/unknown-message/files`
+/** 两个不同的会话（个人会话 + 群会话）：用来验证"同名不冲突 / 同内容挂硬链接"两条行为。
+ *  长度都在 8 以上，满足 `isChatSegment()`（迁移的容器判据）。 */
+const CHAT = '18665597400@c.us'
+const CHAT_OTHER = '120363012345678901@g.us'
+/** `stored_name` 的前缀：`<账号>/<会话ID>/files`（[ADR-0055]）。 */
+const DIR = `${ACCOUNT}/${CHAT}/files`
+const DIR_OTHER = `${ACCOUNT}/${CHAT_OTHER}/files`
+/** 拿不到会话ID时的回落目录（与账号回落对称）。 */
+const DIR_FALLBACK = `${ACCOUNT}/unknown-chat/files`
 
 /** 把一段内容写成归档目录内的临时文件，模拟下载完成后的状态。 */
 function staged(content: string): string {
@@ -100,7 +100,7 @@ function leaf(relative: string): string {
   return relative.slice(relative.lastIndexOf('/') + 1)
 }
 
-/** 归档目录里的**正文**，相对路径（`<账号>/<消息ID>/files/合同.pdf`）。 */
+/** 归档目录里的**正文**，相对路径（`<账号>/<会话ID>/files/合同.pdf`）。 */
 function bodies(dir: string = archive, prefix = ''): string[] {
   const found: string[] = []
 
@@ -116,11 +116,11 @@ function bodies(dir: string = archive, prefix = ''): string[] {
 }
 
 describe('commitFromTemp', () => {
-  it('用原文名落盘，而不是哈希名；并落在 <账号>/<消息ID>/files/ 里', async () => {
+  it('用原文名落盘，而不是哈希名；并落在 <账号>/<会话ID>/files/ 里', async () => {
     const temp = staged('hello waachat')
 
     const result = await commitFromTemp(temp, '报告 2026Q3.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
@@ -132,23 +132,23 @@ describe('commitFromTemp', () => {
     expect(readFileSync(archiveFilePath(result.storedName), 'utf8')).toBe('hello waachat')
   })
 
-  it('账号 / 消息ID / files 三级目录按需创建，且与归档目录同样是 0700', async () => {
+  it('账号 / 会话ID / files 三级目录按需创建，且与归档目录同样是 0700', async () => {
     await commitFromTemp(staged(`perm-${String(Date.now())}`), 'perm.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
     // 三级都是我们建的：mkdir 的 mode 只对新建的目录生效，因此这条断言守的是
     // "里面是解密后的明文"那道权限线在子目录上也没漏（[ADR-0052]）。
     expect(statSync(join(archive, ACCOUNT)).mode & 0o777).toBe(0o700)
-    expect(statSync(join(archive, ACCOUNT, MESSAGE)).mode & 0o777).toBe(0o700)
-    expect(statSync(join(archive, ACCOUNT, MESSAGE, 'files')).mode & 0o777).toBe(0o700)
+    expect(statSync(join(archive, ACCOUNT, CHAT)).mode & 0o777).toBe(0o700)
+    expect(statSync(join(archive, ACCOUNT, CHAT, 'files')).mode & 0o777).toBe(0o700)
   })
 
-  it('拿不到消息ID时落进 unknown-message（与账号回落对称）', async () => {
-    const name = `无消息-${String(Date.now())}.pdf`
+  it('拿不到会话ID时落进 unknown-chat（与账号回落对称）', async () => {
+    const name = `无会话-${String(Date.now())}.pdf`
 
-    const result = await commitFromTemp(staged(`no-msg-${String(Date.now())}`), name, {
+    const result = await commitFromTemp(staged(`no-chat-${String(Date.now())}`), name, {
       openedAt: AT,
     })
 
@@ -156,26 +156,26 @@ describe('commitFromTemp', () => {
     expect(existsSync(archiveFilePath(result.storedName))).toBe(true)
   })
 
-  it('消息ID 需要净化时（含路径分隔符）先净化再当目录名', async () => {
+  it('会话ID 需要净化时（含路径分隔符）先净化再当目录名，`@` 保留', async () => {
     const name = `净化-${String(Date.now())}.pdf`
 
     const result = await commitFromTemp(staged(`sanitize-${String(Date.now())}`), name, {
-      messageId: '3EB0/A1B2',
+      chatId: '18665597400/c@us',
       openedAt: AT,
     })
 
-    expect(result.storedName).toBe(`${ACCOUNT}/3EB0A1B2/files/${name}`)
+    expect(result.storedName).toBe(`${ACCOUNT}/18665597400c@us/files/${name}`)
   })
 
   it('同名同内容命中去重，并丢弃临时文件', async () => {
     const content = `dup-${String(Date.now())}`
 
     const first = await commitFromTemp(staged(content), '合同.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const second = await commitFromTemp(staged(content), '合同.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
@@ -187,13 +187,13 @@ describe('commitFromTemp', () => {
     expect(readdirSync(archive).filter((name) => name.startsWith('.part-'))).toHaveLength(0)
   })
 
-  it('同一条消息的目录里同名不同内容时给后者加一段哈希后缀（绝不覆盖）', async () => {
+  it('同一个会话的目录里同名不同内容时给后者加一段哈希后缀（绝不覆盖）', async () => {
     const first = await commitFromTemp(staged(`first-${String(Date.now())}`), '合同.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const second = await commitFromTemp(staged(`second-${String(Date.now())}`), '合同.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
@@ -206,17 +206,17 @@ describe('commitFromTemp', () => {
     expect(readFileSync(archiveFilePath(second.storedName), 'utf8')).toContain('second-')
   })
 
-  it('不同消息里的同名文件互不冲突，各自用原名（分区带来的好处）', async () => {
-    // 名字带上时间戳：这条断言关心的是**两条消息之间**没有冲突，不该被别的用例留在同一条
-    // 消息目录里的同名文件影响。
-    const name = `跨消息合同-${String(Date.now())}.pdf`
+  it('不同会话里的同名文件互不冲突，各自用原名（分区带来的好处）', async () => {
+    // 名字带上时间戳：这条断言关心的是**两个会话之间**没有冲突，不该被别的用例留在同一个
+    // 会话目录里的同名文件影响。
+    const name = `跨会话合同-${String(Date.now())}.pdf`
 
     const first = await commitFromTemp(staged(`one-${String(Date.now())}`), name, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const second = await commitFromTemp(staged(`two-${String(Date.now())}`), name, {
-      messageId: MESSAGE_OTHER,
+      chatId: CHAT_OTHER,
       openedAt: AT,
     })
 
@@ -228,12 +228,12 @@ describe('commitFromTemp', () => {
   it('同一份内容换个名字时只多一个名字，不多占字节', async () => {
     const content = `alias-${String(Date.now())}`
     const first = await commitFromTemp(staged(content), '报告.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
     const second = await commitFromTemp(staged(content), '报价单.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -246,26 +246,26 @@ describe('commitFromTemp', () => {
     )
   })
 
-  it('同一份内容出现在另一条消息里时，在新消息目录里挂硬链接（占用不变）', async () => {
-    const content = `cross-message-${String(Date.now())}`
-    const name = `跨消息报告-${String(Date.now())}.pdf`
+  it('同一份内容出现在另一个会话里时，在那个会话目录里挂硬链接（占用不变）', async () => {
+    const content = `cross-chat-${String(Date.now())}`
+    const name = `跨会话报告-${String(Date.now())}.pdf`
 
     const first = await commitFromTemp(staged(content), name, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const before = usage()
 
     const second = await commitFromTemp(staged(content), name, {
-      messageId: MESSAGE_OTHER,
+      chatId: CHAT_OTHER,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
 
     expect(second.created).toBe(false)
     expect(second.storedName).toBe(`${DIR_OTHER}/${name}`)
-    // 两条消息各有一个名字、同一个 inode：目录按消息分区，但"同一份内容只存一份"这条
-    // 不变量不变（[ADR-0052]）。
+    // 两个会话各有一个名字、同一个 inode：目录按会话分区，但"同一份内容只存一份"这条
+    // 不变量不变（[ADR-0052] / [ADR-0055]）。
     expect(statSync(archiveFilePath(second.storedName)).ino).toBe(
       statSync(archiveFilePath(first.storedName)).ino,
     )
@@ -276,7 +276,7 @@ describe('commitFromTemp', () => {
     const content = `stale-${String(Date.now())}`
 
     const result = await commitFromTemp(staged(content), 'x.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
       findStored: () => '早就没了的名字.pdf',
     })
@@ -287,7 +287,7 @@ describe('commitFromTemp', () => {
 
   it('落盘即只读，而只读不妨碍删除', async () => {
     const result = await commitFromTemp(staged(`read-only-${String(Date.now())}`), 'readonly.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const path = archiveFilePath(result.storedName)
@@ -302,15 +302,13 @@ describe('commitFromTemp', () => {
 })
 
 describe('archiveFilePath', () => {
-  it('把相对路径接到归档目录后面（账号 / 消息ID / files 都在 Path 里）', async () => {
+  it('把相对路径接到归档目录后面（账号 / 会话ID / files 都在 Path 里）', async () => {
     const result = await commitFromTemp(staged(`path-${String(Date.now())}`), 'p.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
-    expect(archiveFilePath(result.storedName)).toBe(
-      join(archive, ACCOUNT, MESSAGE, 'files', 'p.pdf'),
-    )
+    expect(archiveFilePath(result.storedName)).toBe(join(archive, ACCOUNT, CHAT, 'files', 'p.pdf'))
   })
 
   it('索引被改坏也走不出归档目录（`..` 被剥掉，只落到一个不存在的名字上）', () => {
@@ -350,12 +348,12 @@ describe('usage', () => {
     expect(usage()).toEqual(before)
   })
 
-  it('消息子目录里的正文照样计入（统计要递归）', async () => {
+  it('会话子目录里的正文照样计入（统计要递归）', async () => {
     const content = `counted-${String(Date.now())}`
     const before = usage()
 
     const result = await commitFromTemp(staged(content), 'counted.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const after = usage()
@@ -365,16 +363,16 @@ describe('usage', () => {
     expect(after.bytes).toBe(before.bytes + content.length)
   })
 
-  it('同一份内容的多个名字只算一份（按 inode 去重，跨消息目录也成立）', async () => {
+  it('同一份内容的多个名字只算一份（按 inode 去重，跨会话目录也成立）', async () => {
     const content = `usage-alias-${String(Date.now())}`
     const first = await commitFromTemp(staged(content), 'a.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const before = usage()
 
     await commitFromTemp(staged(content), 'b.pdf', {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -389,7 +387,7 @@ describe('removeStoredFile', () => {
   it('删掉正文，磁盘上的那个名字确实不见了，占用跟着降下来', async () => {
     const name = `删掉-${String(Date.now())}.pdf`
     const result = await commitFromTemp(staged(`doomed-${String(Date.now())}`), name, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const path = archiveFilePath(result.storedName)
@@ -405,11 +403,11 @@ describe('removeStoredFile', () => {
   it('只删这一个名字：同一份内容的另一个名字（硬链接）不受影响，也不释放字节', async () => {
     const content = `shared-${String(Date.now())}`
     const first = await commitFromTemp(staged(content), `共享甲-${String(Date.now())}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const second = await commitFromTemp(staged(content), `共享乙-${String(Date.now())}.pdf`, {
-      messageId: MESSAGE_OTHER,
+      chatId: CHAT_OTHER,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -418,17 +416,17 @@ describe('removeStoredFile', () => {
     expect(removeStoredFile(first.storedName)).toBe(true)
 
     expect(existsSync(archiveFilePath(first.storedName))).toBe(false)
-    // 另一个消息里那一份还在，占用一个字节都没少 —— "删一条 ≠ 腾空间"（[ADR-0053]）。
+    // 另一个会话里那一份还在，占用一个字节都没少 —— "删一条 ≠ 腾空间"（[ADR-0053]）。
     expect(existsSync(archiveFilePath(second.storedName))).toBe(true)
     expect(usage()).toEqual(before)
   })
 
   it('名字本来就不在时也算成功（那正是目标状态，不是失败）', () => {
-    expect(removeStoredFile(`${ACCOUNT}/${MESSAGE}/files/从来就没有过.pdf`)).toBe(true)
+    expect(removeStoredFile(`${ACCOUNT}/${CHAT}/files/从来就没有过.pdf`)).toBe(true)
   })
 
   it('名字指向目录时拒绝，并且**不**递归删（那不是我们写下的正文）', () => {
-    const relative = `${ACCOUNT}/${MESSAGE}/files/是个目录-${String(Date.now())}`
+    const relative = `${ACCOUNT}/${CHAT}/files/是个目录-${String(Date.now())}`
     mkdirSync(archiveFilePath(relative), { recursive: true })
 
     expect(removeStoredFile(relative)).toBe(false)
@@ -463,11 +461,11 @@ describe('evictToFit', () => {
   it('按最久未访问优先淘汰，而不是按候选给出的顺序', async () => {
     const stamp = Date.now()
     const old = await commitFromTemp(staged(`evict-old-${stamp}`), `旧-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const fresh = await commitFromTemp(staged(`evict-new-${stamp}`), `新-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
@@ -487,11 +485,11 @@ describe('evictToFit', () => {
     const stamp = Date.now()
     const content = `evict-alias-${stamp}`
     const first = await commitFromTemp(staged(content), `别名甲-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const second = await commitFromTemp(staged(content), `别名乙-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
       findStored: (hash) => (hash === first.hash ? first.storedName : null),
     })
@@ -509,7 +507,7 @@ describe('evictToFit', () => {
   it('只删候选里的名字：归档目录里索引不认识的文件一个都不碰', async () => {
     const stamp = Date.now()
     const known = await commitFromTemp(staged(`evict-known-${stamp}`), `已知-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
@@ -530,7 +528,7 @@ describe('evictToFit', () => {
   it('候选指向的文件已经不在时，回传它的哈希（清掉那条悬空记录就是修复）', async () => {
     const stamp = Date.now()
     const live = await commitFromTemp(staged(`evict-live-${stamp}`), `活着-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
     const dangling = 'a'.repeat(64)
@@ -553,7 +551,7 @@ describe('evictToFit', () => {
   it('上限 <= 0（不限制）或占用已达标时不删任何东西', async () => {
     const stamp = Date.now()
     const kept = await commitFromTemp(staged(`evict-keep-${stamp}`), `保留-${stamp}.pdf`, {
-      messageId: MESSAGE,
+      chatId: CHAT,
       openedAt: AT,
     })
 
@@ -566,7 +564,7 @@ describe('evictToFit', () => {
 })
 
 /**
- * 删除路径上的善后（[ADR-0054]）：删掉一条消息的最后一份正文后，那几层空目录应当一起消失，
+ * 删除路径上的善后（[ADR-0054]）：删掉某个会话的最后一份正文后，那几层空目录应当一起消失，
  * 而不是在用户的归档目录里留一串既解释不了也点不开的空壳。
  *
  * 每个用例都用**自己的**归档目录：这一组要断言的恰恰是"删到最后连账号那一层也没了"，
@@ -587,14 +585,14 @@ describe('pruneEmptyFolders', () => {
     setArchiveDir(archive)
   })
 
-  it('删掉一条消息的最后一份正文后，消息目录与账号那一层一起消失，归档根留着', async () => {
+  it('删掉一个会话的最后一份正文后，会话目录与账号那一层一起消失，归档根留着', async () => {
     const own = freshArchive('last')
-    const message = '3EB0PRUNE000000000001'
+    const chat = '18665597401@c.us'
     const result = await commitFromTemp(staged('prune-last'), 'p.pdf', {
-      messageId: message,
+      chatId: chat,
       openedAt: AT,
     })
-    const dir = join(own, ACCOUNT, message)
+    const dir = join(own, ACCOUNT, chat)
 
     expect(existsSync(join(dir, 'files', 'p.pdf'))).toBe(true)
     expect(removeStoredFile(result.storedName)).toBe(true)
@@ -607,15 +605,15 @@ describe('pruneEmptyFolders', () => {
     expect(existsSync(own)).toBe(true)
   })
 
-  it('同一条消息里还有别的正文时停在那一层（绝不删非空目录）', async () => {
+  it('同一个会话里还有别的正文时停在那一层（绝不删非空目录）', async () => {
     const own = freshArchive('keep')
-    const message = '3EB0PRUNE000000000002'
+    const chat = '18665597402@c.us'
     const kept = await commitFromTemp(staged('prune-keep-a'), '留.pdf', {
-      messageId: message,
+      chatId: chat,
       openedAt: AT,
     })
     const gone = await commitFromTemp(staged('prune-keep-b'), '删.pdf', {
-      messageId: message,
+      chatId: chat,
       openedAt: AT,
     })
 
@@ -623,23 +621,37 @@ describe('pruneEmptyFolders', () => {
     pruneEmptyFolders(gone.storedName)
 
     expect(existsSync(archiveFilePath(kept.storedName))).toBe(true)
-    expect(existsSync(join(own, ACCOUNT, message, 'files'))).toBe(true)
+    expect(existsSync(join(own, ACCOUNT, chat, 'files'))).toBe(true)
   })
 
   it('容器是符号链接时跳过它（INVARIANTS G-4）', () => {
     const own = freshArchive('symlink')
-    const message = '3EB0PRUNE000000000003'
-    const container = join(own, ACCOUNT, message)
+    const chat = '18665597403@c.us'
+    const container = join(own, ACCOUNT, chat)
     const outside = join(root, 'outside-empty')
     mkdirSync(container, { recursive: true })
     mkdirSync(outside, { recursive: true })
     symlinkSync(outside, join(container, 'files'))
 
-    pruneEmptyFolders(`${ACCOUNT}/${message}/files/正文.pdf`)
+    pruneEmptyFolders(`${ACCOUNT}/${chat}/files/正文.pdf`)
 
     // 归档目录内不跟随符号链接 —— 跳过它，也就不会顺着它清掉归档**外面**的目录。
     expect(existsSync(join(container, 'files'))).toBe(true)
     expect(existsSync(outside)).toBe(true)
+  })
+
+  it('[ADR-0052] 留下的消息ID 目录同样会被收掉（老数据不必手工清）', async () => {
+    const own = freshArchive('legacy-message')
+    const message = '3EB0A1B2C3D4E5F6A7B8'
+    const result = await commitFromTemp(staged('prune-legacy'), '旧.pdf', {
+      chatId: message,
+      openedAt: AT,
+    })
+
+    expect(removeStoredFile(result.storedName)).toBe(true)
+    pruneEmptyFolders(result.storedName)
+
+    expect(existsSync(join(own, ACCOUNT, message))).toBe(false)
   })
 
   it('旧布局的空年月目录同样收掉（[ADR-0037] / [ADR-0039]）', () => {
@@ -663,9 +675,9 @@ describe('pruneEmptyFolders', () => {
 
   it('单删一个名字不负责清容器 —— 清理是删除路径的职责（[ADR-0054]）', async () => {
     const own = freshArchive('scope')
-    const message = '3EB0PRUNE000000000009'
+    const chat = '18665597409@c.us'
     const result = await commitFromTemp(staged('prune-scope'), 'x.pdf', {
-      messageId: message,
+      chatId: chat,
       openedAt: AT,
     })
 
@@ -673,6 +685,6 @@ describe('pruneEmptyFolders', () => {
 
     // `removeStoredFile()` 与淘汰（`evictToFit()`）是两套语义，因此清理只能由调用方显式要求：
     // 把清理塞进 `removeStoredFile()` 会让淘汰也悄悄开始删目录。
-    expect(existsSync(join(own, ACCOUNT, message, 'files'))).toBe(true)
+    expect(existsSync(join(own, ACCOUNT, chat, 'files'))).toBe(true)
   })
 })

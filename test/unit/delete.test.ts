@@ -159,7 +159,7 @@ describe('deleteRecords', () => {
   })
 
   it('只碰传进来的那些名字 —— 同一份内容的另一个名字必须原样留着', () => {
-    // 同一份内容出现在两条消息里（[ADR-0052] 的硬链接）：用户只选了第一条。
+    // 同一份内容出现在两个会话里（[ADR-0052] / [ADR-0055] 的硬链接）：用户只选了第一条。
     const disk = fake({})
     const first = record(1, '合同.pdf', 'acc/msg-a/files/合同.pdf')
 

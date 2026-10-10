@@ -18,13 +18,13 @@ import { describe, expect, it } from 'vitest'
 import {
   decodeFilehash,
   encodeFilehash,
+  pageChatIdExpression,
   pageLookupExpression,
-  pageMessageIdExpression,
+  pickChatId,
   pickContentHash,
-  pickMessageId,
   pickSingle,
   readPageHashes,
-  readPageMessageIds,
+  readPageChatIds,
 } from '../../src/main/capture/early-identity'
 
 /** 真机实测里 `DZ2602 freight cost.xlsx` 的那一对：base64 与 hex 是同一个值。 */
@@ -39,8 +39,13 @@ interface FakeMessage {
   filename?: string
   size?: number
   filehash?: string
-  /** `msg.id`：真机上是 `{fromMe, remote, id, $1}`；也允许直接是字符串。 */
-  id?: string | { id?: string; _serialized?: string; remote?: string }
+  /**
+   * `msg.id`：真机上是 `{fromMe, remote, id, _serialized}`（`_serialized` 是
+   * `<fromMe>_<remote>_<消息ID>`）—— **会话**要从 `remote` 取，另外两个都是消息级的。
+   */
+  id?: string | { id?: string; _serialized?: string; remote?: string | { _serialized?: string } }
+  /** `msg.from`：同一个会话 JID 的另一种写法，`remote` 取不到时的回落。 */
+  from?: string | { _serialized?: string }
   mediaData?: { size?: number; mimetype?: string; filehash?: string }
 }
 
@@ -59,14 +64,14 @@ function runOnPage(messages: readonly FakeMessage[], name: string, bytes: number
   return new Function('window', `return ${pageLookupExpression(name, bytes)}`)(target) as string
 }
 
-/** 同上，但跑的是"按内容哈希取消息ID"那段脚本（[ADR-0052]）。 */
+/** 同上，但跑的是"按内容哈希取会话ID"那段脚本（[ADR-0055]）。 */
 function runOnPageForId(messages: readonly FakeMessage[], filehash: string): string {
   const target = {
     require: (moduleName: string) =>
       moduleName === 'WAWebCollections' ? { Msg: { getModelsArray: () => messages } } : undefined,
   }
 
-  return new Function('window', `return ${pageMessageIdExpression(filehash)}`)(target) as string
+  return new Function('window', `return ${pageChatIdExpression(filehash)}`)(target) as string
 }
 
 const hashesOf = (raw: string): string[] => readPageHashes(raw)
@@ -212,14 +217,19 @@ describe('H1：页面脚本（真跑一遍）', () => {
 })
 
 /**
- * 消息ID（[ADR-0052]）：归档路径 `<账号>/<消息ID>/files/` 需要它。
+ * 会话ID（[ADR-0055]，取代 [ADR-0052] 的消息ID）：归档路径 `<账号>/<会话ID>/files/` 需要它。
  *
- * 这一层决定**文件落进谁的消息目录**，因此与 H1 同样是"错就错得很安静"的一类。
- * 两条纪律：只认**哈希逐字相同**的那条消息；候选多于一个就放弃（调用方回落
- * `unknown-message`）—— 宁可分不出，不可分错。
+ * 这一层决定**文件落进谁那个会话的目录**，因此与 H1 同样是"错就错得很安静"的一类。
+ * 三条纪律：
+ *
+ *   1. 只认**哈希逐字相同**的那条消息；
+ *   2. 取 `msg.id.remote`（会话 JID），**不是** `msg.id.id`，也不是 `msg.id._serialized`
+ *      —— 最后那个串是 `<fromMe>_<remote>_<消息ID>`，拿它当会话用等于给每条消息建一个目录
+ *      （那正是 [ADR-0052] 时期的行为，也正是 [ADR-0055] 要改掉的东西）；
+ *   3. 候选多于一个就放弃（调用方回落 `unknown-chat`）—— 宁可分不出，不可分错。
  */
-describe('ADR-0052：filehash → 消息ID', () => {
-  const idsOf = (raw: string): string[] => readPageMessageIds(raw)
+describe('ADR-0055：filehash → 会话ID', () => {
+  const idsOf = (raw: string): string[] => readPageChatIds(raw)
 
   it('hex → 页面用的 base64，与 decodeFilehash 互为逆运算', () => {
     expect(encodeFilehash(REAL_HEX)).toBe(REAL_BASE64)
@@ -233,67 +243,90 @@ describe('ADR-0052：filehash → 消息ID', () => {
     expect(encodeFilehash('z'.repeat(64))).toBeNull()
   })
 
-  it('按哈希精确命中，取 `msg.id.id`', () => {
+  it('按哈希精确命中，取 `msg.id.remote`（会话 JID）而不是 `msg.id.id`', () => {
     const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
-    ;(messages[0] as FakeMessage).id = { id: '3EB0A1B2C3D4E5F6', remote: 'x@c.us' }
+    ;(messages[0] as FakeMessage).id = { id: '3EB0A1B2C3D4E5F6', remote: '18665597400@c.us' }
 
-    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['3EB0A1B2C3D4E5F6'])
+    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['18665597400@c.us'])
   })
 
-  it('`msg.id` 直接是字符串时也能取（_serialized 缺失的兜底）', () => {
+  it('`remote` 是 Wid 对象时读它的 `_serialized`', () => {
     const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
-    ;(messages[0] as FakeMessage).id = '3EB0-STRING-ID'
+    ;(messages[0] as FakeMessage).id = {
+      id: '3EB0A1B2C3D4E5F6',
+      remote: { _serialized: '120363012345678901@g.us' },
+    }
 
-    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['3EB0-STRING-ID'])
+    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['120363012345678901@g.us'])
+  })
+
+  it('`remote` 取不到时回落 `msg.from`，**绝不**拿 `msg.id._serialized` 冒充会话', () => {
+    const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
+    // 真机上的 `_serialized` 是 `<fromMe>_<remote>_<消息ID>`：把它当会话用，同一会话里的
+    // 每一份文件都会落进各自的目录，等于退回 [ADR-0052]。
+    ;(messages[0] as FakeMessage).id = {
+      id: '3EB0A1B2C3D4E5F6',
+      _serialized: 'false_18665597400@c.us_3EB0A1B2C3D4E5F6',
+    }
+    ;(messages[0] as FakeMessage).from = '18665597400@c.us'
+
+    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual(['18665597400@c.us'])
+  })
+
+  it('连会话标识都取不到时返回空，而不是退回去用消息ID', () => {
+    const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
+    ;(messages[0] as FakeMessage).id = { id: '3EB0A1B2C3D4E5F6' }
+
+    expect(idsOf(runOnPageForId(messages, REAL_BASE64))).toEqual([])
   })
 
   it('哈希对不上 / 拿不到消息集合 ⇒ 空（安静失败，不抛错）', () => {
     const messages: FakeMessage[] = [documentMessage('报告.pdf', 10, REAL_BASE64)]
-    ;(messages[0] as FakeMessage).id = { id: 'X' }
+    ;(messages[0] as FakeMessage).id = { remote: '18665597400@c.us' }
 
     expect(idsOf(runOnPageForId(messages, OTHER_BASE64))).toEqual([])
 
-    const empty = new Function('window', `return ${pageMessageIdExpression(REAL_BASE64)}`)(
+    const empty = new Function('window', `return ${pageChatIdExpression(REAL_BASE64)}`)(
       {},
     ) as string
 
     expect(idsOf(empty)).toEqual([])
   })
 
-  it('同一份内容被转发（两条消息）⇒ 两个 id ⇒ 放弃，回落到 unknown-message', () => {
+  it('同一份内容在**两个会话**里各出现一次 ⇒ 两个 JID ⇒ 放弃，回落到 unknown-chat', () => {
     const first: FakeMessage = {
       ...documentMessage('报告.pdf', 10, REAL_BASE64),
-      id: { id: 'AAA' },
+      id: { remote: '111@c.us' },
     }
     const second: FakeMessage = {
       ...documentMessage('报告.pdf', 10, REAL_BASE64),
-      id: { id: 'BBB' },
+      id: { remote: '222@c.us' },
     }
 
     const raw = runOnPageForId([first, second], REAL_BASE64)
 
-    expect(idsOf(raw)).toEqual(['AAA', 'BBB'])
-    expect(pickMessageId(raw)).toBeNull()
+    expect(idsOf(raw)).toEqual(['111@c.us', '222@c.us'])
+    expect(pickChatId(raw)).toBeNull()
   })
 
-  it('两条消息指同一个 id（同一份内容重复出现）仍算唯一', () => {
+  it('同一份内容在同一个会话里出现两次仍算唯一（会话级分区比消息级宽）', () => {
     const first: FakeMessage = {
       ...documentMessage('报告.pdf', 10, REAL_BASE64),
-      id: { id: 'AAA' },
+      id: { remote: '111@c.us' },
     }
     const second: FakeMessage = {
       ...documentMessage('报告.pdf', 10, REAL_BASE64),
-      id: { id: 'AAA' },
+      id: { remote: '111@c.us' },
     }
 
-    expect(pickMessageId(runOnPageForId([first, second], REAL_BASE64))).toBe('AAA')
+    expect(pickChatId(runOnPageForId([first, second], REAL_BASE64))).toBe('111@c.us')
   })
 
   it('页面回复解析失败一律当成"没有"', () => {
-    expect(readPageMessageIds('{ not json')).toEqual([])
-    expect(readPageMessageIds(undefined)).toEqual([])
-    expect(readPageMessageIds('{}')).toEqual([])
-    expect(readPageMessageIds('{"ids":"x"}')).toEqual([])
-    expect(readPageMessageIds('{"ids":["a",1,null]}')).toEqual(['a'])
+    expect(readPageChatIds('{ not json')).toEqual([])
+    expect(readPageChatIds(undefined)).toEqual([])
+    expect(readPageChatIds('{}')).toEqual([])
+    expect(readPageChatIds('{"ids":"x"}')).toEqual([])
+    expect(readPageChatIds('{"ids":["a",1,null]}')).toEqual(['a'])
   })
 })

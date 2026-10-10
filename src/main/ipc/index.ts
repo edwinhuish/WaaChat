@@ -559,7 +559,7 @@ export function registerIpcHandlers(): void {
       found,
       removeStoredFile,
       (id) => store.deleteById(id),
-      // 删掉某条消息的最后一份正文后，那几层空掉的消息目录一并收掉（[ADR-0054]）。
+      // 删掉某个会话的最后一份正文后，那几层空掉的目录一并收掉（[ADR-0054]）。
       pruneEmptyFolders,
     )
 

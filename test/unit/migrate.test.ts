@@ -305,20 +305,23 @@ describe('migrateArchive（索引清单）', () => {
 })
 
 /**
- * 分层容器（[ADR-0037] / [ADR-0039] / [ADR-0052]）。
+ * 分层容器（[ADR-0037] / [ADR-0039] / [ADR-0052] / [ADR-0055]）。
  *
  * 上面那些用例照旧跑**平面布局**（正文直接躺在根下），而且必须继续通过：老归档就是这样，
  * 索引里的 `stored_name` 记着它们在哪儿 —— 迁移要同时伺候**所有**历史形态。
  *
  * 这里补的是分层的那几种，外加"什么才算我们的容器"这条判据：放宽会把用户自己的目录当成
- * 正文搬走，收紧则会让**自己写下的**归档根本迁移不了。
+ * 正文搬走，收紧则会让**自己写下的**归档根本迁移不了（[ADR-0052] 的消息ID 目录就是后一类）。
  */
 describe('migrateArchive（分层容器）', () => {
   /** 任意一个 UUID 形状的账号名（判据只认形状，见 `layout.isAccountSegment`）。 */
   const ACCOUNT = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
-  /** 现在写入的布局：`<账号>/<消息ID>/files/`（[ADR-0052]）。 */
-  const MESSAGE = '3EB0A1B2C3D4E5F6A7B8'
-  const MODERN_BLOB = `${ACCOUNT}/${MESSAGE}/files/2026年第三季度采购合同.pdf`
+  /** 现在写入的布局：`<账号>/<会话ID>/files/`（[ADR-0055]）。 */
+  const CHAT = '18665597400@c.us'
+  const MODERN_BLOB = `${ACCOUNT}/${CHAT}/files/2026年第三季度采购合同.pdf`
+  /** [ADR-0052] 的布局：`<账号>/<消息ID>/files/`（写不出了，但磁盘上到处都是）。 */
+  const LEGACY_MESSAGE = '3EB0A1B2C3D4E5F6A7B8'
+  const LEGACY_MESSAGE_BLOB = `${ACCOUNT}/${LEGACY_MESSAGE}/files/2026年第三季度采购合同.pdf`
   /** [ADR-0039] 的布局：`<账号>/files/<年-月>/`（现在只读得到、写不出了）。 */
   const ACCOUNT_MONTH_BLOB = `${ACCOUNT}/files/2026-10/2026年第三季度采购合同.pdf`
   /** [ADR-0037] 当时的两层布局：`<年>/<月>/`。 */
@@ -340,14 +343,18 @@ describe('migrateArchive（分层容器）', () => {
     expect(planned.summary).toEqual({ files: 1, bytes: MONTH_BODY.length })
   })
 
-  it('旧布局同样进计划（[ADR-0039] 的账号/月 与 [ADR-0037] 的年月，老归档必须还能迁移）', () => {
+  it('旧布局同样进计划（[ADR-0039] 的账号/月、[ADR-0037] 的年月、[ADR-0052] 的消息ID）', () => {
     seedBlob(ACCOUNT_MONTH_BLOB)
     seedBlob(LEGACY_BLOB)
+    seedBlob(LEGACY_MESSAGE_BLOB)
 
     const planned = plan()
 
     expect(planned.entries).toContain(ACCOUNT_MONTH_BLOB)
     expect(planned.entries).toContain(LEGACY_BLOB)
+    // [ADR-0055] 换了第二级的含义，但形状判据同时覆盖两代 —— 收紧会让老归档整次迁移失败。
+    expect(planned.entries).toContain(LEGACY_MESSAGE_BLOB)
+    expect(planned.summary.files).toBe(3)
   })
 
   it('连子目录一起搬到新位置，并删掉搬空的源目录', async () => {
@@ -404,14 +411,14 @@ describe('migrateArchive（分层容器）', () => {
     expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
   })
 
-  it('账号目录里只允许 `files`（旧布局）或消息目录，别的名字是异常', () => {
+  it('账号目录里只允许 `files`（旧布局）或会话目录，别的名字是异常', () => {
     mkdirSync(join(source, ACCOUNT, 'movies'), { recursive: true })
 
     expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
   })
 
-  it('消息目录里只允许 files，别的名字是异常', () => {
-    mkdirSync(join(source, ACCOUNT, MESSAGE, 'attachments'), { recursive: true })
+  it('会话目录里只允许 files，别的名字是异常', () => {
+    mkdirSync(join(source, ACCOUNT, CHAT, 'attachments'), { recursive: true })
 
     expect(planMigration(source, target)).toMatchObject({ failure: 'unexpected-content' })
   })

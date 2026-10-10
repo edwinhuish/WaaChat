@@ -13,12 +13,13 @@
  *     文件操作一律走 `node:fs/promises`。用同步 API 会让主进程卡住，界面连同承载
  *     上游页面的那个窗口一起失去响应。
  *
- * ── 分层容器（[ADR-0037] / [ADR-0039] / [ADR-0052]）──
+ * ── 分层容器（[ADR-0037] / [ADR-0039] / [ADR-0052] / [ADR-0055]）──
  *
- * 正文在 `<账号>/<消息ID>/files/` 里（历史上还出现过 `<账号>/files/<年-月>/`、
- * `<年-月>/` 与 `<年>/<月>/`），因此搬运的清单是**相对路径**，目标那一侧的同名子目录会被
- * 建出来。两边都要收掉自己留下的**空壳**（源位置搬空之后、回滚之后），否则"搬完了"却删不掉
- * 旧目录，用户看到的是一个空目录树 —— 那与"早就搬干净了"在界面上没法区分。
+ * 正文在 `<账号>/<会话ID>/files/` 里（历史上还出现过 `<账号>/<消息ID>/files/`、
+ * `<账号>/files/<年-月>/`、`<年-月>/` 与 `<年>/<月>/`），因此搬运的清单是**相对路径**，
+ * 目标那一侧的同名子目录会被建出来。两边都要收掉自己留下的**空壳**（源位置搬空之后、回滚
+ * 之后），否则"搬完了"却删不掉旧目录，用户看到的是一个空目录树 —— 那与"早就搬干净了"在
+ * 界面上没法区分。
  *
  * 容器判据在 `containerKind()`：一张"父容器 → 允许的孩子"的转移表。它同时是**安全边界**
  * —— 形状不对的目录（用户自己放进来的）会让整次迁移失败，而不是被当成我们的东西搬走。
@@ -55,9 +56,9 @@ import {
   FILES_SEGMENT,
   isAccountSegment,
   isArchiveMonthDir,
+  isChatSegment,
   isLegacyMonthDir,
   isLegacyYearDir,
-  isMessageSegment,
 } from './layout'
 
 /** 索引数据库及其 WAL 附属文件（`-wal` / `-shm`）的名字前缀。 */
@@ -163,8 +164,9 @@ interface SourceScan {
  *   1. 正文（根下的非点开头文件；或下面任何一种容器里的文件）
  *   2. 索引（根下的 `.index.sqlite*`）
  *   3. 我们自己的派生物（根下的 `.part-*`，或点开头的目录 `.open/`）
- *   4. **我们写下的容器**，逐个历史版本都要认（[ADR-0037] / [ADR-0039] / [ADR-0052]）：
- *        `<账号>/<消息ID>/files/`  ← 现在
+ *   4. **我们写下的容器**，逐个历史版本都要认（[ADR-0037] / [ADR-0039] / [ADR-0052] / [ADR-0055]）：
+ *        `<账号>/<会话ID>/files/`  ← 现在（ADR-0055）
+ *        `<账号>/<消息ID>/files/`  ← ADR-0052（判据与上面那种同形，见 `isChatSegment`）
  *        `<账号>/files/<年-月>/`   ← ADR-0039
  *        `<年-月>/`                ← ADR-0037 之后、ADR-0039 之前的月份目录
  *        `<年>/<月>/`              ← ADR-0037 当时的两层
@@ -227,17 +229,17 @@ function scanSource(dir: string): SourceScan {
 /**
  * 我们写下的容器种类（按父容器决定下一层允许什么）。
  *
- * `legacy-files` 与 `message-files` 都是名为 `files` 的目录，但**父容器不同、含义不同**
- * （前者是 [ADR-0039] 的 `<账号>/files/<年-月>/`，后者是 [ADR-0052] 的
- * `<账号>/<消息ID>/files/`），因此拆成两种：混成一种就分不清 `files` 下面该出现月份
+ * `legacy-files` 与 `chat-files` 都是名为 `files` 的目录，但**父容器不同、含义不同**
+ * （前者是 [ADR-0039] 的 `<账号>/files/<年-月>/`，后者是 [ADR-0052] / [ADR-0055] 的
+ * `<账号>/<会话ID>/files/`），因此拆成两种：混成一种就分不清 `files` 下面该出现月份
  * 还是正文。
  */
 type ContainerKind =
   | 'root'
   | 'account'
-  | 'message'
+  | 'chat'
   | 'legacy-files'
-  | 'message-files'
+  | 'chat-files'
   | 'month'
   | 'legacy-year'
   | 'legacy-month'
@@ -257,12 +259,12 @@ function containerKind(parent: ContainerKind, name: string): ContainerKind | nul
 
     case 'account':
       // 旧布局 `<账号>/files/<年-月>/…`（[ADR-0039]）与新布局
-      // `<账号>/<消息ID>/files/…`（[ADR-0052]）在这一层靠 `files` 这个名字分开。
+      // `<账号>/<会话ID>/files/…`（[ADR-0052] / [ADR-0055]）在这一层靠 `files` 这个名字分开。
       if (name === FILES_SEGMENT) return 'legacy-files'
-      return isMessageSegment(name) ? 'message' : null
+      return isChatSegment(name) ? 'chat' : null
 
-    case 'message':
-      return name === FILES_SEGMENT ? 'message-files' : null
+    case 'chat':
+      return name === FILES_SEGMENT ? 'chat-files' : null
 
     case 'legacy-files':
       return isArchiveMonthDir(name) ? 'month' : null
@@ -270,7 +272,7 @@ function containerKind(parent: ContainerKind, name: string): ContainerKind | nul
     case 'legacy-year':
       return isLegacyMonthDir(name) ? 'legacy-month' : null
 
-    // 月份目录与消息的 `files` 目录里只有正文 —— 再出现目录就是异常。
+    // 月份目录与会话的 `files` 目录里只有正文 —— 再出现目录就是异常。
     default:
       return null
   }
@@ -548,11 +550,11 @@ function listTargetEntries(dir: string): string[] {
  *
  * 我们的东西只有几类：正文（根下的非点开头文件，或下面任何一种容器里的文件）、索引
  * （根下的 `.index.sqlite*`）、我们自己的临时文件（根下的 `.part-*`）、以及承载正文的
- * **我们写下的容器** —— `<账号>/<消息ID>/files/`（[ADR-0052]）、`<账号>/files/<年-月>/`
- * （[ADR-0039]）、`<年-月>/`、`年/月/`（[ADR-0037]）。回滚用它把"我们搬过去的"与
- * "别人放进来的"分开。
+ * **我们写下的容器** —— `<账号>/<会话ID>/files/`（[ADR-0055]，其前身是 [ADR-0052] 的
+ * `<账号>/<消息ID>/files/`）、`<账号>/files/<年-月>/`（[ADR-0039]）、`<年-月>/`、
+ * `年/月/`（[ADR-0037]）。回滚用它把"我们搬过去的"与"别人放进来的"分开。
  *
- * 新布局只把顶层那一段（`<账号>`）拿来看就够了：账号目录以下的 `<消息ID>/files/` 与
+ * 新布局只把顶层那一段（`<账号>`）拿来看就够了：账号目录以下的 `<会话ID>/files/` 与
  * 旧布局的 `files/<年-月>/` 都在同一个顶层容器里，必然一起搬。
  *
  * 正文在 [ADR-0031] 之后用**原文名**，没有可判定的名字形态了 —— 因此根下的判据只能放宽成

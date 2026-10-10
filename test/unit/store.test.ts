@@ -151,14 +151,14 @@ describe.skipIf(!available)('ArchiveStore', () => {
     expect(store().byHash(hash)).toHaveLength(2)
   })
 
-  it('同一份内容在不同消息目录里各留一条记录（磁盘上是硬链接，[ADR-0052]）', () => {
+  it('同一份内容在不同会话目录里各留一条记录（磁盘上是硬链接，[ADR-0052] / [ADR-0055]）', () => {
     const hash = 'c2'.repeat(32)
 
     store().record(
       entry({
         hash,
         name: '合同.pdf',
-        storedName: 'acc/msg-a/files/合同.pdf',
+        storedName: 'acc/111@c.us/files/合同.pdf',
         bytes: 1,
         mime: '',
         openedAt: 1_000,
@@ -168,18 +168,18 @@ describe.skipIf(!available)('ArchiveStore', () => {
       entry({
         hash,
         name: '合同.pdf',
-        storedName: 'acc/msg-b/files/合同.pdf',
+        storedName: 'acc/222@c.us/files/合同.pdf',
         bytes: 1,
         mime: '',
         openedAt: 2_000,
       }),
     )
 
-    // 判重键里的"容器"（哪条消息）不同 ⇒ 两条记录，否则其中一条路径会变成没人认识的孤儿。
+    // 判重键里的"容器"（哪个会话）不同 ⇒ 两条记录，否则其中一条路径会变成没人认识的孤儿。
     expect(store().byHash(hash)).toHaveLength(2)
   })
 
-  it('同一条消息里磁盘名换了候选时更新同一行，而不是多一条重复记录', () => {
+  it('同一个会话里磁盘名换了候选时更新同一行，而不是多一条重复记录', () => {
     const hash = 'c3'.repeat(32)
 
     const first = store().record(

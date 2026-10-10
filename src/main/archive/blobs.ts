@@ -14,13 +14,14 @@
  *   2. **同一份内容**：只存一份。名字相同时丢掉临时文件；名字不同时给已有内容**再挂一个
  *      名字**（硬链接，不额外占字节）。因此 `usage()` 必须按 inode 去重统计。
  *
- * ── 落进哪一层：账号 / 消息ID / files ──
+ * ── 落进哪一层：账号 / 会话ID / files ──
  *
- * 正文落在 `<归档目录>/<账号>/<消息ID>/files/`（[ADR-0052]），这些目录由
- * `ensureArchiveFolder()` 按需创建并收到 `0700`。**同名的判据因此变成"同一条消息的目录内"**：
- * 两条消息各发来一份 `合同.pdf`，各自落在自己的消息目录里、互不干扰 —— 不再需要哈希后缀，
- * 这是分区带来的好处；而同一份**内容**出现在两条消息里时仍然是硬链接（不同目录、同一个
- * inode），占用不变、但每条消息都认得自己的那一份。
+ * 正文落在 `<归档目录>/<账号>/<会话ID>/files/`（[ADR-0052] 的分区维度 / [ADR-0055] 的第二级），
+ * 这些目录由 `ensureArchiveFolder()` 按需创建并收到 `0700`。**同名的判据因此变成"同一个会话的
+ * 目录内"**：两个会话各发来一份 `合同.pdf`，各自落在自己的会话目录里、互不干扰 —— 不需要哈希
+ * 后缀，这是分区带来的好处；而同一个会话里两份**不同内容**的同名文件才需要它（`naming.ts` 的
+ * 候选名）。同一份**内容**出现在不同会话里时仍然是硬链接（不同目录、同一个 inode），占用不变、
+ * 但每个会话都认得自己的那一份。
  *
  * 临时文件**始终落在归档目录根**：`rename` 要求同一文件系统（根与年月子目录必然同盘），
  * 而 `sweepTempFiles()` 因此不必递归。
@@ -57,10 +58,10 @@ import { TEMP_FILE_PREFIX } from '../../shared/constants'
 import { hashPrefix, logger, redactPath } from '../logger'
 import { accountKey, archiveDir } from '../paths'
 import {
+  CHAT_FALLBACK,
   FILES_SEGMENT,
-  MESSAGE_FALLBACK,
   archiveStoredPath,
-  normalizeMessageId,
+  normalizeChatId,
   normalizeStoredPath,
 } from './layout'
 import { archiveNameCandidates } from './naming'
@@ -101,12 +102,12 @@ export function ensureArchiveDir(): void {
 }
 
 /**
- * 确保归档目录里的某个**容器**（相对路径，如 `<账号>/<消息ID>/files`）存在，权限正确（`0700`）。
+ * 确保归档目录里的某个**容器**（相对路径，如 `<账号>/<会话ID>/files`）存在，权限正确（`0700`）。
  * 幂等。
  *
  * 只由落盘路径调用（[ADR-0052]）。它**不做净化**：这里的输入全部由我们自己
- * 拼出来（账号名已由 `paths.normalizeAccountKey()` 净化过、消息ID 已由
- * `layout.normalizeMessageId()` 净化过），若它不成形，说明调用方写错了 —— 那时 `mkdir`
+ * 拼出来（账号名已由 `paths.normalizeAccountKey()` 净化过、会话ID 已由
+ * `layout.normalizeChatId()` 净化过），若它不成形，说明调用方写错了 —— 那时 `mkdir`
  * 会老老实实建出一个怪目录，比抛错更难查。
  */
 export function ensureArchiveFolder(folder: string): void {
@@ -116,9 +117,10 @@ export function ensureArchiveFolder(folder: string): void {
 /**
  * 归档目录里某个文件（或年月子目录）的完整路径。
  *
- * @param storedName 相对归档目录的**路径**：现在是 `<账号>/<消息ID>/files/<文件名>`
- *   （如 `18665597400/3EB0A1B2…/files/合同.pdf`，[ADR-0052]）；旧记录是
- *   `<账号>/files/<年-月>/…`（[ADR-0039]）、`2026/10/…`（[ADR-0037]）或裸文件名。
+ * @param storedName 相对归档目录的**路径**：现在是 `<账号>/<会话ID>/files/<文件名>`
+ *   （如 `18665597400/18665597400@c.us/files/合同.pdf`，[ADR-0055]）；旧记录是
+ *   `<账号>/<消息ID>/files/…`（[ADR-0052]）、`<账号>/files/<年-月>/…`（[ADR-0039]）、
+ *   `2026/10/…`（[ADR-0037]）或裸文件名。
  *   各形态都对，因为这里做的就是把它接到归档目录后面。调用方从
  *   `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值拿到它。
  */
@@ -195,7 +197,8 @@ export function setReadOnly(path: string): void {
  * 与 `evictToFit()` 的区别在语义，不要合并：
  *   - 淘汰要的是"这份内容不再占字节"，因此把**一个哈希下的全部名字**一起删（[ADR-0048]）；
  *   - 这里是用户点着**某一行**说"删掉它"，只动那一行指着的那**一个**名字 —— 同一份内容被
- *     别的消息引用时（[ADR-0052] 的硬链接），那些名字属于用户没选的别的行，必须原样留着。
+ *     别的会话引用时（[ADR-0052] / [ADR-0055] 的硬链接），那些名字属于用户没选的别的行，
+ *     必须原样留着。
  *
  * ⚠️ 名字指向的不是普通文件（目录、符号链接、设备）时**不动它**：`unlinkSync` 对目录会抛错，
  * 而"递归删掉一个目录"意味着可能删掉一整棵我们不认识的子树。这不是一个清理函数。
@@ -227,9 +230,10 @@ export function removeStoredFile(storedName: string): boolean {
 /**
  * 删掉一条正文之后，把它**因为空掉而失去意义**的那几层容器一并收掉（[ADR-0054]）。
  *
- * 归档按 `<账号>/<消息ID>/files/` 分层（[ADR-0052]），而消息粒度很细：用户删掉某条消息的
+ * 归档按 `<账号>/<会话ID>/files/` 分层（[ADR-0052] / [ADR-0055]）：用户删掉某个会话的
  * 最后一份正文后，那一串目录会变成空壳 —— 在文件管理器里既解释不了也点不开，还会随着使用
- * 越积越多。这里把它们收掉。**本函数只由删除路径调用**（`archive/delete.ts` 注入）：
+ * 越积越多（[ADR-0052] 时期粒度更细，这种空壳几乎每次删除都会产生）。这里把它们收掉。
+ * **本函数只由删除路径调用**（`archive/delete.ts` 注入）：
  * `removeStoredFile()` 的职责仍旧只有"删掉那一个名字"，淘汰（`evictToFit()`）也不走这条路。
  *
  * ── 为什么是 `rmdir`，不是 `readdir` + 递归删 ──
@@ -307,9 +311,9 @@ export function sha256File(path: string): Promise<string> {
 export interface CommitResult {
   readonly hash: string
   /**
-   * 磁盘上的实际路径**相对归档目录**：`<账号>/<消息ID>/files/<文件名>`
-   * （如 `18665597400/3EB0A1B2…/files/合同.pdf`；同名冲突时文件名带一小段哈希后缀，
-   * [ADR-0031] / [ADR-0052]）。
+   * 磁盘上的实际路径**相对归档目录**：`<账号>/<会话ID>/files/<文件名>`
+   * （如 `18665597400/18665597400@c.us/files/合同.pdf`；同名冲突时文件名带一小段哈希后缀，
+   * [ADR-0031] / [ADR-0055]）。
    */
   readonly storedName: string
   readonly bytes: number
@@ -330,24 +334,24 @@ export interface CommitOptions {
   readonly findStored?: (hash: string) => string | null
 
   /**
-   * 消息ID（原始值，未净化）。决定文件落在哪个 `<账号>/<消息ID>/files/` 下（[ADR-0052]）。
+   * 会话ID（原始值，未净化）。决定文件落在哪个 `<账号>/<会话ID>/files/` 下（[ADR-0055]）。
    *
-   * 它与 {@link CommitOptions.resolveMessageId} 二选一：只有在算完哈希之后才知道消息ID
-   * 时（生产路径就是这种）用后者。两者都缺、或净化后不可用 ⇒ 回落到 {@link MESSAGE_FALLBACK}。
+   * 它与 {@link CommitOptions.resolveChatId} 二选一：只有在算完哈希之后才知道会话ID
+   * 时（生产路径就是这种）用后者。两者都缺、或净化后不可用 ⇒ 回落到 {@link CHAT_FALLBACK}。
    */
-  readonly messageId?: string
+  readonly chatId?: string
 
   /**
-   * 算完内容哈希之后再去问页面"这条消息的 ID 是多少"。返回原始值（未净化）。
+   * 算完内容哈希之后再去问页面"这条文件属于哪个会话"。返回原始值（未净化）。
    *
-   * 为什么是一个回调而不是一个值：消息ID 的查找要以**内容哈希**为键（页面上的
+   * 为什么是一个回调而不是一个值：会话ID 的查找要以**内容哈希**为键（页面上的
    * `msg.filehash` 就是明文的 SHA-256），而哈希由本函数算出来 —— 调用方在调用之前拿不到它，
    * 自己再哈希一遍等于对大文件算两遍。
    *
    * **注入**而不是直接 import `capture/`：`archive/` 内部的方向是 `capture → archive`，
    * 反过来 import 会成环，也会把 electron 拖进这个本可单测的模块。
    */
-  readonly resolveMessageId?: (hash: string) => Promise<string | null>
+  readonly resolveChatId?: (hash: string) => Promise<string | null>
 
   /**
    * 归档时间（Unix 毫秒）。它只进索引（`store.record({ openedAt })`），**不再参与分区**
@@ -357,12 +361,12 @@ export interface CommitOptions {
 }
 
 /**
- * 把临时文件提交进归档：落在 `<归档目录>/<账号>/<消息ID>/files/`，文件名用**原文名**
- * （[ADR-0031] / [ADR-0052]）。
+ * 把临时文件提交进归档：落在 `<归档目录>/<账号>/<会话ID>/files/`，文件名用**原文名**
+ * （[ADR-0031] / [ADR-0055]）。
  *
  * 顺序不要重排：
  *
- *   算哈希 → 定消息ID 与名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字"
+ *   算哈希 → 定会话ID 与名字 → 内容已在归档就走"丢弃临时文件 / 挂一个新名字"
  *   → 否则原子改名 → 置只读
  *
  * 用 rename 而不是 copy，是为了让归档目录里**永远不存在半成品**：要么文件不存在，要么它是
@@ -383,20 +387,20 @@ export async function commitFromTemp(
   const account = accountKey()
 
   /**
-   * 消息ID：先看调用方直接给的，再问页面要（以哈希为键），都不可用就回落。
+   * 会话ID：先看调用方直接给的，再问页面要（以哈希为键），都不可用就回落。
    *
-   * 顺序是刻意的 —— 消息ID 决定"同一份内容在别的消息里要不要再挂一个名字"，
+   * 顺序是刻意的 —— 会话ID 决定"同一份内容在别的会话里要不要再挂一个名字"，
    * 因此必须在构造路径之前定下来。
    */
-  const requested = options.messageId ?? (await options.resolveMessageId?.(hash))
-  const messageId = normalizeMessageId(requested) ?? MESSAGE_FALLBACK
+  const requested = options.chatId ?? (await options.resolveChatId?.(hash))
+  const chatId = normalizeChatId(requested) ?? CHAT_FALLBACK
 
-  // 同一份内容可能已经在归档里（可能叫别的名字、可能在别的消息目录、也可能在别的账号目录下）
+  // 同一份内容可能已经在归档里（可能叫别的名字、可能在别的会话目录、也可能在别的账号目录下）
   // —— 那就只多挂一个名字，不再写一份字节。
   const existing = findExisting(hash, bytes, options)
 
   for (const candidate of archiveNameCandidates(rawName, hash)) {
-    const storedName = archiveStoredPath(account, messageId, candidate)
+    const storedName = archiveStoredPath(account, chatId, candidate)
     const target = archiveFilePath(storedName)
 
     if (existsSync(target)) {
@@ -410,7 +414,8 @@ export async function commitFromTemp(
     }
 
     /**
-     * 建容器：`<账号>/<消息ID>/files`（[ADR-0052]），权限 0700（见 `ensureDir()` 那段说明）。
+     * 建容器：`<账号>/<会话ID>/files`（[ADR-0052] / [ADR-0055]），权限 0700（见 `ensureDir()`
+     * 那段说明）。
      *
      * 位置是刻意的 —— **紧挨着下面那次写入**，因为这两步必须落在同一个同步块里：
      *
@@ -422,7 +427,7 @@ export async function commitFromTemp(
      *
      * `rename` 不会建目录，因此这一步仍然必须在写入之前，而不是可以省掉。
      */
-    ensureArchiveFolder(`${account}/${messageId}/${FILES_SEGMENT}`)
+    ensureArchiveFolder(`${account}/${chatId}/${FILES_SEGMENT}`)
 
     if (existing !== null) {
       // 内容在归档里、只是叫别的名字：挂一个硬链接。多一个名字，不多占字节。
@@ -524,12 +529,12 @@ export function usage(): { bytes: number; files: number } {
   const inodes = new Set<number>()
 
   /**
-   * 递归：正文在 `<账号>/<消息ID>/files/` 里（[ADR-0052]，历史布局还有 `<年-月>/`、
-   * `<年>/<月>/` 与裸文件名）。
+   * 递归：正文在 `<账号>/<会话ID>/files/` 里（[ADR-0052] / [ADR-0055]，历史布局还有
+   * `<账号>/<消息ID>/files/`、`<年-月>/`、`<年>/<月>/` 与裸文件名）。
    *
    * 跳过点开头的条目（`.part-*` 半成品、`.index.sqlite*` 索引、旧版 `.open/`）与符号链接
    * （INVARIANTS G-4：归档目录内不跟随符号链接）。inode 集合**跨目录**共用 —— 硬链接可以
-   * 指向另一条消息目录里的正文，按目录分别去重会让占用翻倍。
+   * 指向另一个会话目录里的正文，按目录分别去重会让占用翻倍。
    */
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
