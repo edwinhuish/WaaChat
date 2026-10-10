@@ -284,6 +284,47 @@ ul.archive li:last-child {
   font-size: 12px;
 }
 
+/*
+ * 界面语言的下拉框。与数字框同一套外观（`input[type='number']` 那条规则）—— 两种控件在
+ * 同一页里不该长得像两个来源。
+ */
+.setting .language-select {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  flex: 0 0 auto;
+}
+
+/*
+ * 拼写词典是一张可换行的复选框表，而不是 `<select multiple>`：多选下拉要按住 Ctrl 才能勾
+ * 第二项，而 Desktop 用户不会去猜这件事。固定宽度 + 限高滚动，是因为 18 门语言如果任其铺开，
+ * 这一行会比设置页里的任何一行都长。
+ */
+.setting .languages {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 4px 10px;
+  flex: 0 0 auto;
+  width: 20rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.setting .languages label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+/* 表格里的复选框不参与基线对齐（`margin-top: 3px` 是给单行开关用的）。 */
+.setting .languages label input[type='checkbox'] {
+  margin-top: 0;
+}
+
 /* 归档位置这类"具体值"：等宽 + 可在任意处断行，长路径不能把整行撑破。 */
 .setting .path {
   margin-top: 2px;

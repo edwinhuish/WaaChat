@@ -12,6 +12,7 @@ import { join } from 'node:path'
 
 import { app } from 'electron'
 
+import { normalizeSpellcheckLanguages, normalizeUiLanguage } from '../shared/language'
 import { DEFAULT_SETTINGS, type Settings } from '../shared/types'
 import { logger } from './logger'
 
@@ -41,6 +42,25 @@ function coerce(raw: unknown): Settings {
       logger.warn('settings: type mismatch, using default', { key })
     }
   }
+
+  /**
+   * 两个**枚举型**字段在同一个地方收敛到表内（判据在 `shared/language.ts`）。
+   *
+   * 上面那圈 `typeof` 比对管不住它们：任何字符串都能通过，`en-XX` 也能带走。而存下一个
+   * 我们不认识的值，症状是"设置里显示的是 A、实际按 B 跑" —— 用户没有任何办法看出来。
+   * 因此收敛发生在**读设置的那一刻**，而不是在各个消费点上各判一次（那样必然漏一处）。
+   */
+  const uiLanguage = normalizeUiLanguage(result['uiLanguage'])
+  if (uiLanguage !== result['uiLanguage']) {
+    logger.warn('settings: unknown interface language, falling back to the default')
+  }
+  result['uiLanguage'] = uiLanguage
+
+  const spellcheckLanguages = normalizeSpellcheckLanguages(result['spellcheckLanguages'])
+  if (spellcheckLanguages !== result['spellcheckLanguages']) {
+    logger.warn('settings: adjusted the spellcheck dictionaries to the known list')
+  }
+  result['spellcheckLanguages'] = spellcheckLanguages
 
   return result as unknown as Settings
 }

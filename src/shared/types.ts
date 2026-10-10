@@ -3,7 +3,13 @@
  *
  * 只放**数据形状**，不放实现。这里出现的类型不应该导入任何 Electron 类型 ——
  * 渲染进程也要能编译它。
+ *
+ * 唯一的例外是下面两个**默认值常量**（`./language`）。它们在这里被 import 而不是抄写，
+ * 是因为"抄一遍"等于让两处说同一件事，改动时必然漏一处 —— 与 `constants.ts` 里删掉
+ * 同值 `cacheBytes` 的那段说明是同一个理由。那两个常量同样是纯数据。
  */
+
+import { DEFAULT_SPELLCHECK_LANGUAGES, DEFAULT_UI_LANGUAGE } from './language'
 
 // ---------------------------------------------------------------------------
 // 归档
@@ -103,6 +109,29 @@ export interface Settings {
   readonly enableCiphertextCache: boolean
   /** 是否随桌面会话自启动。 */
   readonly launchAtLogin: boolean
+  /**
+   * 内嵌页面的界面语言（[ADR-0060]）。值取自 `shared/language.ts` 的 `UI_LANGUAGES`。
+   *
+   * 它改的是**会话的 `Accept-Language` 请求头**，上游页面据此挑自己的语言包 ——
+   * 我们一个字都不往页面里写（[INV-1]）。因此它**不跟随我们的界面文案语言**：
+   * 这两件事没有关系（我们的界面只有中文，见 `ai/CONVENTIONS.md` 第 1 节）。
+   */
+  readonly uiLanguage: string
+  /**
+   * 是否启用内核自带的拼写检查（[ADR-0061]）。
+   *
+   * 关掉它是一个**真实的**选择，而不只是偏好：词典由内核按需从第三方下载（默认是 Google
+   * 托管的 CDN），关掉之后那个请求不会发生。取舍见 `docs/security.md` 第 3 节。
+   */
+  readonly spellcheck: boolean
+  /**
+   * 拼写检查要查哪些语言，逗号分隔（判据表在 `shared/language.ts`）。
+   *
+   * 为什么用字符串而不是数组：Electron 自己的 `acceptLanguages` 就是这个形状，而"查哪些语言"
+   * 是一组**顺序无关**的码 —— 一个形状表达两者，设置层便不必为"数组"这一种新类型单开一套
+   * 逐字段校验（`settings.ts` 的 `coerce()` 只按 `typeof` 比对）。
+   */
+  readonly spellcheckLanguages: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -114,6 +143,9 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheMaxBytes: 2 * 1024 * 1024 * 1024,
   enableCiphertextCache: true,
   launchAtLogin: false,
+  uiLanguage: DEFAULT_UI_LANGUAGE,
+  spellcheck: true,
+  spellcheckLanguages: DEFAULT_SPELLCHECK_LANGUAGES,
 }
 
 /**

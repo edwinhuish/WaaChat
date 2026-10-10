@@ -30,6 +30,13 @@
 import { actionButtonAttrs } from '../../shared/action-button'
 import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
+import {
+  DEFAULT_UI_LANGUAGE,
+  SPELLCHECK_LANGUAGES,
+  UI_LANGUAGES,
+  formatLanguageList,
+  parseLanguageList,
+} from '../../shared/language'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
 import {
@@ -108,6 +115,17 @@ const TOGGLES: readonly ToggleSpec[] = [
     key: 'launchAtLogin',
     label: '开机自启',
     hint: '登录桌面后自动启动并保持连接，这样通知不会漏掉。',
+  },
+  {
+    key: 'spellcheck',
+    /**
+     * 这一行**真的有作用**（因此不设 `enforced: false`）：它直接接到会话的
+     * `setSpellCheckerEnabled`，关掉之后内核不再标注任何词 —— 而关掉它同时也是
+     * "不要从第三方下载词典"的唯一开关（默认的词典下载源是 Google 托管的 CDN，
+     * 见 `docs/security.md`）。
+     */
+    label: '拼写检查',
+    hint: '在消息输入框里标注拼错的词（内核自带，不往页面注入任何东西）。关掉后也不会去下载词典。',
   },
 ]
 
@@ -253,6 +271,8 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (key === 'appIcon') return iconRow()
     if (key === 'archiveDir') return locationRow(current)
     if (key === 'about') return aboutRow()
+    if (key === 'uiLanguage') return languageRow(current)
+    if (key === 'spellcheckLanguages') return spellcheckLanguagesRow(current)
 
     const toggle = TOGGLES.find((spec) => spec.key === key)
     if (toggle !== undefined) return toggleRow(toggle, current)
@@ -575,6 +595,116 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         })
       }
     }
+  }
+
+  /**
+   * 界面语言那一行。
+   *
+   * 它改的是**会话的 `Accept-Language`**（[ADR-0060]），因此生效方式与别的设置项都不一样：
+   * 主进程在提交之后会**重新加载内嵌页面**。这件事必须写在提示里 —— "切换语言会丢掉还没发
+   * 出去的文字"如果不说，用户只会觉得是自己按错了。
+   *
+   * 选中项取设置值；设置值不在表里时（手工改坏的配置文件）**显示默认项**而不是"什么都不选"。
+   * 后者会得到一行"界面说 A、实际按 B 跑"，而 `main/settings.ts` 的 `coerce()` 本来就会把这种
+   * 值收敛掉 —— 这里只是不让界面在收敛之前显示成自相矛盾的样子。
+   */
+  function languageRow(current: Settings): HTMLElement {
+    const chosen = UI_LANGUAGES.some((entry) => entry.code === current.uiLanguage)
+      ? current.uiLanguage
+      : DEFAULT_UI_LANGUAGE
+
+    const select = h(
+      'select',
+      {
+        class: 'language-select',
+        onChange: (event) => {
+          void patch({ uiLanguage: (event.target as HTMLSelectElement).value })
+        },
+      },
+      ...UI_LANGUAGES.map((entry) =>
+        h('option', {
+          value: entry.code,
+          selected: entry.code === chosen,
+          text: entry.label,
+        }),
+      ),
+    )
+
+    return h(
+      'div',
+      { class: 'setting' },
+      select,
+      h(
+        'div',
+        {},
+        h('div', { class: 'label', text: '界面语言' }),
+        h('div', {
+          class: 'hint',
+          text: '内嵌页面的显示语言。切换后会重新加载页面 —— 输入框里还没发出去的文字会丢失。',
+        }),
+      ),
+    )
+  }
+
+  /**
+   * 拼写检查的词典那一行。
+   *
+   * 做成**复选框表**而不是 `<select multiple>`：多选下拉要按住 Ctrl 才能勾第二项，而这是一件
+   * 没人会去猜的事。
+   *
+   * 两处禁用都是有话要说的（因此带 `title`，与"尚未生效"那个徽标同一个说法）：
+   *
+   *   - 拼写检查关着时整行禁用 —— 一份"给谁查"的清单离开了那个开关就读不懂；
+   *   - **只剩一门时那一门本身禁用** —— 一门都不勾等于"什么都不查"，而它与"功能坏了"在用户
+   *     看来没有区别。要停用整个功能，请用上面那个开关（它同时还意味着不去下载词典）。
+   */
+  function spellcheckLanguagesRow(current: Settings): HTMLElement {
+    const checked = new Set(parseLanguageList(current.spellcheckLanguages))
+    const off = !current.spellcheck
+
+    const boxes = SPELLCHECK_LANGUAGES.map((entry) => {
+      const onlyOne = checked.has(entry.code) && checked.size === 1
+      const title = off ? '拼写检查已关闭' : onlyOne ? '至少要留一门词典' : null
+
+      return h(
+        'label',
+        title === null ? {} : { title },
+        h('input', {
+          type: 'checkbox',
+          checked: checked.has(entry.code),
+          disabled: off || onlyOne,
+          onChange: (event) => {
+            const next = new Set(checked)
+            if ((event.target as HTMLInputElement).checked) next.add(entry.code)
+            else next.delete(entry.code)
+
+            // 按**表**的顺序写回：勾选的先后不该改变存下来的值，否则同一组勾选会有多种写法，
+            // 而"设置没变、值却变了"会让将来每一次比较都不可靠。
+            const codes = SPELLCHECK_LANGUAGES.filter((item) => next.has(item.code)).map(
+              (item) => item.code,
+            )
+
+            void patch({ spellcheckLanguages: formatLanguageList(codes) })
+          },
+        }),
+        entry.label,
+      )
+    })
+
+    return h(
+      'div',
+      { class: 'setting' },
+      h('div', { class: 'languages' }, ...boxes),
+      h(
+        'div',
+        {},
+        h('div', { class: 'label', text: '拼写检查的词典' }),
+        h('div', {
+          class: 'hint',
+          text: '勾了哪几门就查哪几门。词典由内核按需下载，没勾的语言不参与标注。',
+        }),
+      ),
+    )
   }
 
   function toggleRow(spec: ToggleSpec, current: Settings): HTMLElement {

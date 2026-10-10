@@ -39,6 +39,15 @@ export interface ElementProps {
   /** 复选框 / 单选框的选中态。 */
   readonly checked?: boolean
   /**
+   * `<option>` 的选中态。
+   *
+   * 与 {@link checked} 一样写成属性：这两种控件的"默认选中"就是它们最终的样子，
+   * 因为整行都是**新建**出来的（不是改一棵已在屏幕上的 DOM 树）。列在真实的下拉框上
+   * 要靠 `select.value` 事后赋值，那是一条"创建之后还要再改一次"的路径 ——
+   * 而这一行每次都是整体重建的，属性就够了。
+   */
+  readonly selected?: boolean
+  /**
    * 是否隐藏。
    *
    * 用 `hidden` 而不是"清空文字"：结果行（`.status`）清空之后仍然占着一行的间距，
@@ -88,6 +97,7 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   if (props.alt !== undefined) element.setAttribute('alt', props.alt)
   if (props.disabled === true) element.setAttribute('disabled', '')
   if (props.checked === true) element.setAttribute('checked', '')
+  if (props.selected === true) element.setAttribute('selected', '')
   if (props.hidden !== undefined) element.hidden = props.hidden
   if (props.onClick !== undefined) element.addEventListener('click', props.onClick)
   if (props.onChange !== undefined) element.addEventListener('change', props.onChange)
