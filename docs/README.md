@@ -110,7 +110,6 @@ waachat/
 │   │   │   ├── cache-switch.ts     切换开关的事务编排：转换 → 提交 → 收尾，失败回退
 │   │   │   ├── download.ts         下载事件接管 → 归档 + 打开
 │   │   │   ├── early-identity.ts   下载前的对账：读消息模型的 filehash，命中归档就打开并作废这次下载（ADR-0047）
-│   │   │   ├── pdf.ts              「禁用 PDF 预览」的路径：挡预览页 + 把响应降级成下载（ADR-0029/0030）
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
 │   │   │   └── health.ts           接管失效的事实源（markCaptured / markFailure / onHealthChange）
 │   │   ├── archive/                ★ 核心：本地归档（账号 / 月份分层，见 ADR-0039）

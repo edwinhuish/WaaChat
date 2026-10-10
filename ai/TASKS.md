@@ -192,15 +192,12 @@
    > 判据锁的是 `Error.message` 里的 `net::ERR_…`（实测没有 code/errno 可读），自检那一节会先变红。
    > 另外：`cache/.staging/` 是转换期间的可回滚存放处，**不能**让它被 `isEntryName()` 认成条目
    > （认错的话对账会连内容一起清掉，"回滚"当场失效；`scripts/check-capture.ts` 有断言守着）。
-   > PDF 那一层（`capture/pdf.ts`，[ADR-0029](../docs/decisions.md#adr-0029) /
-   > [ADR-0030](../docs/decisions.md#adr-0030)）由设置 `disablePdfPreview` 控制、**默认关闭**，而且
-   > **每个请求现读**（`attachPdfHandling()` 收的是读取函数，`window.ts` 的窗口处理也是每次现读 ——
-   > 别把它读成快照，否则"改了设置不生效"）。两个挂点的分工是实测逼出来的：挡上游预览页只能用
-   > `webRequest.onBeforeRequest`（即使请求会被 `protocol.handle('https')` 接住，它的取消仍然生效），
-   > 而把 PDF 降级成下载只能放在 `protocol.ts` 的 `passthrough()` 里（协议处理器返回的响应，
-   > `webRequest` 改不动）。改判据（`shared/upstream.ts` 的 `isDocumentPreviewPage()` /
-   > `pdf.ts` 的 `isPdfResponse()`）时，自检那一节会先变红；把开关默认值改成 true、或放宽预览页
-   > 判据，后果分别是"没做过选择的用户点 PDF 没反应"与"应用内又出现 PDF 预览"，都没人会立刻发现。
+   > PDF 不在这一层里：那条"挡预览页 + 把 `application/pdf` 降级成下载"的路径已由
+   > [ADR-0051](../docs/decisions.md#adr-0051) **整体移除**，上游的预览页照常加载
+   > （`shared/upstream.ts` 的 `isUpstreamPage()` 认它）。要重新引入任何**改写响应或拦请求**
+   > 的做法，先追加一条 ADR —— 这条边界是 [ADR-0001](../docs/decisions.md#adr-0001) /
+   > [ADR-0002](../docs/decisions.md#adr-0002) 留下的，撤销它们的是 [ADR-0043](../docs/decisions.md#adr-0043)，
+   > 但"能注入"不等于"该注入"。
 4. 补单测（纯逻辑部分必须能在无 Electron 环境下测试）。
 5. 手动验证：
    - 首次点击一个文件 → 直接打开，`~/Downloads` 无残留，正文出现在**当月**的 `<年>/<月>/` 下
