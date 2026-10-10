@@ -58,6 +58,7 @@ import {
   isAcceptedIconName,
 } from '../src/shared/appicon'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import { SIZE_LIMIT_ENFORCED, describeSizeLimit } from '../src/shared/size-limit'
 import {
   applyLinuxGpuSwitches,
   type CommandLineLike,
@@ -750,6 +751,59 @@ check(
   })(),
 )
 check('拿不准时不动作（既没有开关也没有会话信息）', !usesWaylandOzone({ ozonePlatform: '' }))
+
+// ---------------------------------------------------------------------------
+// 13. 容量上限的状态提示
+// ---------------------------------------------------------------------------
+//
+// 归档 / 缓存的容量上限今天**不会被执行**（`blobs.evictToFit()` 是空实现、`protocol.ts`
+// 里是 TODO(M3)），因此界面上那两行必须如实说出来。反过来，把"尚未生效"钉死在没有上限的
+// 配置上同样是错的 —— 默认的 `archiveMaxBytes` 就是 0（不限制），而"不限制"恰恰是**正在
+// 照配置执行**的那一种：它字面意思就是不清理。
+//
+// 这一节断言的就是这条分界：徽标只在"设了上限却不会被执行"时出现，不限制时不出现。
+
+section('容量上限的状态提示')
+
+const GB = 1024 * 1024 * 1024
+
+check(
+  '不限制时不打"尚未生效"徽标（否则提示与配置无关）',
+  (() => {
+    const state = describeSizeLimit('archiveMaxBytes', 0, false)
+
+    return state.badge === null && state.unlimited && state.inputValue === ''
+  })(),
+)
+check(
+  '设了上限但淘汰未实现时：徽标 + 说清后果（不是只说"不生效"）',
+  (() => {
+    const state = describeSizeLimit('archiveMaxBytes', 50 * GB, false)
+
+    return (
+      state.badge === '尚未生效' &&
+      state.hint.includes('50 GB') &&
+      state.hint.includes('会一直增长')
+    )
+  })(),
+)
+check(
+  '实现之后徽标消失、提示换成"超过之后会发生什么"（改一个布尔值就够）',
+  (() => {
+    const state = describeSizeLimit('archiveMaxBytes', 50 * GB, true)
+
+    return state.badge === null && !state.hint.includes('尚未实现')
+  })(),
+)
+check(
+  '配置被改坏（负数 / NaN）时按"不限制"处理，而不是当成一个荒谬的上限',
+  describeSizeLimit('cacheMaxBytes', Number.NaN, false).unlimited &&
+    describeSizeLimit('cacheMaxBytes', -1, false).unlimited,
+)
+check(
+  '当前事实与文档一致：两项上限都还没被执行',
+  !SIZE_LIMIT_ENFORCED.archiveMaxBytes && !SIZE_LIMIT_ENFORCED.cacheMaxBytes,
+)
 
 // ---------------------------------------------------------------------------
 

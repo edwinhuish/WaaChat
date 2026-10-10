@@ -5,23 +5,29 @@
  *
  *  1. **改动即时生效，不设「保存」按钮。** 每个开关独立提交，回填主进程返回的
  *     完整设置 —— 界面显示的就是实际生效的，不存在"我改了但它没生效"这种模糊状态。
- *  2. **没实现的项不假装能用。** `archiveMaxBytes` / `cacheMaxBytes` 的淘汰策略
- *     还没实现（见 docs/roadmap.md M2/M3），因此它们渲染成**禁用的**控件并说明原因。
- *     一个能改但不起作用的开关，比一个明确标注"尚未生效"的开关糟得多 ——
- *     前者会让用户相信一件不成立的事。
- *  3. **长任务要有过程。** 换保存位置会真的搬动整个归档库，因此它有确认框（主进程）、
+ *  2. **没实现的项不假装能用，但状态要说的是"你当前的配置"。** `archiveMaxBytes` /
+ *     `cacheMaxBytes` 的淘汰策略还没实现（见 docs/roadmap.md M2/M3），因此它们渲染成
+ *     **禁用的**控件。一个能改但不起作用的开关，比一个明确标注"尚未生效"的开关糟得多 ——
+ *     前者会让用户相信一件不成立的事。但徽标本身也不该是一句写死的话：
+ *     **"不限制"时没有失效可言**（字面意思就是不清理），只有"设了上限却不会被执行"
+ *     才需要警告。因此状态由 `shared/size-limit.ts` 按"当前值 + 今天是否真的执行"算出来，
+ *     而不是写在这一行里 —— 功能落地时改一个布尔值就够，不会留下一句过期的话。
+ *  3. **相关的项放在一起。** 行的顺序由 {@link ROW_ORDER} 一处决定：两项容量上限紧跟它们
+ *     各自的开关（归档：位置 → 上限；缓存：开关 → 上限）—— 容量没有作用对象时的提示是
+ *     读不懂的，放在一起用户才知道它在给谁设限。
+ *  4. **长任务要有过程。** 换保存位置会真的搬动整个归档库，因此它有确认框（主进程）、
  *     进度、成功与失败三种可见的结果 —— 用户不该对着一个没有反应的开关猜发生了什么。
  *     密文缓存的切换走另一条路（[ADR-0028]）：它只是同目录内的搬运与删除，没有确认框、
  *     也没有进度屏；开关行在转换期间禁用自己，结束后给出一行结果。
- *  4. **图标要如实说明生效范围。** Linux 下"应用图标"有三个落点，生效时机各不相同
+ *  5. **图标要如实说明生效范围。** Linux 下"应用图标"有三个落点，生效时机各不相同
  *     （窗口与托盘立即生效，启动器 / 任务栏要等桌面刷新）。含糊其辞会让 Wayland 用户
  *     以为功能坏了 —— 理由与取舍见 ADR-0022。
  */
 
 import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
-import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
+import { describeSizeLimit, type SizeLimitKey } from '../../shared/size-limit'
 import {
   RESTART_REQUIRED_SETTINGS,
   type AppIconState,
@@ -78,23 +84,54 @@ const TOGGLES: readonly ToggleSpec[] = [
 ]
 
 interface SizeSpec {
-  readonly key: 'archiveMaxBytes' | 'cacheMaxBytes'
+  readonly key: SizeLimitKey
   readonly label: string
-  readonly hint: string
 }
 
+/**
+ * 两项容量上限。提示文本**不**写在这里 —— 它由 `describeSizeLimit()` 按当前值算出来
+ * （见文件头第 2 条与 `shared/size-limit.ts`）。
+ */
 const SIZES: readonly SizeSpec[] = [
-  {
-    key: 'archiveMaxBytes',
-    label: '归档大小上限',
-    hint: '淘汰策略尚未实现（计划 M2），此项暂时不生效。',
-  },
-  {
-    key: 'cacheMaxBytes',
-    label: '密文缓存上限',
-    hint: '容量控制尚未实现（计划 M3），当前缓存只增不减。',
-  },
+  { key: 'archiveMaxBytes', label: '归档大小上限' },
+  { key: 'cacheMaxBytes', label: '密文缓存上限' },
 ]
+
+/**
+ * 界面上的**行序**（唯一的顺序来源）。
+ *
+ * 两项容量上限紧跟各自的开关：容量没有作用对象时，用户读不懂它在给谁设限。
+ * 归档那一组是「位置 → 上限 → 打开行为 → 退出清除」，缓存那一组是「开关 → 上限」。
+ *
+ * 每一行都必须在这里出现**且只出现一次**：{@link ALL_SETTINGS_RENDERED} 是编译期断言，
+ * 漏掉一个设置项会编译不过（而不是界面上少一行、没人发现）。
+ */
+const ROW_ORDER = [
+  'appIcon',
+  'archiveDir',
+  'archiveMaxBytes',
+  'openOnCapture',
+  'wipeArchiveOnExit',
+  'enableCiphertextCache',
+  'cacheMaxBytes',
+  'disablePdfPreview',
+  'prefetch',
+  'launchAtLogin',
+] as const satisfies readonly (keyof Settings | 'appIcon')[]
+
+/** 一行在界面上的身份。 */
+type RowKey = (typeof ROW_ORDER)[number]
+
+/**
+ * 编译期断言：**每个**设置项都有一行。
+ *
+ * `satisfies` 只管"这里写的名字合法"，管不了"是不是写全了"；这个类型反过来问一句
+ * "`Settings` 里还有没有谁不在这张表里"。新增一个设置项却忘了给它一行时，`true` 就
+ * 赋不进 `false`，编译当场失败。
+ */
+export const ALL_SETTINGS_RENDERED: Exclude<keyof Settings | 'appIcon', RowKey> extends never
+  ? true
+  : false = true
 
 /**
  * 保存位置这一行的状态。
@@ -183,12 +220,26 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (settings === null) return
 
     const current = settings
-    root.replaceChildren(
-      iconRow(),
-      locationRow(current),
-      ...TOGGLES.map((spec) => toggleRow(spec, current)),
-      ...SIZES.map((spec) => sizeRow(spec, current)),
-    )
+    root.replaceChildren(...ROW_ORDER.map((key) => rowFor(key, current)))
+  }
+
+  /**
+   * 按 {@link ROW_ORDER} 里的一行身份取它的元素。
+   *
+   * 分派写成显式查表而不是 if 链：新增设置项时只改顺序表与这份分派，两边不一致会立刻
+   * 抛错（静默少渲染一行是这类代码里最容易被忽略的坏结果）。
+   */
+  function rowFor(key: RowKey, current: Settings): HTMLElement {
+    if (key === 'appIcon') return iconRow()
+    if (key === 'archiveDir') return locationRow(current)
+
+    const toggle = TOGGLES.find((spec) => spec.key === key)
+    if (toggle !== undefined) return toggleRow(toggle, current)
+
+    const size = SIZES.find((spec) => spec.key === key)
+    if (size !== undefined) return sizeRow(size, current)
+
+    throw new Error(`ui: 设置项 ${key} 在 ROW_ORDER 里，却没有对应的渲染`)
   }
 
   /**
@@ -585,34 +636,45 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
-   * 未实现的容量项：显示当前值，但**禁用**输入。
+   * 容量项：显示当前值，但**禁用**输入（淘汰策略还没实现，能改就等于骗人）。
    *
-   * 用 `data-pending` 触发降透明度的样式，让"这项还不可用"在视觉上也成立 ——
-   * 光靠一行小字提示，用户还是会去点它。
+   * 三种状态（不限制 / 设了但不会执行 / 生效中）由 `describeSizeLimit()` 算出来 —— 徽标与
+   * 提示都跟着当前值走，因此不会出现"配置是不限制，却标着尚未生效"这种与配置无关的话。
+   *
+   * 视觉上有一处刻意的统一：值与其单位（GB）在同一行，不限制时输入框留空、由占位符说明，
+   * 于是"输入框"与"提示"对同一件事只有一种说法。
    */
   function sizeRow(spec: SizeSpec, current: Settings): HTMLElement {
-    const bytes = current[spec.key]
-    const gigabytes = bytes === 0 ? 0 : Number((bytes / 1024 / 1024 / 1024).toFixed(1))
+    const state = describeSizeLimit(spec.key, current[spec.key])
 
     const input = h('input', {
       type: 'number',
-      value: String(gigabytes),
+      value: state.inputValue,
+      placeholder: '不限制',
       disabled: true,
-      title: '尚未生效',
+      title: state.badge ?? (state.unlimited ? '不限制' : '生效中'),
     })
 
     return h(
       'div',
-      { class: 'setting', data: { pending: 'true' } },
-      input,
+      { class: 'setting', data: { pending: String(state.badge !== null) } },
+      h(
+        'div',
+        { class: 'size-input' },
+        input,
+        // 单位必须写出来：一个孤零零的「2」到底是 2 个字节还是 2 GB，用户只能猜。
+        h('span', { class: 'unit', text: 'GB' }),
+      ),
       h(
         'div',
         {},
-        h('div', { class: 'label' }, spec.label, h('span', { class: 'badge', text: '尚未生效' })),
-        h('div', {
-          class: 'hint',
-          text: `${spec.hint}当前值：${bytes === 0 ? '不限制' : formatBytes(bytes)}。`,
-        }),
+        h(
+          'div',
+          { class: 'label' },
+          spec.label,
+          ...(state.badge === null ? [] : [h('span', { class: 'badge', text: state.badge })]),
+        ),
+        h('div', { class: 'hint', text: state.hint }),
       ),
     )
   }

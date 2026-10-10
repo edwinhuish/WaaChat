@@ -244,6 +244,25 @@ ul.archive li:last-child {
   font-size: 12px;
 }
 
+/* 容量上限那一行的输入：「数字 + 单位」必须在一起 —— 一个孤零零的 2 没有含义。 */
+.setting .size-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+/* 不让 flex 把数字框拉成一整行：最长也就四五位（TB 量级）。 */
+.setting .size-input input[type='number'] {
+  width: 84px;
+}
+
+.setting .unit {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* 归档位置这类"具体值"：等宽 + 可在任意处断行，长路径不能把整行撑破。 */
 .setting .path {
   margin-top: 2px;
