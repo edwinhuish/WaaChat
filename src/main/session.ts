@@ -1,7 +1,7 @@
 /**
  * 会话配置。
  *
- * 两个接管点与 PDF 规则都挂在这里，因此 `configureSession` **必须**在任何窗口创建之前调用
+ * 两个接管点都挂在这里，因此 `configureSession` **必须**在任何窗口创建之前调用
  * —— 晚一步就会错过早期的下载与请求。
  *
  * 它是**异步**的：密文缓存的启动对账要读写缓存目录（可能有上万个条目），按
@@ -15,9 +15,8 @@ import { isUpstreamOrigin } from '../shared/upstream'
 import { enforceCacheLimit, reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
 import { onHealthChange } from './capture/health'
-import { attachPdfHandling } from './capture/pdf'
 import { attachCiphertextCache } from './capture/protocol'
-import { announceCaptureFailure, announcePreviewBlocked, markCaptureHealthy } from './notice'
+import { announceCaptureFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
 
@@ -89,15 +88,6 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   if (settings.enableCiphertextCache) {
     attachCiphertextCache(ses, getSettings)
   }
-
-  // --- PDF：可选地交给系统应用 -------------------------------------------------
-  // 内核的内置 PDF 阅读器**关不掉**（实测见 ADR-0029），所以"让系统阅读器打开 PDF"只能反过来
-  // 做：挡掉上游的文档预览页、把 `application/pdf` 的响应降级成下载（→ 接管点 A）。
-  //
-  // 这一层由设置 `disablePdfPreview` 控制，**默认关闭**（ADR-0030）：关着时上游的预览页照常
-  // 加载、PDF 在应用内预览；打开后才有上面两条规则。判据每个请求现读，因此改完立刻生效 ——
-  // 传的是**读取函数**而不是快照。
-  attachPdfHandling(ses, getSettings, { onPreviewBlocked: announcePreviewBlocked })
 
   /**
    * 接管失效必须**可见**（`architecture.md` 第 5 节："允许失效，不允许静默失效"）。

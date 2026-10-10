@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { isDocumentPreviewPage, isUpstreamOrigin, isUpstreamPage } from '../../src/shared/upstream'
+import { isUpstreamOrigin, isUpstreamPage } from '../../src/shared/upstream'
 
 describe('isUpstreamOrigin', () => {
   it('只认承载登录态的那一个源', () => {
@@ -45,8 +45,8 @@ describe('isUpstreamOrigin', () => {
 describe('isUpstreamPage', () => {
   it('放行上游自己的页面，含 whatsapp.net 下的辅助页', () => {
     expect(isUpstreamPage('https://web.whatsapp.com/')).toBe(true)
-    // 这个函数只回答"是不是上游自己的页面"，文档预览页也算 —— 它另有判据，
-    // 由 {@link isDocumentPreviewPage} 在窗口处理与请求拦截里被拒（ADR-0029）。
+    // 文档预览页也在这个判据里 —— 它**照常加载**：曾经有一条"不加载它"的规则
+    // （ADR-0029 / ADR-0030），已由 ADR-0051 整体移除。
     expect(isUpstreamPage('https://webtp.whatsapp.net/pdf-viewer/?locale=zh_CN')).toBe(true)
   })
 
@@ -56,34 +56,9 @@ describe('isUpstreamPage', () => {
     expect(isUpstreamPage('https://www.whatsapp.com/')).toBe(false)
     expect(isUpstreamPage('https://evilwhatsapp.net/x')).toBe(false)
     expect(isUpstreamPage('https://whatsapp.net.evil.com/x')).toBe(false)
-    expect(isUpstreamPage('https://web.whatsapp.com@evil.com/')).toBe(false)
-  })
-})
-
-describe('isDocumentPreviewPage', () => {
-  it('认得上游的文档预览页 —— 它是把 PDF 送进内核内置阅读器的入口', () => {
-    expect(isDocumentPreviewPage('https://webtp.whatsapp.net/pdf-viewer/?locale=zh_CN')).toBe(true)
-    expect(isDocumentPreviewPage('https://webtp.whatsapp.net/pdf-viewer/')).toBe(true)
-    // 判据是"上游域 + 这个路径"，**不限定**哪个 host：预览页落在哪个上游域上是对方的事
-    // （实测在 `webtp` 上）。按 host 写死的话，它换一个域我们就静默放行了 —— 而症状
-    // 是应用内又出现 PDF 预览，没人会想到这里。
-    expect(isDocumentPreviewPage('https://web.whatsapp.com/pdf-viewer/')).toBe(true)
-  })
-
-  it('同域下的其它页面不算', () => {
-    expect(isDocumentPreviewPage('https://webtp.whatsapp.net/rsrc.php/x.js')).toBe(false)
-    // 判据是**路径前缀**，不是"路径里出现过这个词"：宽松一点点就会误伤上游别的页面。
-    expect(isDocumentPreviewPage('https://webtp.whatsapp.net/x/pdf-viewer/')).toBe(false)
-  })
-
-  it('别的源即使路径相同也不算', () => {
-    expect(isDocumentPreviewPage('https://webtp.whatsapp.net.evil.com/pdf-viewer/')).toBe(false)
-    expect(isDocumentPreviewPage('https://whatsapp.net.evil.com/pdf-viewer/')).toBe(false)
-    expect(isDocumentPreviewPage('https://example.com/pdf-viewer/')).toBe(false)
     // 把真地址塞进查询串不改变 host —— 前缀匹配的老毛病正是栽在这类输入上。
-    expect(
-      isDocumentPreviewPage('https://evil.com/?u=https://webtp.whatsapp.net/pdf-viewer/'),
-    ).toBe(false)
-    expect(isDocumentPreviewPage('not a url')).toBe(false)
+    expect(isUpstreamPage('https://evil.com/?u=https://web.whatsapp.com/')).toBe(false)
+    expect(isUpstreamPage('https://web.whatsapp.com@evil.com/')).toBe(false)
+    expect(isUpstreamPage('not a url')).toBe(false)
   })
 })

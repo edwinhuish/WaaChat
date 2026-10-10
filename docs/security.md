@@ -130,7 +130,7 @@
 - **曾经**"不注入行（INV-1）"既是合规要求，也是 T1 的根治手段；该约束已由 [ADR-0043](decisions.md#adr-0043)
   撤销，T1 因此重新成为一条**必须靠 preload 设计自己守住**的风险（见 T1 的对策）。
 - 不经手加密（INV-3）使"我们自己的加密实现有缺陷"这一整类问题不存在 —— **这一条仍然成立**，且现在由
-  ESLint 的 `cryptoGuards` 与 `pnpm run selfcheck` 第 16 节强制。
+  ESLint 的 `cryptoGuards` 与 `pnpm run selfcheck` 第 15 节强制。
 - 不重实现传输协议**作为实践仍然成立**：`whatsapp-web.js` 只驱动页面，协议与加解密仍由官方网页版代码
   承担。（`INV-2` 这条**约束**已撤销 —— 实践没变，但"不许引入协议库"这条禁令不再由 lint 守着。）
 

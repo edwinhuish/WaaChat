@@ -2,33 +2,23 @@
  * 主动提示用户（系统通知）。
  *
  * 为什么单独一个模块：它 import `Notification`（electron），因此**不能**待在
- * `capture/pdf.ts` / `capture/health.ts` 里 —— 那些模块只 `import type` electron，离线自检
- * 要能直接引用它们（`ai/CONVENTIONS.md` 第 8 节）。判据与文案留在 `shared/notice.ts`
- * （纯函数，可单测）。于是分工是：**判据可断言、IO 只此一处**。
+ * `capture/health.ts` 里 —— 那个模块只 `import type` electron，离线自检要能直接引用它
+ * （`ai/CONVENTIONS.md` 第 8 节）。判据与文案留在 `shared/notice.ts`（纯函数，可单测）。
+ * 于是分工是：**判据可断言、IO 只此一处**。
  *
  * 为什么是通知而不是界面上的标签：设置窗口原来顶栏挂着"接管状态"（[ADR-0025] 理由 5）。那几颗
  * 标签里"尚无接管记录"没有信息量、正常状态也没有，而**真的失效**时用户未必正看着那扇窗口。
  * 顶栏整个去掉之后（[ADR-0042]），失效改走这条通道：平时一声不响，出事时弹一次。
  *
- * 也不是弹窗：弹窗会打断且必须点掉，而这两件事都是"提个醒"。这与页面自己的消息通知走同一条
+ * 也不是弹窗：弹窗会打断且必须点掉，而这件事只是"提个醒"。这与页面自己的消息通知走同一条
  * 通道（`permissions.ts` 允许 `notifications`）。
  */
 
 import { Notification } from 'electron'
 
-import {
-  CAPTURE_FAILED_TITLE,
-  PREVIEW_BLOCKED_BODY,
-  PREVIEW_BLOCKED_TITLE,
-  captureFailureBody,
-  shouldAnnouncePreviewBlocked,
-  trackCaptureFailure,
-} from '../shared/notice'
+import { CAPTURE_FAILED_TITLE, captureFailureBody, trackCaptureFailure } from '../shared/notice'
 import type { CaptureFailure } from '../shared/types'
 import { logger } from './logger'
-
-/** 上次提示"预览被挡下"的时刻（进程内节流，不持久化 —— 重启后重新计一次没有坏处）。 */
-let lastPreviewBlockedAt: number | null = null
 
 /** 已经提示过的**失效种类**。接管恢复正常时清空（见 `shared/notice.ts` 的两条规则）。 */
 let announcedFailures: ReadonlySet<string> = new Set()
@@ -47,22 +37,6 @@ function show(title: string, body: string): boolean {
   } catch (error) {
     logger.warn('notice: could not show a notification', { reason: (error as Error).name })
     return false
-  }
-}
-
-/**
- * 提示"这次预览被挡下了，请用消息上的下载"（[ADR-0041]）。
- *
- * 幂等且**廉价**：节流判据在真正弹之前返回，因此请求拦截器可以每次命中都调用它。
- */
-export function announcePreviewBlocked(): void {
-  const now = Date.now()
-  if (!shouldAnnouncePreviewBlocked(lastPreviewBlockedAt, now)) return
-
-  lastPreviewBlockedAt = now
-
-  if (show(PREVIEW_BLOCKED_TITLE, PREVIEW_BLOCKED_BODY)) {
-    logger.info('notice: told the user how to fetch the blocked PDF')
   }
 }
 

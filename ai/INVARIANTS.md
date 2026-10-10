@@ -78,7 +78,7 @@ rg -n "from 'node:crypto'" src/     # 允许，但用途只能是 sha256（内�
 
 - ESLint 的 `cryptoGuards`（`eslint.config.mjs`，作用于 `src/**`）：禁止
   `createDecipher*` / `createCipher*` / `createHmac` / `hkdf` / `subtle` / `mediaKey` / `filehash`。
-- `pnpm run selfcheck` 第 16 节：对 `src/` 做一次同样的文本扫描（含上述标识符），并对
+- `pnpm run selfcheck` 第 15 节：对 `src/` 做一次同样的文本扫描（含上述标识符），并对
   `package.json` 断言**没有**在 Node 侧解密的库。lint 拦"写法"，自检拦"结果 + 依赖"。
 
 **接口在承载方式改变后的加码**：接入 `whatsapp-web.js` 后，解密仍由上游页面代码

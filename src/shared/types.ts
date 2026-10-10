@@ -100,21 +100,6 @@ export interface Settings {
    * 目录对账到当前设置（关闭 → 清掉已有条目；开启 → 保留可命中的条目）。
    */
   readonly enableCiphertextCache: boolean
-  /**
-   * 是否**禁用 PDF 预览**（[ADR-0030]）。
-   *
-   * - `false`（默认）：上游的文档预览页照常加载，PDF 在应用内由内核阅读器预览。
-   * - `true`：挡掉上游的文档预览页、把 `application/pdf` 的响应降级成下载，于是文件走归档
-   *   交给**系统默认 PDF 阅读器**（[ADR-0029]）。
-   *
-   * ⚠️ 开启它意味着接受 [ADR-0029] 的已知限制：PDF 的明文只存在于页面内存里（端到端加密，
-   * 页面解密后做成 `blob:`），因此"触发下载"那一步必须由**上游自己的下载入口**完成 —— 若上游
-   * 只通过预览页给出 PDF，症状是"点了没反应"。这也是它默认关闭的原因：一个可能让用户变差的
-   * 行为不能是所有人的默认值（[ADR-0030] 的理由 1）。
-   *
-   * 每个请求现读，改完立刻生效（不进 {@link RESTART_REQUIRED_SETTINGS}）。
-   */
-  readonly disablePdfPreview: boolean
   /** 是否随桌面会话自启动。 */
   readonly launchAtLogin: boolean
 }
@@ -127,7 +112,6 @@ export const DEFAULT_SETTINGS: Settings = {
   archiveMaxBytes: 0,
   cacheMaxBytes: 2 * 1024 * 1024 * 1024,
   enableCiphertextCache: true,
-  disablePdfPreview: false,
   launchAtLogin: false,
 }
 

@@ -4,7 +4,7 @@
  * 解决的问题很具体：上游每次点击同一个文件都会重新从 CDN 拉一遍。缓存之后，
  * 二次打开是本地读取。
  *
- * 三个必须理解的设计点：
+ * 五个必须理解的设计点：
  *
  *  1. **缓存的是密文，不是明文。** 因此完全不碰加密（INV-3）。页面拿到密文后
  *     自己解密，我们只是替它把网络请求省掉。这也意味着这个模块里不该出现任何
@@ -15,16 +15,12 @@
  *
  *  3. **幂等键由 cachekey.ts 推导**，那里有它自己的坑（宁可漏命中，不可错命中）。
  *
- *  4. **PDF 的一处改写挂在这里**（[ADR-0029]，与缓存无关）：协议处理器返回的响应就是
- *     最终响应，`webRequest` 改不动它（实测），因此"缓存开着时不让内核内嵌渲染 PDF"
- *     只有这一个地方能做 —— 见下面的 {@link passthrough}。
- *
- *  5. **直通请求发回它自己的会话，并且在抖动时重试**（[ADR-0033]）：这一层接住的是**分区**里的
+ *  4. **直通请求发回它自己的会话，并且在抖动时重试**（[ADR-0033]）：这一层接住的是**分区**里的
  *     请求，因此必须用 `ses.fetch` 而不是默认会话的 `net.fetch` —— cookie 罐子、代理与证书
  *     配置、连接池都挂在会话上，重发到别的会话等于把同一份流量拆成两套（实测：响应里的
  *     `Set-Cookie` 会进错罐子）。连接层失败交给 `retry.ts` 的有限重试。
  *
- *  6. **容量上限在这里收口**（[ADR-0049]）：命中时更新正文的 `mtime`（"最久未用优先淘汰"
+ *  5. **容量上限在这里收口**（[ADR-0049]）：命中时更新正文的 `mtime`（"最久未用优先淘汰"
  *     唯一的输入）、落盘完成后按**字节节流**地淘汰一次、**一份本身就超上限的内容不落盘**。
  *     超限只降级（少一份缓存）、不报错，也绝不把请求卡住。
  */
@@ -59,7 +55,6 @@ import {
 } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
-import { forceDownloadIfPdf } from './pdf'
 import { fetchWithRetry, type RetryAttempt } from './retry'
 import { failureReason } from '../errors'
 import { hostOf, logger } from '../logger'
@@ -116,9 +111,7 @@ export function attachCiphertextCache(ses: Session, getSettings: () => Settings)
          */
         touchCacheEntry(entry.body)
         logger.debug('capture: ciphertext cache hit')
-        // 这一层返回给页面的响应都要过一遍 PDF 规则：缓存键只认得媒体 CDN（密文），
-        // 理论上不会出现 PDF 条目 —— 但"理论上"不该是安全性的依据（[ADR-0029]）。
-        return forceDownloadIfPdf(cached)
+        return cached
       }
     }
 
@@ -172,8 +165,7 @@ export function isCiphertextCacheAttached(): boolean {
 }
 
 /**
- * 原样回源，出口处过一遍 PDF 规则（[ADR-0029]）—— 请求一个字节没动，只有"这份响应能不能
- * 被内核内嵌显示"被降级成下载。
+ * 原样回源：请求一个字节没动，响应也一个字节没动。
  *
  * **为什么必须用 `ses.fetch` 而不是 `net.fetch`**（[ADR-0033]）：我们接住的是这个**分区**里的
  * 请求，而 `net.fetch` 发在默认会话上 —— cookie 罐子、代理与证书配置、连接池都不是同一个。
@@ -208,7 +200,7 @@ async function passthrough(request: Request, ses: Session): Promise<Response> {
     },
   )
 
-  return forceDownloadIfPdf(response)
+  return response
 }
 
 function readCached(bodyPath: string, metaPath: string): Response | null {

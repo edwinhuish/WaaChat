@@ -52,7 +52,7 @@
 | [0042](#adr-0042) | 去掉设置窗口的顶栏（含「尚无接管记录」那几颗标签）：常态不再显示接管状态，**失效改由系统通知告知**（每种原因一次，恢复正常后重新武装）；随之删掉 `capture:health*` 通道与两个桥方法 | 已生效（**取代** [ADR-0025](#adr-0025) 的"健康标签只挂设置窗口"与理由 5） |
 | [0043](#adr-0043) | **撤销 INV-1 与 INV-2**：改用 `whatsapp-web.js` 承载会话与媒体，允许 CDP 驱动页面与协议驱动型客户端库；**INV-3 本次不撤销**（列为集成的阻塞项） | 已生效（**取代** [ADR-0001](#adr-0001)、[ADR-0002](#adr-0002)） |
 | [0044](#adr-0044) | 承载架构定为**由 `whatsapp-web.js` 自己启动独立 Chromium**；Electron 降级为归档层与本地界面 | 已生效（承接 [ADR-0043](#adr-0043) 的未决项 2） |
-| [0045](#adr-0045) | **INV-3 保持不变并加固**：解密仍由上游页面代码完成（抽样审计见 `research/inv3-assessment.md`）；新增 `cryptoGuards`（`src/**`）+ 自检第 16 节 + 依赖纪律，并明确禁止读取 `Message.mediaKey` | 已生效（**修正** [ADR-0043](#adr-0043) 未决项 1 的前提） |
+| [0045](#adr-0045) | **INV-3 保持不变并加固**：解密仍由上游页面代码完成（抽样审计见 `research/inv3-assessment.md`）；新增 `cryptoGuards`（`src/**`）+ 自检第 15 节 + 依赖纪律，并明确禁止读取 `Message.mediaKey` | 已生效（**修正** [ADR-0043](#adr-0043) 未决项 1 的前提） |
 | [0046](#adr-0046) | 开发模式自动把**只读探针**注入聊天窗口；**不给那扇窗口加 preload**、只装 API 不自动扫描、产物零变化 | 已生效（第一次真正使用 [ADR-0043](#adr-0043) 撤销 INV-1 带来的注入能力） |
 | [0047](#adr-0047) | 用页面模型的 **`filehash`** 作早期内容标识（实测它就是文件明文的 SHA-256，与归档 `hash` 同构）：下载前先与归档对账，命中即打开已有文件并作废这次下载；**把 `filehash` 从 INV-3 的禁用标识符里移出** | 已生效（**修正** [ADR-0045](#adr-0045) 对 `filehash` 的判定前提；INV-3 的实质未放宽） |
 | [0048](#adr-0048) | 归档容量上限**真正生效**：超限时按**最久未访问**优先淘汰，删除一份内容的**全部磁盘名**并在同一次操作里删掉它的索引记录；**只删索引认识的文件**，认不出的文件一个都不碰 | 已生效（[ADR-0045](#adr-0045) 起界面上那句"尚未启用"随之消失；被淘汰的文件**不可恢复**） |
@@ -2179,7 +2179,7 @@ app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己�
 2. **新增 ESLint 守卫**（`eslint.config.mjs` 的 `cryptoGuards`，作用于 `src/**`）：禁止
    `createDecipher*` / `createCipher*` / `createHmac` / `hkdf` / `subtle` / `mediaKey` / `filehash`。
    `createHash` 是明确例外（内容寻址用的 sha256）。
-3. **新增自检**（`scripts/check-capture.ts` 第 16 节）：对 `src/` 做一次同样的文本扫描，并对
+3. **新增自检**（`scripts/check-capture.ts` 第 15 节）：对 `src/` 做一次同样的文本扫描，并对
    `package.json` 断言**没有**在 Node 侧解密的库（Baileys / `@whiskeysockets` 系 / whatsmeow）。
 4. **新增一条明确禁止项**：不读取 `Message.mediaKey` —— 该库把它作为公开属性暴露，写下它就已经是
    "解析 mediaKey"。
@@ -2216,7 +2216,7 @@ app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己�
 **影响**：
 
 - `eslint.config.mjs`：新增 `cryptoGuards` 与 `PROJECT_CODE = ['src/**/*.ts']`。
-- `scripts/check-capture.ts`：新增第 16 节（文本扫描 + 依赖清单断言）。
+- `scripts/check-capture.ts`：新增第 15 节（文本扫描 + 依赖清单断言）。
 - `ai/INVARIANTS.md`：INV-3 一节补上"强制"与"不读取 `Message.mediaKey`"。
 - `AGENTS.md` 第 1 节：说明现在由 ESLint 强制的是 INV-3。
 - **没有**改 `DISCLAIMER.md`：INV-3 的文本与对外承诺都没变（第 3 节本来就写着"解密发生在官方网页代码
@@ -2313,7 +2313,7 @@ WA Web 上跑一段探针**来回答（客户端侧到底有没有 `fileSha256`�
    是**文件内容的明文 SHA-256**，base64 编码的 32 字节。它与归档索引里的 `hash`（hex）
    **是同一个值**，只差一次 base64→hex。
 2. **时机**：它随消息模型到达 —— **不需要点击、不需要下载、不需要密钥**。
-3. **守卫**：`filehash` 从 `cryptoGuards`（`eslint.config.mjs`）与自检第 16 节的禁用标识符里移出 ——
+3. **守卫**：`filehash` 从 `cryptoGuards`（`eslint.config.mjs`）与自检第 15 节的禁用标识符里移出 ——
    它原来的理由（[ADR-0045](#adr-0045)："它是密钥派生的输入"）**被实测推翻**。`mediaKey` 与全部
    解密原语**不在本次放宽之列**，INV-3（不经手密钥与加密）的实质**未变**。
 4. **实现（H1）**：主进程在 `will-download` 时用 `webContents.executeJavaScript()` 向页面查询
@@ -2366,7 +2366,7 @@ WA Web 上跑一段探针**来回答（客户端侧到底有没有 `fileSha256`�
 
 **影响**：
 
-- `eslint.config.mjs` 的 `cryptoGuards` 与 `scripts/check-capture.ts` 第 16 节各去掉 `filehash`
+- `eslint.config.mjs` 的 `cryptoGuards` 与 `scripts/check-capture.ts` 第 15 节各去掉 `filehash`
   （理由注释同步改成实测结论）。
 - 新增页面侧查询脚本与主进程侧判定（`src/main/capture/early-identity.ts`），并在
   `capture/download.ts` 的 `will-download` 里接入；判定逻辑是纯函数，由单测覆盖。
@@ -2446,7 +2446,7 @@ WA Web 上跑一段探针**来回答（客户端侧到底有没有 `fileSha256`�
 - 触发点三处：**启动时**（`attachDownloadCapture`，与清临时文件同一处）、**每次归档落盘后**
   （`capture/download.ts` 的 `finalize`）、**改 `archiveMaxBytes` 设置时**（`ipc/index.ts`）。
 - `shared/size-limit.ts`：`SIZE_LIMIT_ENFORCED.archiveMaxBytes` 改为 `true`（徽标消失、提示
-  换成"超过之后会发生什么"）；`test/unit/size-limit.test.ts`、`scripts/check-capture.ts` 第 13 节
+  换成"超过之后会发生什么"）；`test/unit/size-limit.test.ts`、`scripts/check-capture.ts` 第 12 节
   的事实断言随之更新。`docs/usage.md` 与 `docs/roadmap.md` M2 同步。
 
 **已知限制**：
@@ -2534,7 +2534,7 @@ WA Web 上跑一段探针**来回答（客户端侧到底有没有 `fileSha256`�
 - `shared/constants.ts`：删掉 `LIMITS.cacheBytes`。它与 `DEFAULT_SETTINGS.cacheMaxBytes`
   同值、**一个读者都没有** —— 两个常量说同一件事，改动时必然漏一个（本次差点就漏了）。
 - `shared/size-limit.ts`：`SIZE_LIMIT_ENFORCED.cacheMaxBytes` 改为 `true`（徽标消失、
-  提示换成"超过之后会发生什么"、输入框解除禁用）。`scripts/check-capture.ts` 第 13 节、
+  提示换成"超过之后会发生什么"、输入框解除禁用）。`scripts/check-capture.ts` 第 12 节、
   `test/unit/size-limit.test.ts`、`docs/usage.md`、`docs/roadmap.md` M3 同步。
 
 **已知限制**：
@@ -2716,7 +2716,9 @@ ADR-0041 又按实测修正了承诺 —— 挡掉的只有**内容**，上游�
   `main/notice.ts` 的 `announcePreviewBlocked()` 与它的节流状态、`main/window.ts` 的拒绝分支、
   `session.ts` 的 `attachPdfHandling()` 调用、`protocol.ts` 的两处 `forceDownloadIfPdf()`。
 - `Settings` 少一项；`SETTINGS_SECTIONS` 少一个区域（「阅读」整个消失，它的唯一一行就是它）；
-  设置窗口少一行。`.settings` 的样式因此不再有"行"来承载那个长说明。
+  设置窗口少一行。
+- **老用户的 `settings.json` 不需要迁移**：`main/settings.ts` 的 `coerce()` 只保留
+  `DEFAULT_SETTINGS` 里有的键，残留的 `disablePdfPreview` 会在下一次保存时自然消失。
 - `scripts/check-capture.ts`：第 9 节（"PDF 交给系统应用"）整节删除。
 - 单测：`test/unit/upstream.test.ts` 的 `isDocumentPreviewPage` 一组、`test/unit/notice.test.ts`
   的 `shouldAnnouncePreviewBlocked` 与预览提示两节，一并删除。

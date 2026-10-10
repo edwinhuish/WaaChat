@@ -18,12 +18,10 @@ import { join } from 'node:path'
 import { BrowserWindow, app, shell } from 'electron'
 
 import { SESSION_PARTITION, UPSTREAM_URL } from '../shared/constants'
-import { isDocumentPreviewPage, isUpstreamPage } from '../shared/upstream'
-import { announcePreviewBlocked } from './notice'
+import { isUpstreamPage } from '../shared/upstream'
 import { buildUserAgent } from '../shared/user-agent'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { logger } from './logger'
-import { getSettings } from './settings'
 
 /** 左上角符合 GNOME 习惯的默认尺寸；上游页面是双栏布局，窄了会很难用。 */
 const DEFAULT_SIZE = { width: 1280, height: 820 } as const
@@ -121,26 +119,12 @@ export function createMainWindow(): BrowserWindow {
    * 不这样做的话，点一个外部链接会把当前页面导航走 —— 而那个页面承载着登录态。
    *
    * "站内"的判据见 shared/upstream.ts：**不只** `web.whatsapp.com`，还包括
-   * `whatsapp.net` 下的上游自有页。只放一个源的症状是那些页面被拒（主进程日志里的
+   * `whatsapp.net` 下的上游自有页（文档预览页也在其中 —— 它现在照常加载，
+   * 见 [ADR-0051]）。只放一个源的症状是那些页面被拒（主进程日志里的
    * `ERR_BLOCKED_BY_RESPONSE`），而我们还会把这个需要登录态的地址交给系统浏览器 ——
    * 那边根本没有登录态。
-   *
-   * **例外是"禁用 PDF 预览"打开时的文档预览页**（[ADR-0030]）：它的唯一作用是把 PDF 交给
-   * 内核的**内置阅读器**渲染（[ADR-0029]），因此**拒绝**它 —— 并且**不**交给系统浏览器：
-   * 同一个理由，那个地址需要登录态，在别处打开只会得到一个打不开的页面。
-   *
-   * 子框架那一层（预览被嵌进 `web.whatsapp.com` 的 iframe 时）由 `capture/pdf.ts` 的
-   * 请求拦截负责，窗口处理看不到它。
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
-    // 每个窗口请求现读设置：开关改完必须立刻生效，不能等下次启动（ADR-0030）。
-    if (getSettings().disablePdfPreview && isDocumentPreviewPage(url)) {
-      logger.warn('window: blocked the upstream document preview window')
-      // 被拒绝的窗口不会给用户任何反馈，而"文件在哪儿"是唯一要传达的事（ADR-0041）。
-      announcePreviewBlocked()
-      return { action: 'deny' }
-    }
-
     if (isUpstreamPage(url)) {
       return { action: 'allow' }
     }

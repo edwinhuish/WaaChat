@@ -29,7 +29,7 @@ WaaChat 是一个 Linux 桌面聊天客户端：会话与媒体由 **`whatsapp-w
 
 **现在由 ESLint 强制的是 INV-3**：`eslint.config.mjs` 的 `cryptoGuards`（作用于 `src/**`）禁止解密原语
 （`createDecipher*` / `createCipher*` / `createHmac` / `hkdf` / `subtle`）与密钥字段（`mediaKey` / `filehash`）；
-`pnpm run selfcheck` 第 16 节再加一道同样的文本扫描，并断言依赖里没有在 Node 侧解密的库。
+`pnpm run selfcheck` 第 15 节再加一道同样的文本扫描，并断言依赖里没有在 Node 侧解密的库。
 
 **INV-1 与 INV-2 的守卫已随 [ADR-0043](docs/decisions.md#adr-0043) 移除**（原 `invariantGuards` 里那两段）。
 渲染侧的**进程边界不在撤销范围**：渲染进程仍不得 import `electron` / `node:fs` / `node:path`（G-1），仍然由 ESLint 强制。

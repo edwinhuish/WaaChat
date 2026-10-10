@@ -41,7 +41,6 @@ import {
 } from '../src/main/capture/cache-files'
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
-import { PDF_DOWNLOAD_MIME, isPdfResponse } from '../src/main/capture/pdf'
 import {
   MAX_ATTEMPTS,
   describeNetworkError,
@@ -72,14 +71,7 @@ import {
   usesWaylandOzone,
 } from '../src/main/linux-gpu'
 import { ALLOWED_PERMISSIONS, isPermissionAllowed } from '../src/main/permissions'
-import { isDocumentPreviewPage } from '../src/shared/upstream'
-import {
-  PREVIEW_BLOCKED_BODY,
-  PREVIEW_NOTICE_COOLDOWN_MS,
-  captureFailureBody,
-  shouldAnnouncePreviewBlocked,
-  trackCaptureFailure,
-} from '../src/shared/notice'
+import { captureFailureBody, trackCaptureFailure } from '../src/shared/notice'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
   accountKey,
@@ -572,65 +564,7 @@ check('暂存区不会被当成缓存条目', !isEntryName(STAGING_DIR_NAME))
 check('暂存区是隐藏目录（对账的"混进来的东西"里不含它）', STAGING_DIR_NAME.startsWith('.'))
 
 // ---------------------------------------------------------------------------
-// 9. PDF 交给系统应用
-// ---------------------------------------------------------------------------
-//
-// 两条纯规则，都属于"改了没人会立刻发现"的那一类（挂点要跑 Electron，这里只锁判据，
-// 见 ADR-0029）：
-//   - 预览页判据放宽一点点，上游的预览页就会重新被加载，应用内又出现内核阅读器的预览；
-//   - MIME 判据漏掉，PDF 就会继续被内核渲染而不是下载 —— 而"下载"是文件落到系统阅读器的
-//     唯一路径（接管点 A）。
-
-section('PDF 交给系统应用')
-
-check(
-  '认得上游的文档预览页',
-  isDocumentPreviewPage('https://webtp.whatsapp.net/pdf-viewer/?locale=zh_CN'),
-)
-check(
-  '同域下的其它路径不算预览页',
-  !isDocumentPreviewPage('https://webtp.whatsapp.net/rsrc.php/x.js'),
-)
-check(
-  '站外的同路径伪装不算',
-  !isDocumentPreviewPage('https://webtp.whatsapp.net.evil.com/pdf-viewer/'),
-)
-check(
-  '预览页判据不限定 host（上游换域时不会静默放行）',
-  isDocumentPreviewPage('https://web.whatsapp.com/pdf-viewer/'),
-)
-// 两条都属于"改了没人会立刻发现"的约定（ADR-0030）：默认打开会让没做过选择的用户撞上
-// ADR-0029 的已知限制（点 PDF 没反应），而加进"重启后生效"名单则会让一个立刻生效的开关
-// 顶着一个不成立的徽标。
-check('"禁用 PDF 预览"默认关闭', DEFAULT_SETTINGS.disablePdfPreview === false)
-check(
-  '"禁用 PDF 预览"不在"重启后生效"名单里（判据每请求现读）',
-  !RESTART_REQUIRED_SETTINGS.includes('disablePdfPreview'),
-)
-check(
-  'PDF 的 MIME 判据认 application/pdf（含带参数），不认 octet-stream',
-  isPdfResponse('application/pdf') &&
-    isPdfResponse('application/pdf; name=x.pdf') &&
-    !isPdfResponse('application/octet-stream'),
-)
-check('降级方向是 octet-stream（内核据此走下载）', PDF_DOWNLOAD_MIME === 'application/octet-stream')
-
-// 被挡下之后用户看到的界面是**上游自己的预览面板**，它会停在加载态（实测见 ADR-0041）：
-// 我们既拦不住那个面板，也没法把说明塞进它里面（`redirectURL` 到 about:blank / data: 被
-// Chromium 拒收）。因此唯一能做的就是给出下一步动作 —— 这条提示是这件事的全部可见性。
-check(
-  '挡下预览时会给出提示，且按时间节流（一次点击会引发一串被挡的请求）',
-  shouldAnnouncePreviewBlocked(null, 1_000) &&
-    !shouldAnnouncePreviewBlocked(1_000, 1_001) &&
-    shouldAnnouncePreviewBlocked(1_000, 1_000 + PREVIEW_NOTICE_COOLDOWN_MS),
-)
-check(
-  '提示里说的是下一步动作（「下载」+ 去哪儿找文件），不是一句"已禁用"',
-  PREVIEW_BLOCKED_BODY.includes('下载') && PREVIEW_BLOCKED_BODY.includes('文件列表'),
-)
-
-// ---------------------------------------------------------------------------
-// 10. 网络：值得重试的错误
+// 9. 网络：值得重试的错误
 // ---------------------------------------------------------------------------
 //
 // 判据锁在**实测到的形状**上：fetch 失败抛出的 Error 只有 message 里的 `net::ERR_…`，
@@ -665,7 +599,7 @@ check(
 check('退避带抖动且有上界', nextDelayMs(1, () => 1) <= 400 && nextDelayMs(2, () => 1) <= 1200)
 
 // ---------------------------------------------------------------------------
-// 11. 权限白名单（安全关键）
+// 10. 权限白名单（安全关键）
 // ---------------------------------------------------------------------------
 //
 // 判据在 `src/main/permissions.ts`（不导入 electron，因此这里能直接断言它）。
@@ -703,7 +637,7 @@ check(
 )
 
 // ---------------------------------------------------------------------------
-// 12. Linux 启动期的 GPU 开关
+// 11. Linux 启动期的 GPU 开关
 // ---------------------------------------------------------------------------
 //
 // 只在**走 Wayland 的臭氧路径**时不再请求 Vulkan（那行 `wayland_surface_factory.cc … not
@@ -781,7 +715,7 @@ check(
 check('拿不准时不动作（既没有开关也没有会话信息）', !usesWaylandOzone({ ozonePlatform: '' }))
 
 // ---------------------------------------------------------------------------
-// 13. 容量上限的状态与所在区域
+// 12. 容量上限的状态与所在区域
 // ---------------------------------------------------------------------------
 //
 // 两层断言。
@@ -859,7 +793,7 @@ check(
 )
 
 // ---------------------------------------------------------------------------
-// 14. 设置窗口的按钮样式
+// 13. 设置窗口的按钮样式
 // ---------------------------------------------------------------------------
 //
 // 动作按钮（"选择图片…" / "恢复默认" / "更改…"）的外观只有两样东西：`shared/action-button.ts`
@@ -889,7 +823,7 @@ check(
 )
 
 // ---------------------------------------------------------------------------
-// 15. 接管失效必须可见
+// 14. 接管失效必须可见
 // ---------------------------------------------------------------------------
 //
 // `architecture.md` 第 5 节：**允许失效，不允许静默失效**。设置窗口那条顶栏去掉之后
@@ -920,7 +854,7 @@ check(
 )
 
 // ---------------------------------------------------------------------------
-// 16. INV-3：不经手密钥与加密
+// 15. INV-3：不经手密钥与加密
 // ---------------------------------------------------------------------------
 //
 // 接入 `whatsapp-web.js` 之前必须回答一个问题："解密还在不在我们手里"。抽样审计的结论是
@@ -1009,7 +943,7 @@ check(
 note('解密由上游页面代码完成：证据与作废条件见 docs/research/inv3-assessment.md')
 
 // ---------------------------------------------------------------------------
-// 17. "未实现的项必须不可改"这条约定今天还剩几项
+// 16. "未实现的项必须不可改"这条约定今天还剩几项
 // ---------------------------------------------------------------------------
 //
 // 设置窗口里每个控件都必须对得起它写的那句话：**能改的就一定真的会被执行**，否则要么禁用它
