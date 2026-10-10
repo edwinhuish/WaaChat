@@ -73,7 +73,7 @@
 
 **被否决的替代方案**：
 
-- **协议重实现（whatsmeow / Baileys）**：媒体控制力最强，但通话永远补不上、应用状态只读、封号风险有实证、投入约为内核壳路线的 10 倍。详见 [`research/feasibility-study.md`](research/feasibility-study.md) 第 3 节。
+- **协议重实现（whatsmeow / Baileys）**：媒体控制力最强，但通话永远补不上、应用状态只读、封号风险有实证、投入约为内核壳路线的 10 倍。
 - **Waydroid 承载 Android 客户端**：在原理上无法产出 AppImage（依赖 binder 内核模块与容器镜像），与分发要求直接冲突。
 
 **影响**：
