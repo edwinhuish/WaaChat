@@ -62,6 +62,11 @@ interface ProbeState {
   runs: unknown[]
   capture: (channel: string) => unknown
   compare: () => void
+  /**
+   * 报告是**唯一会被整段贴出来给人看**的东西（`__waProbe.report()`），因此它的断言与
+   * 控制台输出同等重要：少一句限定条件，看报告的人就会得出错误结论。
+   */
+  report: () => string
 }
 
 interface ProbeWindow {
@@ -394,5 +399,70 @@ describe('探针：P2/P3 跨会话比较', () => {
     expect(target.output()).toContain('根本没比')
     // 缺陷 2 的原症状：从零次比较里得出"都只是对象标识"。
     expect(target.output()).not.toContain('不能当去重键')
+  })
+})
+
+describe('探针：报告（整段贴出来给人看的那件东西）', () => {
+  it('含全部结论：字段表、P1 判定、跨会话比较及其限定条件', () => {
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+
+    // 同一份内容、扩展名不同 —— P3 的"改名/改扩展名"情形因此也算覆盖到了。
+    target.run([documentMessage('截图.png', 42)])
+    target.win.__waProbe?.capture('B')
+    target.win.__waProbe?.compare()
+
+    const report = target.win.__waProbe?.report() ?? ''
+
+    /**
+     * 表格必须是**文本**：`console.table` 的对象拷不出形状，而报告要能整段粘贴。
+     * markdown 表是唯一同时满足"我能读"和"聊天窗口里不散架"的形态。
+     */
+    expect(report).toContain('| 字段 |')
+    expect(report).toContain('| 明文哈希 |')
+    expect(report).toContain('明文 SHA-256 字段（fileSha256 或等价物）：✓ 有')
+    expect(report).toContain('P4 逐类型字段数')
+    expect(report).toContain('### 通道 A')
+    expect(report).toContain('扩展名：".pdf"（来源：msg.filename）')
+    expect(report).toContain('标识「内容」的字段')
+    expect(report).toContain('已覆盖 P3')
+  })
+
+  it('报告里绝不含被扫到的值 —— 这正是它可以整段贴出来的前提', () => {
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+
+    const report = target.win.__waProbe?.report() ?? ''
+
+    expect(report).not.toContain(SECRET_MEDIA_KEY)
+    expect(report).not.toContain(SECRET_URL)
+    // 正向证据：这两个字段确实进了报告，只是只报了类型与长度。
+    expect(report).toContain('mediaKey（只报了长度')
+    expect(report).toContain('| url |')
+  })
+
+  it('还没成功扫过时，报告给出下一步，而不是一张空表', () => {
+    const target = makeProbeTarget([{ type: 'chat' }])
+    target.run()
+
+    const report = target.win.__waProbe?.report() ?? ''
+
+    expect(report).toContain('还没成功扫描过')
+    expect(report).toContain('__waProbe.scan()')
+  })
+
+  it('capture 走错流程（没重扫）时，那条警告必须进报告', () => {
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+    // 切了会话却没重扫：两个通道记的是同一条消息，compare() 的结论不成立。
+    target.win.__waProbe?.capture('B')
+
+    expect(target.win.__waProbe?.report()).toContain('没有重新扫描')
   })
 })
