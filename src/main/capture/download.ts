@@ -7,15 +7,18 @@
  * 而 Chromium 把**任何** `<a download>` 都送进下载管理器。于是一个内核层的事件
  * 就同时给出了文件名、MIME、字节流与最终状态 —— 不需要任何页面注入。
  *
- * 本模块**不做**的事（分别是 INV-1 / INV-3 的边界）：
- *   - 不解析页面结构、不认识"消息"这个概念
+ * 本模块**不做**的事（INV-3 的边界）：
  *   - 不接触密钥、不做解密（流里已经是页面解密后的明文）
+ *
+ * ⚠️ 它**会**向页面问一件事："这条消息的媒体内容哈希是多少"（`early-identity.ts`，[ADR-0047]）。
+ * 那只读消息模型上的一个字段，**不解析 DOM、不驱动页面动作**；INV-1 已由 [ADR-0043] 撤销，
+ * 这个注入点沿用 [ADR-0046] 的方式（主进程 `executeJavaScript`，不给窗口加 preload）。
  */
 
 import { existsSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 
-import type { DownloadItem, Session } from 'electron'
+import type { DownloadItem, Session, WebContents } from 'electron'
 
 import { LIMITS } from '../../shared/constants'
 import type { Settings } from '../../shared/types'
@@ -28,8 +31,10 @@ import {
   tempPath,
 } from '../archive/blobs'
 import { archiveStore } from '../archive/store'
+import { failureReason } from '../errors'
 import { openPath } from '../integration/open'
 import { hashPrefix, logger } from '../logger'
+import { pageLookupExpression, pickContentHash } from './early-identity'
 import { markCaptured, markFailure } from './health'
 
 export function attachDownloadCapture(ses: Session, getSettings: () => Settings): void {
@@ -44,14 +49,18 @@ export function attachDownloadCapture(ses: Session, getSettings: () => Settings)
   // 里面那些链接会让"文件看起来还在占空间"（[ADR-0031]）。
   removeLegacyOpenDir()
 
-  ses.on('will-download', (_event, item) => {
-    handleDownload(item, getSettings)
+  ses.on('will-download', (_event, item, contents) => {
+    handleDownload(item, getSettings, contents)
   })
 
   logger.info('capture: download layer attached')
 }
 
-function handleDownload(item: DownloadItem, getSettings: () => Settings): void {
+function handleDownload(
+  item: DownloadItem,
+  getSettings: () => Settings,
+  contents: WebContents,
+): void {
   const totalBytes = item.getTotalBytes()
 
   /**
@@ -78,8 +87,118 @@ function handleDownload(item: DownloadItem, getSettings: () => Settings): void {
   const name = item.getFilename()
   const mime = item.getMimeType()
 
+  /**
+   * 命中归档时会**作废这次下载**（H1）。标志必须在 `cancel()` 之前置上 —— `done` 是异步来的，
+   * 慢一步只会退化成今天的行为（多一次复制 + 去重），不会出错。
+   */
+  let shortCircuited = false
+
   item.once('done', (_doneEvent, state) => {
+    if (shortCircuited) {
+      void unlink(temp).catch(() => undefined)
+      return
+    }
     void finalize({ temp, name, mime, state, getSettings })
+  })
+
+  void tryOpenFromArchive({
+    item,
+    contents,
+    name,
+    bytes: totalBytes,
+    getSettings,
+    onHit: () => {
+      shortCircuited = true
+    },
+  })
+}
+
+/** 问页面的超时。超了就回落 —— 这条路线只该让点击更快或不变，不该让它变慢。 */
+const EARLY_LOOKUP_TIMEOUT_MS = 500
+
+interface EarlyLookupInput {
+  readonly item: DownloadItem
+  readonly contents: WebContents
+  readonly name: string
+  readonly bytes: number
+  readonly getSettings: () => Settings
+  /** 命中且真的要作废这次下载时先叫一声（见 `handleDownload` 里的标志）。 */
+  readonly onHit: () => void
+}
+
+/**
+ * H1：下载前用页面的内容哈希查归档，命中就打开本地那份、作废这次下载（[ADR-0047]）。
+ *
+ * 三处刻意保守：
+ *  1. **只在 `openOnCapture` 开着时做** —— 关着时用户的意思是"只归档、不自动打开"，
+ *     替他把已有的那份打开等于改写了那个设置的含义。
+ *  2. **只对还在进行中的下载动手**：慢一步时 `done` 已经跑完 `finalize()`，
+ *     再打开一次就会**开两遍**。
+ *  3. **任何一步拿不准就返回**（查不到 / 值不合法 / 归档里大小对不上）—— 一律回落，
+ *     用户看到的仍是今天的行为。
+ */
+async function tryOpenFromArchive(input: EarlyLookupInput): Promise<void> {
+  if (!input.getSettings().openOnCapture) return
+  if (input.bytes <= 0) return
+  if (input.contents.isDestroyed()) return
+
+  const hash = await askPageForContentHash(input.contents, input.name, input.bytes)
+  if (hash === null) return
+
+  if (input.item.getState() !== 'progressing') return
+
+  const storedName = findArchivedByHash(hash, input.bytes)
+  if (storedName === null) return
+
+  const outcome = await openPath(hash, storedName)
+  if (!outcome.ok) {
+    markFailure({ kind: 'open-failed', reason: outcome.reason })
+    logger.warn('capture: opening the archived copy failed', {
+      hash: hashPrefix(hash),
+      reason: outcome.reason,
+    })
+    return
+  }
+
+  input.onHit()
+  input.item.cancel()
+  markCaptured()
+  logger.info('capture: opened the archived copy, cancelled the download', {
+    hash: hashPrefix(hash),
+  })
+}
+
+async function askPageForContentHash(
+  contents: WebContents,
+  name: string,
+  bytes: number,
+): Promise<string | null> {
+  try {
+    const reply = await withTimeout<unknown>(
+      contents.executeJavaScript(pageLookupExpression(name, bytes), true) as Promise<unknown>,
+      EARLY_LOOKUP_TIMEOUT_MS,
+    )
+    return pickContentHash(reply)
+  } catch (error) {
+    logger.warn('capture: early identity lookup failed', { reason: failureReason(error) })
+    return null
+  }
+}
+
+/** 超时就当"没有"（`null`），**绝不把异常抛给调用方** —— 这条路线只该让点击更快或不变。 */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(null)
+      },
+    )
   })
 }
 
@@ -179,6 +298,22 @@ async function finalize(input: FinalizeInput): Promise<void> {
  */
 function findStoredName(hash: string): string | null {
   for (const record of archiveStore().byHash(hash)) {
+    if (existsSync(archiveFilePath(record.storedName))) return record.storedName
+  }
+
+  return null
+}
+
+/**
+ * 归档里内容为 `hash`、**大小也是 `bytes`**、且文件仍在的那一份（相对路径）；没有则 `null`。
+ *
+ * 与 {@link findStoredName} 的区别只有一条，但那条是安全关键：**要比大小**。`filehash` 由
+ * 对端/服务方提供（[ADR-0047] 的已知限制），只信它一个值就可能把用户**开到错的文件上**；
+ * 大小对不上就当成没命中 —— 宁可漏命中（多下载一次），不可错命中（打开无关文件）。
+ */
+function findArchivedByHash(hash: string, bytes: number): string | null {
+  for (const record of archiveStore().byHash(hash)) {
+    if (record.bytes !== bytes) continue
     if (existsSync(archiveFilePath(record.storedName))) return record.storedName
   }
 
