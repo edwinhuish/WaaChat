@@ -37,6 +37,7 @@
 | [`roadmap.md`](roadmap.md) | 里程碑、验收标准、当前进度 | 想知道先做什么 |
 | [`research/inv3-assessment.md`](research/inv3-assessment.md) | INV-3 的抽样审计：接入 `whatsapp-web.js` 会不会让我们经手密钥与加密 | 决定 INV-3 的去留之前（ADR-0043 的未决项 1） |
 | [`research/browser-runtime-assessment.md`](research/browser-runtime-assessment.md) | 为什么会有第二个 Chromium、能不能换成 Playwright 或复用已有浏览器 | 决定浏览器从哪来之前（ADR-0044 的未实测项） |
+| [`research/early-file-identity.md`](research/early-file-identity.md) | 从"点击"到"Blob"的完整流程；能否在下载前拿到内容身份以跳过下载与哈希 | 评估"自建客户端 + 早期去重"之前 |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 开发流程、分支与提交规范、PR 清单 | 提 PR 之前 |
 
 ### 面向 AI 助手
