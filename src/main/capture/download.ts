@@ -216,6 +216,9 @@ async function askPageForContentHash(
  * 与 {@link askPageForContentHash} 同样保守：页面销毁、哈希不是合法 hex、注入超时、
  * 值不唯一 —— 任何一步不成立都返回 `null`，由归档层回落到 `unknown-message`。
  * **这条路线允许失败，不允许分错消息**（分错 = 文件落进别人的消息目录）。
+ *
+ * 触发时机与上面那条不同：**每次归档都会调一次**，且不受"打开时归档"开关影响 ——
+ * 消息ID 是落盘路径的一部分，不是一次可跳过的优化。
  */
 async function askPageForMessageId(contents: WebContents, hash: string): Promise<string | null> {
   const filehash = encodeFilehash(hash)
