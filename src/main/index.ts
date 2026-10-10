@@ -36,12 +36,14 @@ import {
 configureLogger({ packaged: app.isPackaged })
 
 /**
- * Linux：**Wayland 的臭氧路径不支持 Vulkan**（Chromium 自己在启动日志里这么说），而它会默认去
- * 试一次 —— 代价是每次启动一行 `wayland_surface_factory.cc … not compatible with Vulkan` 的
- * ERROR，加一次注定失败的 GPU 初始化。这里在**最早**的时刻决定"在这个平台上不请求它"。
+ * Linux：**Wayland 的臭氧路径没有 Vulkan surface**。Chromium 里有一条默认开启的
+ * 「WebGPU 在原生 Vulkan 上 + GL 互操作」的路，每次启动都会去建一个原生 Vulkan 实现，
+ * 于是留下一行 `wayland_surface_factory.cc … not compatible with Vulkan` 的 ERROR。
+ * 这里在**最早**的时刻决定"在这个平台上不请求它"。
  *
- * 必须在 `whenReady` 之前、GPU 进程启动之前。判据与三条边界（只在 Wayland 动、不覆盖用户的
- * `--disable-features`、用户显式要求 Vulkan 时不动）见 `linux-gpu.ts` 与 [ADR-0036]。
+ * 必须在 `whenReady` 之前、GPU 进程启动之前。判据与四条边界（只在 Wayland 动、不覆盖用户的
+ * `--disable-features`、用户显式要求 Vulkan 或自己指定了 WebGPU 后端时不动）见 `linux-gpu.ts`
+ * 与 [ADR-0036] / [ADR-0038]。
  */
 if (process.platform === 'linux') {
   const changed = applyLinuxGpuSwitches(app.commandLine, {
@@ -50,7 +52,7 @@ if (process.platform === 'linux') {
   })
 
   if (changed) {
-    logger.info('linux: not requesting Vulkan (the Wayland ozone path cannot use it)')
+    logger.info('linux: not requesting Vulkan (the Wayland ozone path has no Vulkan surfaces)')
   }
 }
 

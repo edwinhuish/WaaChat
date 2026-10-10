@@ -633,10 +633,11 @@ check(
 // 12. Linux 启动期的 GPU 开关
 // ---------------------------------------------------------------------------
 //
-// 只在**走 Wayland 的臭氧路径**时把 Vulkan 相关的 feature 关掉 —— Chromium 自己说这个组合不支持
-// （那条 `wayland_surface_factory.cc … not compatible with Vulkan`），见 ADR-0036。
-// 三条边界都属于"改坏了没人会立刻发现"：判据放宽会在 X11 上白关一次；覆盖 `--disable-features`
-// 会静默抹掉用户自己的列表；忽略用户的显式要求等于替他做决定。
+// 只在**走 Wayland 的臭氧路径**时不再请求 Vulkan（那行 `wayland_surface_factory.cc … not
+// compatible with Vulkan` 的来历与两层开关的分工见 ADR-0036 / ADR-0038）。
+// 四条边界都属于"改坏了没人会立刻发现"：判据放宽会在 X11 上白关一次；覆盖 `--disable-features`
+// 会静默抹掉用户自己的列表；忽略用户的显式要求等于替他做决定；而**少关一个开关**就等于那行
+// ERROR 照旧出现（1.0.3 实测踩过：只关 feature 不够）。
 
 section('Linux 启动期的 GPU 开关')
 
@@ -653,15 +654,41 @@ function fakeCommandLine(switches: Record<string, string> = {}): CommandLineLike
 }
 
 check(
-  'Wayland 上不请求 Vulkan',
+  'Wayland 上不请求 Vulkan（GL / 合成那一层）',
   applyLinuxGpuSwitches(fakeCommandLine(), { waylandDisplay: 'wayland-0' }),
+)
+check(
+  // 只关 feature 是**不够的**：那行报错的真正来源是 WebGPU 的「原生 Vulkan + GL 互操作」，
+  // 它不是一个 `base::Feature`（实测：1.0.3 的 GPU 进程带着 disable-features 也照旧报）。
+  'Wayland 上把 WebGPU 也从原生 Vulkan 上挪开（否则那行 ERROR 依旧）',
+  (() => {
+    const cli = fakeCommandLine()
+    applyLinuxGpuSwitches(cli, { waylandDisplay: 'wayland-0' })
+
+    return cli.getSwitchValue('use-webgpu-adapter') === 'opengles'
+  })(),
+)
+check(
+  '用户自己指定了 WebGPU 后端时不动它（逃生通道）',
+  (() => {
+    const cli = fakeCommandLine({ 'use-webgpu-adapter': 'vulkan' })
+    applyLinuxGpuSwitches(cli, { sessionType: 'wayland' })
+
+    return cli.getSwitchValue('use-webgpu-adapter') === 'vulkan'
+  })(),
 )
 check(
   'X11 上不碰命令行（那边 Vulkan 可能真的可用）',
   !applyLinuxGpuSwitches(fakeCommandLine(), { sessionType: 'x11' }) &&
     !applyLinuxGpuSwitches(fakeCommandLine({ 'ozone-platform': 'x11' }), {
       waylandDisplay: 'wayland-0',
-    }),
+    }) &&
+    (() => {
+      const cli = fakeCommandLine()
+      applyLinuxGpuSwitches(cli, { sessionType: 'x11' })
+
+      return cli.getSwitchValue('use-webgpu-adapter') === ''
+    })(),
 )
 check(
   '用户显式要求 Vulkan 时不动',
