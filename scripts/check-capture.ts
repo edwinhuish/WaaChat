@@ -70,6 +70,15 @@ import {
 import { ACTION_BUTTON_CLASS } from '../src/shared/action-button'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
 import {
+  DEFAULT_SPELLCHECK_LANGUAGES,
+  DEFAULT_UI_LANGUAGE,
+  SPELLCHECK_LANGUAGES,
+  UI_LANGUAGES,
+  acceptLanguagesFor,
+  normalizeSpellcheckLanguages,
+  resolveSpellcheckLanguages,
+} from '../src/shared/language'
+import {
   EXTRA_SETTINGS_ROWS,
   SETTINGS_ROW_ORDER,
   SETTINGS_SECTIONS,
@@ -1183,6 +1192,88 @@ check(
     hideOnCloseBody.includes('window.hide()') &&
     !hideOnCloseBody.includes('isPackaged'),
   hideOnCloseBody === '' ? 'window.ts 里找不到 hideOnClose()' : '它里面出现了 isPackaged 分支',
+)
+
+// ---------------------------------------------------------------------------
+// 18. 界面语言与拼写检查
+// ---------------------------------------------------------------------------
+//
+// 这两项都建立在**内核的既有能力**上，因此没有"接管"可以断言，风险全落在三个安静的失败模式上：
+//
+//   1. 语言码写错 → 上游不换语言，看起来像"上游不支持"；
+//   2. 拼写词典的码写成区域形式（`de-DE`）→ 内核拒收，勾了等于没勾，且不报错；
+//   3. **两处各设一半 UA**（会话设了语言、窗口又设 UA）→ 语言被覆盖回默认。
+//
+// 前两个断言判据表本身；第三个断言的是**源码**，因为那一半是"两个地方各写一行"造成的。
+
+section('界面语言与拼写检查')
+
+check(
+  '每一项界面语言的 Accept-Language 都以它自己的码开头，且不含空格',
+  UI_LANGUAGES.every((entry) => {
+    const primary = (entry.acceptLanguages.split(',')[0] ?? '').split(';')[0] ?? ''
+    return primary === entry.code && !entry.acceptLanguages.includes(' ')
+  }),
+)
+check(
+  '认不出的语言码回落到默认（调用点在启动路径上，抛错等于起不来）',
+  acceptLanguagesFor('xx-XX') === acceptLanguagesFor(DEFAULT_UI_LANGUAGE) &&
+    acceptLanguagesFor('') === acceptLanguagesFor(DEFAULT_UI_LANGUAGE),
+)
+check(
+  '拼写词典用的是内核的命名：区域码只有 en-US / en-GB / pt-BR',
+  SPELLCHECK_LANGUAGES.map((entry) => entry.code)
+    .filter((code) => code.includes('-'))
+    .sort()
+    .join(',') === 'en-GB,en-US,pt-BR',
+)
+check(
+  '拼写词典里没有中文（内核的清单里也没有：列上去等于一个永远不生效的选项）',
+  !SPELLCHECK_LANGUAGES.some((entry) => entry.code.startsWith('zh')),
+)
+check(
+  '只把内核实有的词典交给它，被丢掉的那些留在返回值里（供调用点记日志）',
+  (() => {
+    const resolved = resolveSpellcheckLanguages('en-US,de', ['en-US'])
+    return resolved.applied.join(',') === 'en-US' && resolved.rejected.join(',') === 'de'
+  })(),
+)
+check(
+  '空列表被收敛成默认："一门都不查"与"功能坏了"在用户看来没有区别',
+  normalizeSpellcheckLanguages('') === DEFAULT_SPELLCHECK_LANGUAGES &&
+    normalizeSpellcheckLanguages('de-DE') === DEFAULT_SPELLCHECK_LANGUAGES,
+)
+
+const spellcheckSection = sectionOfRow('spellcheckLanguages')
+check(
+  '词典与拼写检查开关在同一个区域，且紧跟其后（清单离开开关就读不懂它是给谁查的）',
+  spellcheckSection !== null &&
+    spellcheckSection === sectionOfRow('spellcheck') &&
+    spellcheckSection.rows.indexOf('spellcheckLanguages') ===
+      spellcheckSection.rows.indexOf('spellcheck') + 1,
+)
+
+// `windowSource` 复用它上面那一节（"关闭窗口 = 隐藏"）读到的同一份文本。
+const languageSource = source('../src/main/language.ts')
+
+check(
+  '承载上游页面的窗口不自己设 UA（两处各设一半会让语言被静默覆盖回默认）',
+  !windowSource.includes('webContents.setUserAgent(') &&
+    languageSource.includes('ses.setUserAgent('),
+  windowSource.includes('webContents.setUserAgent(')
+    ? 'window.ts 里又出现了这一次调用'
+    : 'language.ts 里找不到会话级的 setUserAgent',
+)
+
+const mainSourceFiles = sourceFiles(join(srcRoot, 'main'))
+check(
+  '三个新设置项在主进程里都有读者（能改的就一定真的会被执行）',
+  ['uiLanguage', 'spellcheck', 'spellcheckLanguages'].every((key) =>
+    mainSourceFiles.some(
+      (file) => basename(file) !== 'settings.ts' && readFileSync(file, 'utf8').includes(key),
+    ),
+  ),
+  '有一个设置项只有界面上的一行，没有任何主进程代码读它',
 )
 
 // ---------------------------------------------------------------------------

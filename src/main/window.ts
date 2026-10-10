@@ -113,10 +113,10 @@ export function createMainWindow(): BrowserWindow {
   })
 
   /**
-   * ⚠️ 这里**故意不设 UA**（曾经设过 `window.webContents.setUserAgent(userAgent)`）。
+   * ⚠️ 这里**故意不设 UA**（这个函数曾经在窗口的控制台上设过一次）。
    *
-   * Electron 的 `webContents.setUserAgent()` 只接受 UA 一个参数，而 `acceptLanguages`
-   * （界面语言）只能通过 `session.setUserAgent(ua, acceptLanguages)` 设置。两处都设的后果是
+   * Electron 里 webContents 版的 UA 设置只接受 UA 一个参数，而 `acceptLanguages`（界面语言）
+   * 只能通过**会话级**的 `setUserAgent(ua, acceptLanguages)` 设置。两处都设的后果是
    * **窗口这一份盖掉会话那一份**：UA 是对的、语言永远是默认的，而且没有任何报错。
    * 因此 UA 与语言一起挪到了会话上（`language.ts`，在 `configureSession()` 里、
    * 早于这个函数被调用），这里只负责开窗口。
