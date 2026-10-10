@@ -1337,6 +1337,20 @@ check(
   (pathSource.match(/withInstanceSuffix\(/g) ?? []).length >= 3,
   '归档 / 缓存 / 日志三个目录里至少有一个没有跟着实例走',
 )
+const userDataReaders = ['../src/main/settings.ts', '../src/main/integration/appicon.ts'] as const
+
+check(
+  'userData 下的路径必须在**调用时**才算（模块级常量会让所有实例共用同一份数据）',
+  userDataReaders.every((file) => {
+    const text = source(file)
+    return (
+      text.includes(`getPath('userData')`) &&
+      // 只看**顶格**的赋值：函数体里的同名写法是每次调用重算，那是正确的。
+      !/^(?:const|let|var)\s+\w+\s*=[^\n]*getPath\('userData'\)/m.test(text)
+    )
+  }),
+  '有一个文件在模块顶层捕获了 userData —— 多实例下它会写到另一个实例的数据里，而且不报错',
+)
 check(
   '没有写死的会话分区名了（分区必须按实例解析）',
   !/SESSION_PARTITION|fromPartition\('persist:/.test(
