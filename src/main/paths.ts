@@ -17,26 +17,27 @@
  *
  * ⚠️ 本模块**不导入 electron**（`main/index.ts` 负责在启动时把设置喂进来），
  * 因此 `scripts/check-capture.ts` 与单测可以在没有 Electron 的环境里直接断言它。
+ *
+ * ── 按实例分叉 ──
+ *
+ * 归档根与密文缓存根都带**实例后缀**（见 `shared/instance.ts`）：默认实例（不带
+ * `--instance`）的后缀是空串，因此下面每一个函数对既有用户返回的仍然是原来那个路径。
+ * 两者必须是**不同的目录**而不是"同一个目录下的两级"—— [ADR-0008] 要的是物理隔离，
+ * 而"归档与缓存共用一个父目录"会让"清缓存"有机会碰到归档。
+ *
+ * 登录态（会话分区）不在这里：它的落点是 `userData`，由 `main/index.ts` 在启动时按实例
+ * `setPath` 改写。这三者（归档 / 缓存 / 登录态）就是全部按实例分叉的状态，没有第四处。
  */
 
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
+import { ARCHIVE_DIR_BASE_NAME, withInstanceSuffix } from '../shared/instance'
 import { ACCOUNT_FALLBACK } from './archive/layout'
+import { instanceId } from './instance'
 
 /** 应用标识在文件系统层面的名字，与 package.json 的 name 一致。 */
 const APP_DIR_NAME = 'waachat'
-
-/**
- * 默认归档目录名。
- *
- * 用的是**项目名**，不是服务方的名字：这个目录是**我们创建在用户磁盘上的产物**，而它是用户
- * 唯一会在自己的文件管理器里天天看见的那一处 —— 写服务方名称容易被读成"官方目录/官方客户端
- * 生成的"。代码里出现 `web.whatsapp.com` 那类**指示性使用**不受影响，[INV-4] 也不覆盖数据
- * 目录命名；这里只是在可选的地方选更保守的一边。理由与取舍见 [ADR-0032]（它取代了
- * [ADR-0023] 关于名称的那一半）。
- */
-const ARCHIVE_DIR_NAME = 'WaaChat_files'
 
 /**
  * 归档索引的文件名。
@@ -69,7 +70,8 @@ function cacheHome(): string {
  * 目录本身由 `archive/blobs.ts` 的 `ensureArchiveDir()` 在启动时创建（`mkdir` 的
  * `recursive` 会连 `~/Documents` 一起补上），不需要用户先手工建。
  */
-export const defaultArchiveDir = (): string => join(homedir(), 'Documents', ARCHIVE_DIR_NAME)
+export const defaultArchiveDir = (): string =>
+  join(homedir(), 'Documents', withInstanceSuffix(ARCHIVE_DIR_BASE_NAME, instanceId()))
 
 /**
  * 把用户给的路径规整成一个可用的归档根目录；不可用时返回 `null`（调用方回落到默认位置）。
@@ -217,10 +219,12 @@ export const archiveAccountDir = (): string => join(archiveDir(), accountKey())
  * 相同（看得清、删得干净），但**根目录仍然独立** —— 这是 [ADR-0008] 的物理隔离：
  * "清除归档"与"关闭密文缓存"因此都不可能误伤对方。
  */
-export const ciphertextCacheDir = (): string => join(dataHome(), APP_DIR_NAME, 'cache')
+export const ciphertextCacheDir = (): string =>
+  join(dataHome(), withInstanceSuffix(APP_DIR_NAME, instanceId()), 'cache')
 
 /** 密文缓存里属于某个账号的那一层：`<缓存根>/<账号>`。 */
 export const ciphertextAccountDir = (): string => join(ciphertextCacheDir(), accountKey())
 
 /** 日志目录。放在 XDG_CACHE_HOME 下 —— 日志是派生物，用户清缓存时清掉它是对的。 */
-export const logDir = (): string => join(cacheHome(), APP_DIR_NAME, 'logs')
+export const logDir = (): string =>
+  join(cacheHome(), withInstanceSuffix(APP_DIR_NAME, instanceId()), 'logs')

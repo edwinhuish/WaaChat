@@ -157,4 +157,30 @@ export interface WaaChatBridge {
    * 元数据 —— 报问题时第一句总是"你用哪个版本"，而在此之前界面里没有这个答案。
    */
   getAppVersion(): Promise<string>
+
+  /**
+   * 当前进程是哪个实例（多实例，[ADR-0062]）。
+   *
+   * 界面需要它来回答两个问题：**我这个窗口属于哪一份数据**（「关于」里显示的实例名），
+   * 以及**哪几项在这里改不了**（开机自启、启动器条目这类"全机一份"的东西归属默认实例）。
+   *
+   * 只读、无参数。它不是"一个能力" —— 主进程不会因为被问过就改任何状态。
+   */
+  getInstanceInfo(): Promise<InstanceInfo>
+}
+
+/**
+ * 当前进程的实例标识。
+ *
+ * `id` 是空串表示**默认实例**（用户没指定 `--instance`），因此判断"是不是默认实例"必须
+ * 看 {@link InstanceInfo.isDefault}，不要拿 `id` 与 `'default'` 比 —— 那个名字是**保留的**，
+ * 永远不是一个真实实例的名字（见 `shared/instance.ts` 的 `RESERVED_INSTANCE_IDS`）。
+ */
+export interface InstanceInfo {
+  /** 实例标识；空串表示默认实例。 */
+  readonly id: string
+  /** 界面上用来指代它的名字（`WaaChat` 或 `WaaChat（work）`）。 */
+  readonly label: string
+  /** 是不是默认实例。 */
+  readonly isDefault: boolean
 }

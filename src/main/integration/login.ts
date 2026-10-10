@@ -12,10 +12,25 @@
 
 import { app } from 'electron'
 
+import { usingDefaultInstance } from '../instance'
 import { logger } from '../logger'
 
 export function applyLaunchAtLogin(enabled: boolean): void {
   if (!app.isPackaged) return
+
+  /**
+   * 自启条目是**全机一份**的：Electron 按应用名在 `~/.config/autostart/` 下写一个
+   * `.desktop`，因此两个实例会争抢同一个文件、互相覆写（多实例，[ADR-0062]）。
+   *
+   * 归属交给默认实例。**不做成"每个实例各写一条"**：那要求条目有不同的名字，而
+   * `setLoginItemSettings()` 不给我们指定名字的能力 —— 在这些约束下能做的只有"不互相
+   * 覆写"。命名实例想开机启动，用自己的启动器条目或一个 `--instance` 包装脚本
+   * （`docs/usage.md` 第 5 节）。
+   */
+  if (!usingDefaultInstance()) {
+    logger.info('login: autostart belongs to the default instance, skipping', { enabled })
+    return
+  }
 
   const appImage = process.env['APPIMAGE']
   const path = appImage ?? process.execPath

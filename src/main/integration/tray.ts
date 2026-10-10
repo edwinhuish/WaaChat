@@ -16,8 +16,9 @@
  */
 
 import { Menu, Tray, app } from 'electron'
-import type { BrowserWindow } from 'electron'
+import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
 
+import { instanceLabel, usingDefaultInstance } from '../instance'
 import { logger } from '../logger'
 import { presentWindow } from '../window'
 import { effectiveAppIcon } from './appicon'
@@ -61,30 +62,44 @@ export function createTray(windows: TrayWindows): Tray | null {
     }
 
     tray = new Tray(image)
-    tray.setToolTip('WaaChat')
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: '显示聊天', click: () => presentWindow(windows.main) },
-        /**
-         * 分隔线在这里分的是**两类东西**：上面是应用的主体（那扇承载聊天的窗口），下面是
-         * **我们的本地界面**（两扇窗口，[ADR-0025]）。不分组时三项是同一串，用户看不出
-         * 「设置」是跟着「文件列表」的一类 —— 而它确实不是"另一个聊天入口"。
-         */
-        { type: 'separator' },
-        // 两项各开一扇窗口：本地界面拆开之后，托盘不再需要"打开某一扇再自己找"。
-        { label: '文件列表', click: () => presentWindow(windows.files) },
-        { label: '设置', click: () => presentWindow(windows.settings) },
-        // 「退出」与前两类都不同（它结束整个应用），因此也要分开。
-        { type: 'separator' },
-        {
-          label: '退出',
-          click: () => {
-            // 触发 before-quit，让退出清理（若用户开启）有机会执行。
-            app.quit()
-          },
+    tray.setToolTip(instanceLabel())
+
+    const template: MenuItemConstructorOptions[] = []
+
+    /**
+     * 命名实例在菜单第一行自报家门。
+     *
+     * 两个实例的托盘图标可以长得**一模一样**，而 GNOME 的 appindicator **不显示 tooltip**
+     * （点一下直接弹这份菜单）—— 因此这一行是用户唯一能分清"哪个图标是哪个账号"的地方。
+     * 默认实例不加这一行：菜单保持原样，多实例不是所有用户都会用到的东西。
+     */
+    if (!usingDefaultInstance()) {
+      template.push({ label: instanceLabel(), enabled: false }, { type: 'separator' })
+    }
+
+    template.push(
+      { label: '显示聊天', click: () => presentWindow(windows.main) },
+      /**
+       * 分隔线在这里分的是**两类东西**：上面是应用的主体（那扇承载聊天的窗口），下面是
+       * **我们的本地界面**（两扇窗口，[ADR-0025]）。不分组时三项是同一串，用户看不出
+       * 「设置」是跟着「文件列表」的一类 —— 而它确实不是"另一个聊天入口"。
+       */
+      { type: 'separator' },
+      // 两项各开一扇窗口：本地界面拆开之后，托盘不再需要"打开某一扇再自己找"。
+      { label: '文件列表', click: () => presentWindow(windows.files) },
+      { label: '设置', click: () => presentWindow(windows.settings) },
+      // 「退出」与前两类都不同（它结束整个应用），因此也要分开。
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          // 触发 before-quit，让退出清理（若用户开启）有机会执行。
+          app.quit()
         },
-      ]),
+      },
     )
+
+    tray.setContextMenu(Menu.buildFromTemplate(template))
 
     /**
      * Linux 上这个事件不是"鼠标左键单击"，而是 StatusNotifierItem 的 `Activate`

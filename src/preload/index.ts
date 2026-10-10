@@ -75,6 +75,8 @@ const bridge: WaaChatBridge = {
   switchCiphertextCache: (target: boolean) => ipcRenderer.invoke(CHANNELS.cacheSwitch, target),
 
   getAppVersion: () => ipcRenderer.invoke(CHANNELS.appVersion),
+
+  getInstanceInfo: () => ipcRenderer.invoke(CHANNELS.instanceInfo),
 }
 
 /** `Object.freeze` 挡的是渲染侧误改写；真正的边界是 contextIsolation 本身。 */

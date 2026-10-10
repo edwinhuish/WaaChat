@@ -40,9 +40,10 @@ import {
   iconExtension,
   isAcceptedIconName,
 } from '../../shared/appicon'
-import { APP_ID, DESKTOP_FILE_NAME } from '../../shared/constants'
+import { APP_DISPLAY_NAME, APP_ID, DESKTOP_FILE_NAME } from '../../shared/constants'
 import { formatBytes } from '../../shared/format'
 import type { AppIconPickResult, AppIconResult, AppIconState } from '../../shared/types'
+import { usingDefaultInstance } from '../instance'
 import { logger } from '../logger'
 
 /**
@@ -175,9 +176,21 @@ function desktopEntryConflict(): string | null {
  *
  * **开发模式下跳过**：那时 `Exec` 只能指向 `node_modules` 里的 Electron，
  * 写进启动器只会多出一个点不开的图标（同 `integration/login.ts` 的判断）。
+ *
+ * **命名实例也跳过**（多实例，[ADR-0062]）：这份条目描述的是**这个应用**，路径与 app_id
+ * 都是全机唯一的一份（`~/.local/share/applications/<app_id>.desktop`）。两个实例都写它，
+ * 结果是互相覆写 —— 而"改完图标只有一半生效"没有任何报错能解释。归属交给默认实例。
+ *
+ * 命名实例的自定义图标**仍然生效**，只是作用范围是它自己的窗口与托盘（那两处本来就是
+ * 每进程一份的）。
  */
 function writeDesktopEntry(iconPath: string): void {
   if (!app.isPackaged) return
+
+  if (!usingDefaultInstance()) {
+    logger.info('appicon: the launcher entry belongs to the default instance, skipping')
+    return
+  }
 
   const path = desktopEntryPath()
   mkdirSync(dirname(path), { recursive: true })
@@ -185,8 +198,9 @@ function writeDesktopEntry(iconPath: string): void {
   writeFileSync(
     path,
     buildDesktopEntry({
-      // 与 window.ts / tray.ts 里的标题是同一个值，必须等于 electron-builder.yml 的 productName。
-      name: 'WaaChat',
+      // 与窗口标题的**基名**同源，必须等于 electron-builder.yml 的 productName。
+      // 注意这里**不带**实例后缀：条目说的是这个应用，不是某个实例（见上面的说明）。
+      name: APP_DISPLAY_NAME,
       /**
        * AppImage 下真正该被执行的是 `.AppImage` 文件本身，而不是挂载点里的那个可执行文件 ——
        * 挂载点每次启动都不同（同 integration/login.ts 里的路径陷阱）。

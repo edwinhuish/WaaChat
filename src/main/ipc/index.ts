@@ -29,7 +29,6 @@ import {
 
 import { ICON_DIALOG_EXTENSIONS } from '../../shared/appicon'
 import type { ArchiveIdInput, ArchiveIdsInput } from '../../shared/bridge'
-import { SESSION_PARTITION } from '../../shared/constants'
 import { describeDeleteConfirmation } from '../../shared/deletion'
 import { formatBytes } from '../../shared/format'
 import { describeMigrationFailure } from '../../shared/migration'
@@ -53,6 +52,7 @@ import { planMigration } from '../archive/migrate'
 import { relocateArchive } from '../archive/relocate'
 import { archiveStore, enforceArchiveLimit } from '../archive/store'
 import { cacheUsage, enforceCacheLimit, planCacheConversion } from '../capture/cache-files'
+import { instanceId, instanceLabel, sessionPartition, usingDefaultInstance } from '../instance'
 import { switchCiphertextCache } from '../capture/cache-switch'
 import {
   appIconState,
@@ -283,7 +283,7 @@ function applySettings(value: unknown): Settings {
    * 上游据此重新挑语言包。代价是页面里**未发送**的输入会丢，因此设置页那一行写着这句话。
    */
   if ('uiLanguage' in patch) {
-    applyUserAgentAndLanguages(session.fromPartition(SESSION_PARTITION), next)
+    applyUserAgentAndLanguages(session.fromPartition(sessionPartition()), next)
     getMainWindow()?.webContents.reload()
   }
 
@@ -292,7 +292,7 @@ function applySettings(value: unknown): Settings {
    * （拼写检查是每次输入时向内核要素材的，不是页面渲染出来的）。
    */
   if ('spellcheck' in patch || 'spellcheckLanguages' in patch) {
-    applySpellcheck(session.fromPartition(SESSION_PARTITION), next)
+    applySpellcheck(session.fromPartition(sessionPartition()), next)
   }
 
   logger.info('settings updated', { keys: Object.keys(patch).join(',') })
@@ -713,7 +713,7 @@ export function registerIpcHandlers(): void {
     try {
       const outcome = await switchCiphertextCache(
         planned.plan,
-        session.fromPartition(SESSION_PARTITION),
+        session.fromPartition(sessionPartition()),
         getSettings,
         () => {
           updateSettings({ enableCiphertextCache: input })
@@ -775,6 +775,16 @@ export function registerIpcHandlers(): void {
    * 但多一次字符串读取不值得为它维护一份状态。
    */
   guard(CHANNELS.appVersion, () => app.getVersion())
+
+  /**
+   * 当前实例（多实例，[ADR-0062]）。与 `app:version` 同一条理由：一条只读元数据，
+   * 而"我这个窗口属于哪一份数据"在没有它之前，界面上没有答案。
+   */
+  guard(CHANNELS.instanceInfo, () => ({
+    id: instanceId(),
+    label: instanceLabel(),
+    isDefault: usingDefaultInstance(),
+  }))
 
   logger.info('ipc: handlers registered')
 }

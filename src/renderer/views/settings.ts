@@ -54,6 +54,8 @@ import {
   type MigrationFailure,
   type Settings,
 } from '../../shared/types'
+import type { InstanceInfo } from '../../shared/bridge'
+import { APP_DISPLAY_NAME } from '../../shared/constants'
 import { bridge } from '../bridge'
 import { h } from '../dom'
 import { cropToAppIcon } from '../icon'
@@ -72,6 +74,13 @@ interface ToggleSpec {
    * 一个能改却不起作用的开关会让用户相信一件不成立的事。
    */
   readonly enforced?: boolean
+  /**
+   * 这一项对应的系统条目是**全机一份**的，因此只有默认实例能设（多实例，[ADR-0062]）。
+   *
+   * 命名实例里这一行会被禁用并写明原因。它**不是** `enforced: false`（那是"还没实现"）：
+   * 功能是实现了的，只是归属不是这个实例。
+   */
+  readonly defaultInstanceOnly?: boolean
 }
 
 const TOGGLES: readonly ToggleSpec[] = [
@@ -115,6 +124,11 @@ const TOGGLES: readonly ToggleSpec[] = [
     key: 'launchAtLogin',
     label: '开机自启',
     hint: '登录桌面后自动启动并保持连接，这样通知不会漏掉。',
+    /**
+     * 自启条目在 `~/.config/autostart/` 下是**全机一份**的，两个实例会争抢同一个文件，
+     * 而 Electron 不给我们指定条目名字的能力 —— 因此归属默认实例（见 `integration/login.ts`）。
+     */
+    defaultInstanceOnly: true,
   },
   {
     key: 'spellcheck',
@@ -219,6 +233,13 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * 取不到时保持 `null`，那一行显示一个破折号 —— 见 {@link aboutRow} 里那段理由。
    */
   let appVersion: string | null = null
+  /**
+   * 当前实例（多实例，[ADR-0062]）。
+   *
+   * 取不到时保持 `null`，此时「关于」显示应用名、`defaultInstanceOnly` 的项**不禁用** ——
+   * 一次元数据读取失败不该让用户连开关都动不了。
+   */
+  let instanceInfo: InstanceInfo | null = null
   let location: LocationState = { kind: 'idle' }
   let appIcon: AppIconState | null = null
   let icon: IconState = { kind: 'idle' }
@@ -452,7 +473,15 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         }),
         h('div', {
           class: 'hint',
-          text: '窗口与托盘图标立即生效。启动器 / 任务栏图标由桌面环境缓存，要重新登录桌面（或注销再进来）之后才会更新。',
+          /**
+           * 命名实例**不写**启动器条目（那份是全机唯一的，归默认实例管，见
+           * `integration/appicon.ts`）。照抄默认实例那句话会得到一个承诺了却不会发生的
+           * 结果 —— "我改了图标，启动器怎么没变"。
+           */
+          text:
+            instanceInfo?.isDefault === false
+              ? '窗口与托盘图标立即生效。启动器条目由默认实例维护：本实例不会去动它（那份条目全机只有一份，两个实例同时改会互相覆盖）。'
+              : '窗口与托盘图标立即生效。启动器 / 任务栏图标由桌面环境缓存，要重新登录桌面（或注销再进来）之后才会更新。',
         }),
         iconStatusNode(),
       ),
@@ -712,13 +741,22 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     // 转换期间禁用**这一个**开关：再拨一次只会撞上主进程的闸门。别的开关不受影响。
     const switching = spec.key === 'enableCiphertextCache' && cacheSwitch.kind === 'running'
     const implemented = spec.enforced ?? true
+    /**
+     * 归属另一个实例的项在这里**禁用**，而不是照常显示：开关拨下去主进程会跳过它，
+     * 而"能拨、但没有效果"正是本文件开头第 2 条明令禁止的样子。
+     *
+     * 拿不到实例信息时**不禁用**（`instanceInfo === null`）—— 那是一次 IPC 失败，
+     * 按"最不打扰用户"的那一边退让：他至少能操作，而这一项在默认实例下本来就是对的。
+     */
+    const otherInstance = spec.defaultInstanceOnly === true && instanceInfo?.isDefault === false
 
     const checkbox = h('input', {
       type: 'checkbox',
       checked: current[spec.key],
-      disabled: switching || !implemented,
+      disabled: switching || !implemented || otherInstance,
       // 与容量项同一个说法：悬停时就能看到"为什么它不能点"。
       ...(implemented ? {} : { title: '尚未生效' }),
+      ...(otherInstance ? { title: '只有默认实例能设置这一项' } : {}),
       onChange: (event) => {
         const checked = (event.target as HTMLInputElement).checked
 
@@ -750,6 +788,14 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
           ...(needsRestart ? [h('span', { class: 'badge', text: '重启后生效' })] : []),
         ),
         ...(spec.hint === '' ? [] : [h('div', { class: 'hint', text: spec.hint })]),
+        ...(otherInstance
+          ? [
+              h('div', {
+                class: 'hint',
+                text: `这一项归默认实例管：它对应的系统条目全机只有一份，两个实例同时改会互相覆盖。要开机启动这个实例，请单独做一个启动器条目（带 ${'--instance'} 参数）。`,
+              }),
+            ]
+          : []),
         ...(spec.key === 'enableCiphertextCache' ? cacheSwitchResultNodes() : []),
       ),
     )
@@ -886,8 +932,23 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       h(
         'div',
         { class: 'meta' },
-        h('div', { class: 'label', text: 'WaaChat' }),
+        h('div', { class: 'label', text: instanceInfo?.label ?? APP_DISPLAY_NAME }),
         h('div', { class: 'path', data: { role: 'version' }, text: appVersion ?? '—' }),
+        /**
+         * 命名实例在这里说清"我是独立的一份数据"。
+         *
+         * 这是**唯一**会明说这件事的地方：窗口标题只写了实例名，而"实例名意味着登录态、
+         * 归档、设置、缓存都不共享"是用户看不到也猜不到的部分 —— 他更可能以为只是一个
+         * 标签。
+         */
+        ...(instanceInfo !== null && !instanceInfo.isDefault
+          ? [
+              h('div', {
+                class: 'hint',
+                text: '这是一个独立实例：它的登录态、设置、归档与密文缓存都在各自的目录里，与其它实例互不可见。',
+              }),
+            ]
+          : []),
       ),
     )
   }
@@ -913,7 +974,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
        * 后两者取不到时各自退化为"没有自定义图标"与"版本未知"：某一行的问题不该把**别的**
        * 行也带走 —— 让整个设置页空掉，用户连保存位置都看不到。
        */
-      const [nextSettings, nextIcon, nextVersion] = await Promise.all([
+      const [nextSettings, nextIcon, nextVersion, nextInstance] = await Promise.all([
         bridge().getSettings(),
         bridge()
           .getAppIcon()
@@ -925,11 +986,15 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         bridge()
           .getAppVersion()
           .catch(() => null),
+        bridge()
+          .getInstanceInfo()
+          .catch(() => null),
       ])
 
       settings = nextSettings
       appIcon = nextIcon
       appVersion = nextVersion
+      instanceInfo = nextInstance
       render()
     },
 

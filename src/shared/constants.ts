@@ -23,10 +23,13 @@ export const UPSTREAM_URL = 'https://web.whatsapp.com'
 export const UPSTREAM_ORIGIN = 'https://web.whatsapp.com'
 
 /**
- * 会话分区名。`persist:` 前缀是必须的 —— 没有它，登录态不会持久化，
- * 每次启动都要重新扫码。
+ * 面向用户的应用名。
+ *
+ * 与 `electron-builder.yml` 的 `productName`、用户级 `.desktop` 条目的 `Name=` 是同一个值，
+ * 出现在窗口标题与托盘菜单里。命名实例在后面追加一个全角括号后缀
+ * （`shared/instance.ts` 的 `instanceLabelOf`），因此这里只放**基名**。
  */
-export const SESSION_PARTITION = 'persist:waachat'
+export const APP_DISPLAY_NAME = 'WaaChat'
 
 /**
  * 桌面条目文件名。必须与以下三处保持一致：

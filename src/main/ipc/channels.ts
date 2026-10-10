@@ -79,6 +79,15 @@ export const CHANNELS = {
    * "你用哪个版本"，而在它出现之前，界面里根本没有这个答案 —— 只能靠安装包文件名去猜。
    */
   appVersion: 'app:version',
+
+  /**
+   * 当前进程是哪个实例（多实例，[ADR-0062]）。
+   *
+   * 只读、无参数、无副作用。设置窗口的「关于」区域显示它，并据此把"只有默认实例能设"的
+   * 那几项标出来 —— **界面必须知道自己在哪个实例里**，否则一个命名实例会显示着可以改的
+   * 开机自启开关，而那个开关实际上是另一个实例管的。
+   */
+  instanceInfo: 'app:instance',
 } as const
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS]

@@ -5,9 +5,10 @@
  * 业务逻辑一律不写在这个文件里 —— 它应该短到能一眼看完。
  */
 
-import { app, session } from 'electron'
+import { app, dialog, session } from 'electron'
 
-import { APP_ID, DESKTOP_FILE_NAME, SESSION_PARTITION } from '../shared/constants'
+import { APP_ID, DESKTOP_FILE_NAME } from '../shared/constants'
+import { isForeignArchiveDir, withInstanceSuffix } from '../shared/instance'
 import { resolveAccountKey } from './account'
 import { attachContextMenu } from './context-menu'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
@@ -16,8 +17,9 @@ import { attachDevProbe } from './dev-probe'
 import { registerIpcHandlers } from './ipc'
 import { applyLaunchAtLogin } from './integration/login'
 import { createTray } from './integration/tray'
+import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { applyLinuxGpuSwitches } from './linux-gpu'
-import { configureLogger, logger } from './logger'
+import { configureLogger, logger, redactPath } from './logger'
 import { configureSession } from './session'
 import { getSettings } from './settings'
 import {
@@ -37,6 +39,51 @@ import {
  * logger 刻意不自己 import electron（理由见 logger.ts），因此这一步是必须的装配。
  */
 configureLogger({ packaged: app.isPackaged })
+
+/**
+ * 实例解析与"我是哪一份数据"的落点。
+ *
+ * `--instance <名>` 选择实例（判据在 `shared/instance.ts`）；不带则是默认实例，此时下面
+ * 两行写回去的是**原值**，因此既有用户的目录一个字节都不变。
+ *
+ * 顺序上有三处硬要求，每一处都有具体后果：
+ *
+ *   1. **必须早于任何读取路径的代码**。`settings.json`、自定义图标、分区存储全在
+ *      `userData` 下，晚一步就会读到、写到默认实例的那一份。
+ *   2. **必须早于 `app.requestSingleInstanceLock()`**。那把锁是 Chromium 的
+ *      `ProcessSingleton`，它把 `SingletonLock` / `SingletonSocket` 放在 **userData 目录里**
+ *      —— 因此"每实例一把锁"不是我们另外做的事，而是改完 `userData` 之后**自动成立**的：
+ *      两个实例起得来，而同一个实例被启动第二次仍然会把已有窗口叫回来。
+ *   3. **必须早于 `whenReady`**：`sessionData` 一旦启动就改不动了（Electron 的明文要求）。
+ */
+const instance = resolveInstance()
+
+if (instance.error !== null) {
+  /**
+   * **拒绝启动，而不是回落到默认实例。** 回落会让"我指定的是 work"变成"我动的是默认实例
+   * 的数据"，而两种结果在界面上完全一样 —— 用户没有任何办法看出来。
+   *
+   * 除了 stderr 之外还要弹一个框：这个参数通常写在启动器条目或脚本里，从终端启动的场合很少，
+   * 只留一个退出码的话用户看到的是"点了图标没反应"。
+   */
+  logger.error('instance: invalid instance argument, refusing to start', {
+    reason: instance.error,
+  })
+
+  try {
+    dialog.showErrorBox('WaaChat 无法启动', describeInstanceFailure(instance))
+  } catch {
+    // 没有可用显示（headless）时弹不出来，这时 stderr 与退出码就是全部线索。
+  }
+
+  process.exit(1)
+}
+
+const userDataDir = app.getPath('userData')
+const sessionDataDir = app.getPath('sessionData')
+
+app.setPath('userData', withInstanceSuffix(userDataDir, instance.id))
+app.setPath('sessionData', withInstanceSuffix(sessionDataDir, instance.id))
 
 /**
  * Linux：**Wayland 的臭氧路径没有 Vulkan surface**。Chromium 里有一条默认开启的
@@ -60,13 +107,20 @@ if (process.platform === 'linux') {
 }
 
 /**
- * 单实例锁。
+ * 单实例锁 —— **每实例一把**。
  *
- * 两个实例会争抢同一个会话分区（`persist:waachat`）里的登录态，症状是随机出现
- * 需要重新扫码。必须在 `whenReady` **之前**申请。
+ * 两个进程争抢同一个会话分区里的登录态，症状是随机出现需要重新扫码，因此这把锁必须留着。
+ * 但它的粒度已经不是"整台机器"：Chromium 的 `ProcessSingleton` 把锁文件放在 **userData
+ * 目录里**，而 userData 上面刚刚按实例改写过了 —— 于是"锁住同一份数据"这件事自动变成了
+ * "锁住同一个实例"，不同实例互不相干（这正是它们的隔离所必需的）。
+ *
+ * 因此下面这条注释的**语义已经变了**：它不是"全机只有一个 WaaChat"，而是"这个实例只有
+ * 一个进程"。`second-instance` 收到的也是**同一实例**的第二次启动。
+ *
+ * 必须在 `whenReady` **之前**申请，且必须在 `setPath('userData')` **之后**。
  */
 if (!app.requestSingleInstanceLock()) {
-  logger.info('another instance is already running, exiting')
+  logger.info('this instance is already running, exiting', { instance: instance.id || 'default' })
   process.exit(0)
 }
 
@@ -143,17 +197,31 @@ app.whenReady().then(async () => {
    * 密文缓存的条目路径（`capture/protocol.ts`）。读不到就回落到 `unknown-account`，
    * 不阻断启动。
    */
-  await resolveAccountKey(session.fromPartition(SESSION_PARTITION))
+  await resolveAccountKey(session.fromPartition(sessionPartition()))
 
   /**
    * 归档位置必须早于会话配置：接管点 A 在装配时就会建好归档目录并清扫临时文件，
    * 晚一步它就会把目录建到**默认**位置上，而用户设置的是别的地方。
    */
-  applyArchiveDir(settings.archiveDir)
+  const archiveDirNow = applyArchiveDir(settings.archiveDir)
+
+  /**
+   * 用户把归档指到**另一个实例**的归档根上了吗？
+   *
+   * 这里只**说**，不改：把配置指向别处是他自己的决定，而"拒绝使用 + 退回到默认位置"会让他
+   * 看到一份空归档 —— 那比共享一个目录更糟。共享的真实后果是"退出时清除归档"会删掉对方
+   * 的文件（两棵树一起被清），因此至少要有这一条日志与 `docs/usage.md` 的注意事项。
+   */
+  if (isForeignArchiveDir(archiveDirNow, instanceId())) {
+    logger.warn('instance: the archive directory looks like another instance’s', {
+      dir: redactPath(archiveDirNow),
+      instance: instance.id || 'default',
+    })
+  }
 
   // 会话配置必须早于创建任何窗口：两个接管点都是挂在 session 上的。
   // 传读取函数而不是快照 —— 见 settings.ts 里 current 的说明。
-  await configureSession(session.fromPartition(SESSION_PARTITION), getSettings)
+  await configureSession(session.fromPartition(sessionPartition()), getSettings)
 
   // 让系统里的自启条目与设置一致。用户可能在设置里关了自启，或手工删过那个
   // `.desktop` 条目 —— 每次启动对齐一次，代价是一次同步写入。
@@ -179,6 +247,9 @@ app.whenReady().then(async () => {
     packaged: app.isPackaged,
     chromium: process.versions.chrome,
     electron: process.versions.electron,
+    // 两个实例的日志可能被贴进同一份 issue：先写清这一份是谁的。
+    instance: instance.id || 'default',
+    partition: sessionPartition(),
   })
 })
 

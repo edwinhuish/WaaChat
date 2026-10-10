@@ -17,9 +17,10 @@ import { join } from 'node:path'
 
 import { BrowserWindow, app, shell } from 'electron'
 
-import { SESSION_PARTITION, UPSTREAM_URL } from '../shared/constants'
+import { UPSTREAM_URL } from '../shared/constants'
 import { isUpstreamPage } from '../shared/upstream'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
+import { instanceLabel, sessionPartition } from './instance'
 import { logger } from './logger'
 
 /** 左上角符合 GNOME 习惯的默认尺寸；上游页面是双栏布局，窄了会很难用。 */
@@ -100,11 +101,15 @@ export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     ...DEFAULT_SIZE,
     show: false,
-    title: 'WaaChat',
+    /**
+     * 窗口标题是用户**唯一**能一眼分清两扇同款窗口的地方（托盘图标与窗口图标都可以长得
+     * 一模一样）。命名实例因此必须自报家门，见 `shared/instance.ts` 的 `instanceLabelOf`。
+     */
+    title: instanceLabel(),
     autoHideMenuBar: true,
     icon: effectiveAppIcon() ?? defaultIconPath(),
     webPreferences: {
-      partition: SESSION_PARTITION,
+      partition: sessionPartition(),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -188,7 +193,7 @@ function createLocalWindow(options: {
     autoHideMenuBar: true,
     icon: effectiveAppIcon() ?? defaultIconPath(),
     webPreferences: {
-      partition: SESSION_PARTITION,
+      partition: sessionPartition(),
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       sandbox: true,
@@ -215,7 +220,7 @@ function createLocalWindow(options: {
  * "文件列表"是这扇**窗口**的名字 —— 两者不要混用（[ADR-0025] 理由 3）。
  */
 export function createFilesWindow(): BrowserWindow {
-  const window = createLocalWindow({ title: 'WaaChat — 文件列表', entry: FILES_ENTRY })
+  const window = createLocalWindow({ title: `${instanceLabel()} — 文件列表`, entry: FILES_ENTRY })
 
   filesWindow = window
   window.on('closed', () => {
@@ -232,7 +237,7 @@ export function createFilesWindow(): BrowserWindow {
  * 接管失效改由系统通知告知，于是这一扇窗口不再接收任何推送。
  */
 export function createSettingsWindow(): BrowserWindow {
-  const window = createLocalWindow({ title: 'WaaChat — 设置', entry: SETTINGS_ENTRY })
+  const window = createLocalWindow({ title: `${instanceLabel()} — 设置`, entry: SETTINGS_ENTRY })
 
   settingsWindow = window
   window.on('closed', () => {
