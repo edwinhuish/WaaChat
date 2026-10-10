@@ -72,7 +72,7 @@ docs/decisions.md（唯一事实源：为什么这样设计）
 
 - **想推翻某个设计** → 先读 `docs/decisions.md` 里对应的 ADR，再决定是提 ADR 还是放弃。
 - **想知道某个写法的边界** → `ai/INVARIANTS.md`。
-- **想知道背景** → `docs/research/feasibility-study.md`（立项时的完整调研，含三条技术路线对比与被否决的理由）。
+- **想知道背景** → `docs/decisions.md`（立项期的三条技术路线对比与被否决的理由见 ADR-0001，本次转向见 ADR-0043）。
 
 ## 5. 平台环境假设
 
