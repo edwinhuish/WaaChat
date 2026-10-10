@@ -1065,12 +1065,44 @@ check(
     FETCH_METADATA_BY_RESOURCE_TYPE.subFrame.user === undefined,
 )
 
-// 这两条是"绝不能有"：`other` 正是我们自己重发出去的那一份，收录它等于队列自己喂自己；
-// `media` 的 dest 在 video / audio 之间分不出来 —— 宁可少补，也不补一个错的。
+// 换算表的取值有两条**内核侧的硬校验**（Electron 44.7 实测，见 ADR-0058）：
+//  - `Sec-Fetch-Mode` 只能是 `navigate` / `no-cors`：带上 `cors` / `same-origin` 的那一份
+//    请求**根本发不出去**，直接以 `net::ERR_INVALID_ARGUMENT` 失败（终端里只有一行 stderr）；
+//  - `dest` 是框架类（document / frame / iframe / fencedframe）时必须配 `navigate`。
+// 前者是真实踩过的坑：`xhr` 曾经被补成 `cors`/`empty`，于是分区里每一个 XHR / `fetch()` 全挂。
+const metadataEntries = Object.entries(FETCH_METADATA_BY_RESOURCE_TYPE)
+const ACCEPTED_MODES = new Set(['navigate', 'no-cors'])
+const FRAME_DESTS = new Set(['document', 'frame', 'iframe', 'fencedframe'])
+
+const badModes = metadataEntries
+  .filter(([, value]) => !ACCEPTED_MODES.has(value.mode))
+  .map(([role, value]) => `${role}:${value.mode}`)
+check(
+  '每个角色的 mode 都是内核接受的取值（cors / same-origin 会让请求直接失败）',
+  badModes.length === 0,
+  badModes.join(', '),
+)
+
+const badPairs = metadataEntries
+  .filter(([, value]) => FRAME_DESTS.has(value.dest) && value.mode !== 'navigate')
+  .map(([role]) => role)
+check(
+  '框架类 dest 必须配 navigate（内核的硬校验，配错同样是请求发不出去）',
+  badPairs.length === 0,
+  badPairs.join(', '),
+)
+
+// 这三条是"绝不能有"：`other` 正是我们自己重发出去的那一份，收录它等于队列自己喂自己；
+// `media` 的 dest 在 video / audio 之间分不出来；`xhr` 的真浏览器取值是被内核拒收的 `cors`
+// —— 三者都只能维持内核默认（对 `xhr` 而言那恰好就是 `no-cors`/`empty`）。
 check('不收录 other（否则重发的那一份会重新进队列）', !('other' in FETCH_METADATA_BY_RESOURCE_TYPE))
 check(
   '不收录 media（dest 分不出来，宁可维持内核默认）',
   !('media' in FETCH_METADATA_BY_RESOURCE_TYPE),
+)
+check(
+  '不收录 xhr（真浏览器发 cors，而 cors 会被内核拒收：收录它等于把每个 XHR 都打掉）',
+  !('xhr' in FETCH_METADATA_BY_RESOURCE_TYPE),
 )
 
 const previewUrl = 'https://webtp.whatsapp.net/pdf-viewer/?locale=zh_CN'
@@ -1107,15 +1139,15 @@ check(
 
 // 角色与请求一一对应、取走即消失：否则同一 URL 的下一次重发会拿到上一次的角色（串味），
 // 而"同一个 URL 并发若干请求"在加载图片时很常见。
-rememberRequestContext({ method: 'GET', url: previewUrl, resourceType: 'xhr', referrer: '' })
-const xhrRequest = new Request(previewUrl)
-applyRequestContext(xhrRequest)
+rememberRequestContext({ method: 'GET', url: previewUrl, resourceType: 'script', referrer: '' })
+const scriptRequest = new Request(previewUrl)
+applyRequestContext(scriptRequest)
 const reusedRequest = new Request(previewUrl)
 applyRequestContext(reusedRequest)
 check(
   '角色按 method + url 配对、取出即消失（不会串到下一条请求上）',
-  xhrRequest.headers.get('Sec-Fetch-Mode') === 'cors' &&
-    xhrRequest.headers.get('Sec-Fetch-Dest') === 'empty' &&
+  scriptRequest.headers.get('Sec-Fetch-Mode') === 'no-cors' &&
+    scriptRequest.headers.get('Sec-Fetch-Dest') === 'script' &&
     reusedRequest.headers.get('Sec-Fetch-Mode') === null,
 )
 

@@ -43,6 +43,23 @@ describe('FETCH_METADATA_BY_RESOURCE_TYPE', () => {
   it('不收录 media：video/audio 两种 dest 分不出来，宁可少补', () => {
     expect(FETCH_METADATA_BY_RESOURCE_TYPE.media).toBeUndefined()
   })
+
+  it('不收录 xhr：真浏览器发 cors，而 cors 会被内核以 ERR_INVALID_ARGUMENT 拒收', () => {
+    // 收录它 = 分区里每一个 XHR / fetch() 都在重发时失败（实测）。
+    expect(FETCH_METADATA_BY_RESOURCE_TYPE.xhr).toBeUndefined()
+  })
+
+  it('每个角色的 mode 都是内核接受的取值，且框架类 dest 配 navigate', () => {
+    // Electron 44.7 实测：`cors` / `same-origin` 会让 ses.fetch 直接失败；
+    // dest 是 document/frame/iframe/fencedframe 时必须有 navigate。
+    const frameDests = new Set(['document', 'frame', 'iframe', 'fencedframe'])
+
+    for (const [role, metadata] of Object.entries(FETCH_METADATA_BY_RESOURCE_TYPE)) {
+      expect(['navigate', 'no-cors'], `角色 ${role}`).toContain(metadata.mode)
+
+      if (frameDests.has(metadata.dest)) expect(metadata.mode, `角色 ${role}`).toBe('navigate')
+    }
+  })
 })
 
 describe('applyRequestContext', () => {
@@ -93,7 +110,7 @@ describe('applyRequestContext', () => {
 
   it('同一 URL 的两个请求按先后各取各的角色', () => {
     remember('subFrame', PREVIEW, 'https://web.whatsapp.com/')
-    remember('xhr', PREVIEW, 'https://web.whatsapp.com/')
+    remember('script', PREVIEW, 'https://web.whatsapp.com/')
 
     const first = new Request(PREVIEW)
     const second = new Request(PREVIEW)
@@ -101,8 +118,8 @@ describe('applyRequestContext', () => {
     applyRequestContext(second)
 
     expect(first.headers.get('Sec-Fetch-Mode')).toBe('navigate')
-    expect(second.headers.get('Sec-Fetch-Mode')).toBe('cors')
-    expect(second.headers.get('Sec-Fetch-Dest')).toBe('empty')
+    expect(second.headers.get('Sec-Fetch-Mode')).toBe('no-cors')
+    expect(second.headers.get('Sec-Fetch-Dest')).toBe('script')
   })
 
   it('认不出角色的请求不进队列，于是重发也不会串味', () => {
@@ -116,12 +133,12 @@ describe('applyRequestContext', () => {
   })
 
   it('带 body 的 POST 也按 method + url 配对', () => {
-    remember('xhr', 'https://web.whatsapp.com/api', '', 'POST')
+    remember('script', 'https://web.whatsapp.com/api', '', 'POST')
 
     const request = new Request('https://web.whatsapp.com/api', { method: 'POST', body: 'a=1' })
     applyRequestContext(request)
 
-    expect(request.headers.get('Sec-Fetch-Mode')).toBe('cors')
+    expect(request.headers.get('Sec-Fetch-Mode')).toBe('no-cors')
   })
 })
 

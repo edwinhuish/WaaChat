@@ -60,7 +60,12 @@ import {
   clearRequestContexts,
   rememberRequestContext,
 } from './request-context'
-import { fetchWithRetry, type RetryAttempt } from './retry'
+import {
+  describeNetworkError,
+  fetchWithRetry,
+  isTransientNetworkError,
+  type RetryAttempt,
+} from './retry'
 import { failureReason } from '../errors'
 import { hostOf, logger } from '../logger'
 import { ciphertextAccountDir } from '../paths'
@@ -220,20 +225,43 @@ async function passthrough(request: Request, ses: Session): Promise<Response> {
     error: info.error,
   })
 
-  const response = await fetchWithRetry(
-    (current) => ses.fetch(current, { bypassCustomProtocolHandlers: true }),
-    request,
-    {
-      onRetry: (info) => {
-        logger.warn('capture: retrying after a connection failure', logContext(info))
+  try {
+    return await fetchWithRetry(
+      (current) => ses.fetch(current, { bypassCustomProtocolHandlers: true }),
+      request,
+      {
+        onRetry: (info) => {
+          logger.warn('capture: retrying after a connection failure', logContext(info))
+        },
+        onGaveUp: (info) => {
+          logger.warn('capture: gave up on a flaky connection', logContext(info))
+        },
       },
-      onGaveUp: (info) => {
-        logger.warn('capture: gave up on a flaky connection', logContext(info))
-      },
-    },
-  )
+    )
+  } catch (error) {
+    logPassthroughFailure(request, error)
+    throw error
+  }
+}
 
-  return response
+/**
+ * 重发失败时的最后一道可见性。
+ *
+ * **不值得重试**的错误（`fetchWithRetry` 原样抛出的那些）此前会**直接抛给内核** ——
+ * 只在终端留一行裸 stderr，日志文件里什么都没有：用户看得见噪音、我们拿不到 host。
+ * 实测踩过：`Sec-Fetch-Mode: cors` 会让每一份重发都以 `net::ERR_INVALID_ARGUMENT` 失败，
+ * 而这条路径当时没有任何日志，排查只能靠猜。
+ *
+ * 仍然只记 `host` 与**错误码**（G-1 / G-3，非网络错误只给错误名）。`net::ERR_ABORTED`
+ * 是页面正常的取消（切会话、翻页都会发生），不记 —— 否则日志会被它淹掉。
+ */
+function logPassthroughFailure(request: Request, error: unknown): void {
+  if (isTransientNetworkError(error)) return
+
+  const code = describeNetworkError(error)
+  if (code === 'net::ERR_ABORTED') return
+
+  logger.warn('capture: passthrough failed', { host: hostOf(request.url), error: code })
 }
 
 function readCached(bodyPath: string, metaPath: string): Response | null {

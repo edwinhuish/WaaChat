@@ -50,6 +50,13 @@
  * 只要 `Sec-Fetch-Mode` 正确，拿到的仍是可内嵌的那一份变体（见上表）。这就是本模块
  * 只补 `Mode` / `Dest` / `User` 与 `Referer` 的原因。
  *
+ * ## `Mode` 只有两种取值能用
+ *
+ * `navigate` 与 `no-cors`。其余取值（真浏览器在 XHR / `fetch()` 上发的 `cors`，以及
+ * `same-origin`）会让重发**根本发不出去**：`ses.fetch` 直接以 `net::ERR_INVALID_ARGUMENT`
+ * 失败，而那种失败在日志里只有一行 stderr。实测数据与受影响的那一个角色见
+ * `FETCH_METADATA_BY_RESOURCE_TYPE` 的注释 —— 补错比不补坏得多。
+ *
  * 不导入 electron（判据与 IO 分开，单测与离线自检都能断言），因此入参用结构化类型。
  */
 
@@ -69,16 +76,24 @@ export interface OriginalRequestContext {
 /**
  * Chromium 的 `resourceType` → 该请求在真浏览器里会带的 `Sec-Fetch-*`。
  *
- * 取值依据是 Fetch Metadata 规范：导航是 `navigate`/`document`（顶层，带 `?1`）；
- * 子框架是 `navigate`/`iframe`；`no-cors` 一族是各资源自己的 dest；`fetch`/`XHR`
- * 是 `cors`/`empty`。
+ * 取值依据是 Fetch Metadata 规范：导航是 `navigate`/`document`（顶层，带 `?1`），
+ * 子框架是 `navigate`/`iframe`，其余（脚本 / 样式表 / 图片 / 字体 / 对象 / ping …）
+ * 都是 `no-cors` 加各自资源类型的 dest。
  *
- * 刻意**不**收录 `webSocket` 与 `other`：
- *  - `other` 正是我们自己重发出去的那一份，收录它会让队列自己喂自己；
- *  - `webSocket` 不经过这里（只接 https）。
+ * ⚠️ **`mode` 只能是 `navigate` 或 `no-cors`。** 实测（Electron 44.7，`net.fetch` 与
+ * `ses.fetch` 都一样）：带上 `Sec-Fetch-Mode: cors`（或 `same-origin`）的那一份请求
+ * **根本发不出去**，直接以 `net::ERR_INVALID_ARGUMENT` 失败；另外 `dest` 是
+ * `document` / `frame` / `iframe` / `fencedframe` 时必须配 `navigate`，否则报
+ * `sec-fetch-dest of '…' requires sec-fetch-mode 'navigate'`。
  *
- * 也不收录 `media`：Chromium 会给 `video`/`audio` 两种 dest 之一，而 `resourceType`
- * 分不出来 —— 宁可少补（维持内核默认），也不补一个错的。
+ * 刻意**不**收录这几种：
+ *  - **`xhr`**：真浏览器发的是 `cors`/`empty`，而 `cors` 正是上面那条被内核拒收的取值 ——
+ *    补不了。内核默认给它的恰好就是 `no-cors`/`empty`，因此"不收录"等于维持原状；
+ *    收录了才是灾难：分区里每一个 XHR / `fetch()` 都会被 `ERR_INVALID_ARGUMENT` 打掉。
+ *  - **`other`**：正是我们自己重发出去的那一份，收录它会让队列自己喂自己。
+ *  - **`webSocket`**：不经过这里（协议层只接 https）。
+ *  - **`media`**：Chromium 会给 `video`/`audio` 两种 dest 之一，而 `resourceType`
+ *    分不出来 —— 宁可少补（维持内核默认），也不补一个错的。
  */
 export const FETCH_METADATA_BY_RESOURCE_TYPE: Readonly<Record<string, FetchMetadata>> = {
   mainFrame: { mode: 'navigate', dest: 'document', user: '?1' },
@@ -88,7 +103,6 @@ export const FETCH_METADATA_BY_RESOURCE_TYPE: Readonly<Record<string, FetchMetad
   image: { mode: 'no-cors', dest: 'image' },
   font: { mode: 'no-cors', dest: 'font' },
   object: { mode: 'no-cors', dest: 'object' },
-  xhr: { mode: 'cors', dest: 'empty' },
   ping: { mode: 'no-cors', dest: 'empty' },
   cspReport: { mode: 'no-cors', dest: 'report' },
 }

@@ -64,7 +64,7 @@
 | [0054](#adr-0054) | 删掉一条正文之后，把它**空掉的那几层容器目录**由深到浅 `rmdir` 掉（第一次失败即停、跳过符号链接与非空目录、永不碰归档根）；落盘的建目录挪到**写入之前**，因此去重命中不再留下只有目录没有文件的空壳 | 已生效（**补充** [ADR-0053](#adr-0053) 的删除路径与 [ADR-0052](#adr-0052) 的分区；不改变任何一条既有不变量） |
 | [0055](#adr-0055) | 归档正文的第二级从**消息ID** 改为**会话ID**：`<账号>/<会话ID>/files/<文件名>`，会话ID 取页面上的会话 JID（`msg.id.remote`，回落 `msg.from`，**绝不**用 `msg.id._serialized`）；净化白名单加回 `@`；回落名 `unknown-chat`；迁移判据同时覆盖两代形状 | 已生效（**取代** [ADR-0052](#adr-0052) 决定 1 的第二级与决定 3 的回落名；旧消息目录继续可读、可迁移） |
 | [0056](#adr-0056) | 托盘菜单用分隔线分成**三组**（显示聊天｜文件列表、设置｜退出）；设置窗口末尾加一个只读的「关于」区域显示应用名与版本，版本经新通道 `app:version`（`app.getVersion()`）取；非设置行改由显式的 `EXTRA_SETTINGS_ROWS` 列出 | 已生效（补充 [ADR-0025](#adr-0025) 的两扇本地界面与 [ADR-0042](#adr-0042) 去掉顶栏之后的界面形态） |
-| [0058](#adr-0058) | 直通重发（`ses.fetch`）前把原请求的 fetch 元数据补回去：只读的 `webRequest.onBeforeRequest` 观察者按 `method + url` 记下 `resourceType` 与原 `referrer`，重发时换算回 `Sec-Fetch-Mode` / `Dest` / `User` 并补上 `Referer`（`Sec-Fetch-Site` 补不了，不写）；修的是"协议层挂着时文档预览 `ERR_BLOCKED_BY_RESPONSE`" | 已生效（补充 [ADR-0033](#adr-0033) 的直通路径与 [ADR-0016](#adr-0016)「漏一个头就静默坏掉页面一部分」） |
+| [0058](#adr-0058) | 直通重发（`ses.fetch`）前把原请求的 fetch 元数据补回去：只读的 `webRequest.onBeforeRequest` 观察者按 `method + url` 记下 `resourceType` 与原 `referrer`，重发时换算回 `Sec-Fetch-Mode` / `Dest` / `User` 并补上 `Referer`（`Sec-Fetch-Site` 补不了，不写）；换算表的取值受**内核校验**约束（`Mode` 只用 `navigate` / `no-cors`，故 `xhr` 不收录） | 已生效（补充 [ADR-0033](#adr-0033) 的直通路径与 [ADR-0016](#adr-0016)「漏一个头就静默坏掉页面一部分」） |
 
 ---
 
@@ -3309,6 +3309,10 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
 `Sec-Fetch-Dest` / `Sec-Fetch-User` 并补上 `Referer`。观察者不改写、不取消请求（`callback({})`），且与密文层
 **同生命周期**（`detach` 时一并撤销）。
 
+换算表**只能用内核接受的取值**（下一节"背景"末尾的实测）：`Sec-Fetch-Mode` 限 `navigate` / `no-cors`，
+框架类 `Sec-Fetch-Dest` 必须配 `navigate`。因此 `resourceType: 'xhr'` **刻意不收录** —— 真浏览器在 XHR 上发
+`cors`，而 `cors` 正是内核拒收的取值，补不了；内核默认给它的恰好就是 `no-cors`/`empty`。
+
 **状态**：已生效
 
 **背景**：接管点 B 用会话级 `protocol.handle('https')` 接住整个分区里的 https 请求，非媒体的一律靠
@@ -3337,12 +3341,30 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
 `ERR_BLOCKED_BY_RESPONSE`、预览面板一直转圈，且**只在协议层挂着时出现**（关掉开关走原生路径时一切正常），
 报错内容指向不到这一层。这与 [ADR-0016](#adr-0016) 是同一类失手：漏一个头，页面**局部**坏掉而不报错。
 
+⚠️ **补错了比不补坏得多，而"补错"的边界是内核定的。** 本 ADR 落地后立刻踩到了一次：换算表最初把
+`resourceType: 'xhr'` 也收进来、换算成真浏览器会发的 `cors`/`empty`，结果**分区里每一个 XHR / `fetch()`**
+都在重发时失败 —— `ses.fetch` 直接拒绝 `Sec-Fetch-Mode: cors`（以及 `same-origin`），报
+`net::ERR_INVALID_ARGUMENT`，请求根本发不出去。实测（Electron 44.7，`net.fetch` / `ses.fetch` 同）的完整矩阵：
+
+| `Sec-Fetch-Mode` | 结果 |
+|---|---|
+| `navigate`、`no-cors` | ✅ 通过 |
+| `cors`、`same-origin` | ❌ `net::ERR_INVALID_ARGUMENT`（请求根本不发出） |
+
+第二条硬校验是 `dest` 与 `mode` 的搭配：`dest` 取 `document` / `frame` / `iframe` / `fencedframe`
+时必须配 `navigate`，否则 `ses.fetch` 抛 `sec-fetch-dest of '…' requires sec-fetch-mode 'navigate'`。
+换算表里的每一条都落在上面这两条之内（`scripts/check-capture.ts` 第 17 节对此有断言）。
+
+因此换算表的取值范围被**内核的校验**压到只剩下两种 mode。这也解释了为什么"观察者 + 换算表"这条路
+必须留一条实测数据在 ADR 里：它错一个格子，坏的是**一整类请求**，而终端里只有一行裸 stderr。
+
 **理由**：
 
 1. **只补元数据，不动协议。** `onBeforeRequest` 只读、`callback({})` 放行：不取消、不重定向、不改写正文，
    落在 `media-capture.md` 第 6 节"改写响应需先追加 ADR"的边界之内 —— 这里连"拦"都只是**观察**。
 2. **`resourceType` 是内核给的既成事实，不是我们要猜的。** 判据全部来自 Chromium 自己（导航 / 子框架 /
-   脚本 / 样式表 / 图片 / XHR …），换算表是常量，不依赖任何上游内部结构（[INV-1](#adr-0002) 的自律不变）。
+   脚本 / 样式表 / 图片 / 字体 / 对象 / ping …），换算表是常量，不依赖任何上游内部结构
+   （[INV-1](#adr-0002) 的自律不变）。
 3. **必须在 `onBeforeRequest` 里抄。** `protocol.handle` 拿到的 `Request` 上已经**没有**这些头
    （`request.headers` 里只有 `accept` / `sec-ch-ua*` / `user-agent` / `upgrade-insecure-requests`），
    `Request.referrer` 也退化成哨兵值。要还原，只能在请求进入处理器**之前**留下痕迹。
@@ -3359,14 +3381,18 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
   `ses.fetch` + [ADR-0033](#adr-0033) 的重试。
 - **收录 `other`**：会让重发出去的那一份重新进队列，队列自我增殖、角色错位。
 - **收录 `media`（video / audio）**：`resourceType` 分不出两种 dest，补错比不补更糟。
+- **把 `xhr` 也补上（真浏览器的 `cors`/`empty`）**：本 ADR 第一次落地就是这么写的，结果让分区里
+  每一个 XHR 都以 `ERR_INVALID_ARGUMENT` 失败（见"背景"末尾的实测）。"尽量贴近真浏览器"在这里是错的
+  方向 —— **判据是内核接不接受**，不是浏览器发什么。
 - **关掉协议层**（去掉接管点 B）：能绕开这个问题，代价是"第二次打开仍要联网"，与 [ADR-0028](#adr-0028) 冲突。
 
 **影响**：
 
 - `src/main/capture/request-context.ts`：新增（纯逻辑，不导入 electron，因此单测与离线自检都能断言）。
 - `src/main/capture/protocol.ts`：`attach` 时挂观察者、`passthrough()` 开头 `applyRequestContext(request)`；
-  `detach` 时 `onBeforeRequest(null)` + `clearRequestContexts()`。
-- `scripts/check-capture.ts`：新增第 17 节（角色换算表 + 几条"绝不能有" + 队列纪律）。
+  `detach` 时 `onBeforeRequest(null)` + `clearRequestContexts()`。另加一条**失败可见性**：不值得重试的错误
+  此前会直接抛给内核（日志里什么都没有），现在按 G-1 / G-3 记一条 `host` + 错误码（`ERR_ABORTED` 除外）。
+- `scripts/check-capture.ts`：新增第 17 节（角色换算表 + mode 取值白名单 + 几条"绝不能有" + 队列纪律）。
 - `test/unit/request-context.test.ts`：新增。
 - `docs/media-capture.md`：直通一节补上这条依据。
 - `docs/decisions.md`：本 ADR。
@@ -3379,4 +3405,7 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
   一致"，不保证上游仍在意这些头。
 - **`Sec-Fetch-Site` 永远是 `none`。** 上游今天容忍（只要 `Mode` 对）。若将来它对 `Site` 也分变体，就得
   重新设计 —— 可能要让请求留在渲染进程侧，而不是主进程重发。
+- **XHR / `fetch()` 这一类请求等于没补。** 它们的 `Mode` 补不了（见上），拿到的是内核默认的
+  `no-cors`/`empty` —— 与本次改动之前完全一致，既没变好也没变坏。若将来上游对这类请求也分变体，
+  本方案给不出答案：那时只能让这些请求根本不经过主进程重发。
 - **只覆盖 `https`。** 与协议层一致：`webSocket` 等不经 `protocol.handle('https')` 的请求与它无关。
