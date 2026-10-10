@@ -99,13 +99,16 @@ waachat/
 ├── src/
 │   ├── main/                       ← Electron 主进程：唯一有权限碰文件系统的地方
 │   │   ├── index.ts                应用入口：生命周期、单实例、app_id、退出清理
-│   │   ├── window.ts               窗口创建、UA、权限白名单、两扇本地窗口的引用
+│   │   ├── window.ts               窗口创建、UA 改写、两扇本地窗口的引用
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
+│   │   ├── errors.ts               失败原因取 errno（fs 错误的 name 恒为 `Error`，说不清处境）
 │   │   ├── notice.ts               主动提示用户：系统通知 + 节流（接管失效）
 │   │   ├── account.ts              账号标识：读页面记下的 WID / `wa_ul` cookie（ADR-0039）
 │   │   ├── paths.ts                目录布局：归档位置、账号层次目录、缓存根与索引路径
+│   │   ├── permissions.ts          权限白名单（来源 + 类型，双向；纯模块可单测，见 T5）
+│   │   ├── linux-gpu.ts            Wayland 启动期的 GPU 开关（ADR-0036 / ADR-0038）
 │   │   ├── dev-probe.ts            **仅开发模式**：把只读探针注入聊天窗口（ADR-0046）
 │   │   ├── dev-probe-source.ts     它的路径与注入代码（纯函数，可单测）
 │   │   ├── capture/                ★ 核心：内核层接管
@@ -115,12 +118,18 @@ waachat/
 │   │   │   ├── download.ts         下载事件接管 → 归档 + 打开
 │   │   │   ├── early-identity.ts   下载前的对账：读消息模型的 filehash，命中归档就打开并作废这次下载（ADR-0047）；另按哈希反查会话ID（ADR-0055）
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
+│   │   │   ├── headers.ts          回放缓存时保留哪些响应头（白名单；漏一个会静默坏页面）
+│   │   │   ├── retry.ts            连接层失败（`ERR_CONNECTION_RESET` 一类）的有限重试（ADR-0033）
 │   │   │   └── health.ts           接管失效的事实源（markCaptured / markFailure / onHealthChange）
 │   │   ├── archive/                ★ 核心：本地归档（账号 / 会话ID 分层，见 ADR-0055）
 │   │   │   ├── blobs.ts            归档落盘：原文名命名 + <账号>/<会话ID>/files/ 分层 + 只读 + 去重（硬链接）+ 清扫、淘汰（ADR-0048）
 │   │   │   ├── naming.ts           文件名净化 + 同名冲突的候选名（纯函数，安全关键，可单测）
 │   │   │   ├── layout.ts           账号 × 会话分区：会话ID / 账号净化与容器判据、相对路径净化（纯函数，可单测）
-│   │   │   ├── store.ts            SQLite 索引（FTS5 全文搜索）
+│   │   │   ├── store.ts            SQLite 索引（FTS5 全文搜索）+ 按内容淘汰（enforceLimit，ADR-0048）
+│   │   │   ├── delete.ts           批量删除：去掉选中的记录，删完收掉空容器（ADR-0053 / ADR-0054）
+│   │   │   ├── export.ts           批量导出：把正文副本写到用户选的目录（ADR-0050）
+│   │   │   ├── migrate.ts          归档迁移：整库搬到新位置，失败回滚
+│   │   │   ├── relocate.ts         换保存位置：把"搬数据"与"落设置"绑成一次原子操作（ADR-0019）
 │   │   │   └── schema.sql          表结构
 │   │   ├── ipc/
 │   │   │   ├── channels.ts         通道名常量（主进程与渲染进程共享）
@@ -152,7 +161,10 @@ waachat/
 │   └── shared/                     ← 主进程与渲染进程共享的纯类型/常量（不含副作用）
 │       ├── action-button.ts        设置行里动作按钮的视觉属性（一个来源，两处按钮因此一致）
 │       ├── appicon.ts              图标尺寸/上限、裁剪几何、桌面条目生成（纯函数，可单测）
+│       ├── cache-conversion.ts     密文缓存切换失败的文案（只有一份，主进程与界面共用）
 │       ├── constants.ts            上游地址、分区名、app_id、容量上限
+│       ├── deletion.ts             批量删除的确认与失败文案（纯函数，可单测）
+│       ├── export.ts               批量导出的失败文案（纯函数，可单测）
 │       ├── types.ts                数据形状 + 默认设置 + 需重启的项
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
@@ -160,11 +172,13 @@ waachat/
 │       ├── notice.ts               主动提示用户的文案与判据：接管失效（纯函数，可单测）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
+│       ├── upstream.ts             "上游域"判据：站内/站外与权限来源（解析 URL 后比 host / origin）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
 │       └── vite-assets.d.ts        `?raw` 导入的类型声明
 │
 ├── test/
 │   ├── helpers/sqlite.ts           子进程里的原生模块探测（加载 + 建库 + 真实 schema，决定 sqlite 用例是否跳过）
+│   ├── fixtures/                   页面探针等夹具（宿主是浏览器，不是 Node —— 见 ai/CONVENTIONS.md 第 8 节）
 │   ├── unit/                       纯逻辑单测，不加载 Electron
 │   └── e2e/                        产物冒烟测试（不启动 Electron，需先 pnpm run build）
 │
