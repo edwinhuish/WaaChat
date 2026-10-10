@@ -936,6 +936,10 @@ section('INV-3：不经手密钥与加密')
 /**
  * 禁用标识符。`createHash` **不**在此列 —— 对明文算 sha256 用于内容寻址是 INV-3 明确允许的
  * 例外（`archive/blobs.ts`）。
+ *
+ * `filehash` 也**已移出**（[ADR-0047](../docs/decisions.md)）：真机实测表明客户端模型的
+ * `msg.filehash` 是**文件明文的 SHA-256**（与归档 `hash` 相同），不是密钥派生的 HMAC。
+ * `mediaKey` 与解密原语不在放宽之列。
  */
 const FORBIDDEN_CRYPTO_TOKENS = [
   'createDecipheriv',
@@ -946,7 +950,6 @@ const FORBIDDEN_CRYPTO_TOKENS = [
   'hkdf',
   'crypto.subtle',
   'mediaKey',
-  'filehash',
 ]
 
 /**

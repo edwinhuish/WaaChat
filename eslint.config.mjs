@@ -30,6 +30,11 @@ const RENDERER_SIDE = ['src/renderer/**/*.ts', 'src/shared/**/*.ts']
  * 只禁"写法"，不禁"能力"：`createHash` 是允许的例外（内容寻址用 sha256，见 INV-3 的说明）。
  * 依赖那一半 —— 在 **Node 侧**解密的库会让解密离开上游 —— lint 拦不住，由 `pnpm run selfcheck`
  * 对依赖清单断言；两条一起才守得住。
+ *
+ * ⚠️ `filehash` **已从这个列表里移出**（[ADR-0047](../../docs/decisions.md)）：真机实测表明
+ * `msg.filehash` 是**文件明文的 SHA-256**（与归档里的 `hash` 逐字节相同），不是密钥派生的
+ * HMAC —— 原判定的前提（[ADR-0045](../../docs/decisions.md)）被推翻。`mediaKey` 与全部解密
+ * 原语**不在放宽之列**：INV-3 的实质未变，只是允许读一个我们本就能自己算出来的内容哈希。
  */
 const cryptoGuards = {
   'no-restricted-syntax': [
@@ -43,7 +48,6 @@ const cryptoGuards = {
       hkdf: '不实现密钥派生。',
       subtle: '不碰 WebCrypto（crypto.subtle）。',
       mediaKey: '不解析 mediaKey —— 包括不读取该库暴露的 Message.mediaKey 字段。',
-      filehash: '不接触媒体的 filehash（它是密钥派生的输入）。',
     }).map(([name, reason]) => ({
       /**
        * 用 `Identifier` 而不是 `MemberExpression`：`o.mediaKey` 与 `import { mediaKey } …`
