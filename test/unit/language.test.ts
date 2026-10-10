@@ -152,11 +152,17 @@ describe('SPELLCHECK_LANGUAGES', () => {
 
 describe('normalizeSpellcheckLanguages', () => {
   it('表内的码保序保留', () => {
-    expect(normalizeSpellcheckLanguages('de-DE,en-US')).toBe('de-DE,en-US')
+    expect(normalizeSpellcheckLanguages('de,en-US')).toBe('de,en-US')
   })
 
   it('剔掉表外的码与重复项', () => {
-    expect(normalizeSpellcheckLanguages('en-US,xx-XX,en-US,fr-FR')).toBe('en-US,fr-FR')
+    expect(normalizeSpellcheckLanguages('en-US,xx-XX,en-US,fr')).toBe('en-US,fr')
+  })
+
+  it('也剔掉"内核不认识的那个形状"（区域码补多了就是表外的码）', () => {
+    // 与 SPELLCHECK_LANGUAGES 的命名约定配套：`de-DE` 不在表里，因此它会被收敛掉，
+    // 而不是被一路存到设置文件里、再被内核默默拒掉。
+    expect(normalizeSpellcheckLanguages('de-DE')).toBe(DEFAULT_SPELLCHECK_LANGUAGES)
   })
 
   it('一个都不剩时回落到默认（空列表等于"什么都不查"，与"功能坏了"没有区别）', () => {
@@ -168,10 +174,10 @@ describe('normalizeSpellcheckLanguages', () => {
 
 describe('resolveSpellcheckLanguages', () => {
   it('按内核实际支持的清单对账，分成"用得上"与"内核没有"两组', () => {
-    const resolved = resolveSpellcheckLanguages('en-US,fr-FR,de-DE', ['en-US', 'de-DE', 'es-ES'])
+    const resolved = resolveSpellcheckLanguages('en-US,fr,de', ['en-US', 'de', 'es'])
 
-    expect(resolved.applied).toEqual(['en-US', 'de-DE'])
-    expect(resolved.rejected).toEqual(['fr-FR'])
+    expect(resolved.applied).toEqual(['en-US', 'de'])
+    expect(resolved.rejected).toEqual(['fr'])
   })
 
   it('两边都不去重之外的加工：输入里的重复项不会让同一个码出现两次', () => {
