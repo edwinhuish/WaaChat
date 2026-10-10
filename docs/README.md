@@ -97,6 +97,7 @@ waachat/
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
+│   │   ├── notice.ts               主动提示用户：系统通知 + 节流（目前只有"预览被挡下"这一条）
 │   │   ├── account.ts              账号标识：读页面记下的 WID / `wa_ul` cookie（ADR-0039）
 │   │   ├── paths.ts                目录布局：归档位置、账号层次目录、缓存根与索引路径
 │   │   ├── capture/                ★ 核心：内核层接管
@@ -149,6 +150,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
+│       ├── preview-notice.ts       「禁用 PDF 预览」挡下预览时的提示文案与节流判据（纯函数，可单测）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
