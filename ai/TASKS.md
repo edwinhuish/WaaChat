@@ -392,3 +392,39 @@
 - [ ] 改了探针本身 → `pnpm run test`：`test/unit/probe-media-metadata.test.ts` 守着"绝不打印值"
       与"必须走原型链上的 getter"两条性质
 - [ ] 报告里每个通道都记了**扩展名来源**；为「未找到」时说明文件名在客户端侧可能不存在
+
+---
+
+## T13 · 新增一处落盘位置（或缺省全机一份的共享状态）
+
+> 背景：多实例（[ADR-0062](../docs/decisions.md#adr-0062)）。漏判的代价是**两个实例静默写同一份数据**，
+> 而它在界面上看不出来（用户以为在动 work，实际动的是默认实例）。判据只有一处，先读它再动手。
+
+**步骤**
+
+1. 先判断这一处属于哪一类 —— 三类各有各的做法：
+   - **落在 `userData` / `sessionData` 下**（`settings.json`、自定义图标、分区存储）：**什么都不用做**。
+     启动时的 `app.setPath('userData' | 'sessionData', …)` 已经把整个 profile 挪走（[ADR-0062](../docs/decisions.md#adr-0062)）。
+     唯一的要求是**别在模块顶层缓存 `app.getPath('userData')`**（自检第 20 节会拦）。
+   - **落在 `userData` 之外**（归档根、缓存根、日志）：必须经 `withInstanceSuffix()`
+     （[`../src/shared/instance.ts`](../src/shared/instance.ts)）派生 —— 默认实例的后缀是空串，
+     因此"既有用户看不出差别"只在一个地方成立。新增位置沿用 [`../src/main/paths.ts`](../src/main/paths.ts) 的写法，
+     不要再引一个命名体系。
+   - **全机只能有一份**（用户级 `.desktop` 条目、autostart、托盘）：归**默认实例**维护，
+     用 `usingDefaultInstance()`（[`../src/main/instance.ts`](../src/main/instance.ts)）守卫；
+     命名实例不碰，否则两个进程互相覆写而外面看不出是谁写的。
+2. **不要**在子系统里再判一次实例。判据只有一处，重复判断就是第二套真相。
+3. **不要**在 `whenReady` 之后才改路径：启动顺序是解析实例 → `setPath` → 申请单实例锁，错位不会报错，
+   只会让两个实例抢同一份登录态。
+
+**检查点**
+
+- [ ] `userData` 之外的目录经 `withInstanceSuffix()` 派生（自检第 20 节会数 `paths.ts` 的调用次数）
+- [ ] `app.getPath('userData')` 在**调用时**读，没有模块顶层捕获
+- [ ] "全机一份"的东西加了 `usingDefaultInstance()` 守卫
+- [ ] 没有写死的分区名（分区一律走 `sessionPartition()`）
+- [ ] `pnpm run check` 通过
+
+**容易错的地方**：模块级 `const dir = app.getPath('userData')` —— 它在 `setPath` 之前（或之上）求值，
+于**所有**实例都指向默认实例的目录，而且**不报错**；"顺手给某个实例写一份 `.desktop`" ——
+它全机只有一份，后写的覆盖先写的。

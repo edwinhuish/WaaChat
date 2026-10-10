@@ -50,7 +50,7 @@ sudo apt install gnome-shell-extension-appindicator
 
 > ⚠️ **没有那个图标时，应用仍然表现得像有托盘**（[ADR-0034](decisions.md#adr-0034)）：窗口依然是"关闭即隐藏"，应用继续在后台保持连接。因为"桌面上到底有没有显示这个图标"**检测不到**（没有任何指示器宿主时 `new Tray()` 依然成功），所以这里没法自动换一种行为。缺扩展时用这两条入口：
 >
-> - **把窗口叫回来**：再运行一次 `waachat` —— 单实例锁会把已有的那扇聊天窗口调出来。
+> - **把窗口叫回来**：再运行一次 `waachat` —— 每实例一把的单实例锁会把**那个实例**已有的聊天窗口调出来（用命名实例的话，命令里要带同样的 `--instance <名>`）。
 > - **真正退出**：`Ctrl+Q`（默认菜单提供，不经过托盘）。
 
 ## 2. 首次使用
@@ -141,7 +141,7 @@ sudo apt install gnome-shell-extension-appindicator
 
 ## 4. 文件存在哪里
 
-归档的位置**可以改**（默认 `~/Documents/WaaChat_files`，**首次启动会自动创建**，连 `~/Documents` 不存在时也会一并建好），其余几处固定。**删除后果完全不同**（见 [ADR-0008](decisions.md#adr-0008) / [ADR-0018](decisions.md#adr-0018) / [ADR-0023](decisions.md#adr-0023) / [ADR-0032](decisions.md#adr-0032)）：
+归档的位置**可以改**（默认 `~/Documents/WaaChat_files`，**首次启动会自动创建**，连 `~/Documents` 不存在时也会一并建好），其余几处固定 —— 但**每个实例各有一份**（见本节的"同时用多个账号"）。**删除后果完全不同**（见 [ADR-0008](decisions.md#adr-0008) / [ADR-0018](decisions.md#adr-0018) / [ADR-0023](decisions.md#adr-0023) / [ADR-0032](decisions.md#adr-0032)）：
 
 ```
 ~/Documents/WaaChat_files/            归档：你打开过的文件（位置可在设置里改）
@@ -179,6 +179,36 @@ sudo apt install gnome-shell-extension-appindicator
 | `…/applications/io.github.edwinhuish.waachat.desktop` | 启动器图标回到默认；下次改图标会重新写入 |
 
 登录态与归档**物理分离**（前者在 `~/.config`，后者在你选的文档目录）是刻意的：这样一来"清理归档"这类功能在文件系统层面就不可能走到登录态，而不是靠实现者记得别传错路径。
+
+上表是**默认实例**（不带 `--instance`）的路径。命名实例把**应用级目录名**换成 `<原名>-<实例名>`，内部结构完全一样：
+
+```
+~/.config/waachat-work/            userData：登录态（分区 persist:waachat-work）、settings.json、custom-icon.png
+~/.local/share/waachat-work/cache/ 密文缓存
+~/Documents/WaaChat_files-work/    归档（同样可以在那个实例的设置里改）
+```
+
+删除后果与上表逐行相同，且**只影响那个实例**。唯一不按实例分叉的是用户级启动器条目（它说的是"这个应用"，归默认实例维护）。
+
+### 同时用多个账号（多实例）
+
+同一个账号在一台机器上只能有一份登录态，但**不同账号**可以各占一个实例、同时运行：
+
+```bash
+waachat                      # 默认实例（原来的那份数据）
+waachat --instance work      # 第二个实例：自己的登录态、设置、归档、缓存
+waachat --instance home      # 第三个
+```
+
+实例名只能用小写字母、数字、`-`、`_`（1–32 个字符），且 `default` 是保留名。写错了应用会**拒绝启动**并弹一个说明框，而不是悄悄按默认实例启动 —— 后者会让你以为在动 work，实际动的是默认实例的数据。
+
+几个必须知道的后果：
+
+- **每个实例都要单独扫码**：登录态不共享，这是隔离的前提。
+- **同一个账号在两个实例里各登录一次**，上游会当成两台独立设备：通知会**重复**，两端各自同步一份消息，归档也分成两棵树。要多开同一个账号的话，心里得有这个数。
+- **开机自启与应用图标里的"启动器条目"只归默认实例**（那两个条目全机只有一份，谁都能写就是互相覆盖）。设置页里这两项在命名实例下是禁用状态并写明了原因。想让某个实例开机启动，自己做一份启动器条目：`Exec=/opt/WaaChat/waachat --instance work`。
+- **不要给两个实例设同一个归档目录**（例如都填 `/srv/files`）：那样"退出时清除归档"会删掉对方的文件，两个进程也会同时写同一个索引。默认位置是按实例分开的，改的时候留意一下。
+- 实例名**不是安全边界**，它只是目录名（见 [`security.md`](security.md) 第 2 节）。
 
 **在「设置」窗口里换保存位置时**：应用会先弹一个确认框（写明从哪搬到哪、多少个文件、多大），确认后才开始迁移，过程中显示进度；**取消则一切不变**。迁移把正文与索引一起搬过去，所以新位置的「文件列表」窗口里是完整的历史。
 
@@ -461,6 +491,8 @@ sudo apt remove --purge waachat
 rm -rf ~/.config/waachat ~/.cache/waachat ~/.local/share/waachat
 # 归档目录（若在设置里改过位置，换成你设的那个）
 rm -rf ~/Documents/WaaChat_files
+# 用过多实例的话，每个实例还有一份（<名> 换成实例名）
+rm -rf ~/.config/waachat-<名> ~/.cache/waachat-<名> ~/.local/share/waachat-<名> ~/Documents/WaaChat_files-<名>
 # 换过应用图标的话，还有一份用户级启动器条目（系统装的那份由 apt remove 收走）
 rm -f ~/.local/share/applications/io.github.edwinhuish.waachat.desktop
 ```

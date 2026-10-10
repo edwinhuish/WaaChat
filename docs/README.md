@@ -102,6 +102,7 @@ waachat/
 │   │   ├── index.ts                应用入口：生命周期、单实例、app_id、退出清理
 │   │   ├── window.ts               窗口创建、两扇本地窗口的引用（UA 与界面语言在会话上，见 language.ts）
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
+│   │   ├── instance.ts             当前实例：解析 argv、派生分区名与界面名（不导入 electron）
 │   │   ├── language.ts             会话级 UA + Accept-Language：界面语言（ADR-0060）
 │   │   ├── spellcheck.ts           内核自带的拼写检查：词典清单按内核实有者过滤（ADR-0061）
 │   │   ├── context-menu.ts         承载页面的右键菜单：拼写建议 + 编辑动作（ADR-0061）
@@ -173,6 +174,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── language.ts             界面语言与拼写词典的判据表 + 收敛（纯函数，可单测）
+│       ├── instance.ts             实例标识：解析 --instance、净化、按实例派生名字（纯函数，可单测）
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
 │       ├── notice.ts               主动提示用户的文案与判据：接管失效（纯函数，可单测）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）

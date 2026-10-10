@@ -128,6 +128,7 @@ pnpm run clean           # 清理 out/ dist/ coverage/ node_modules/.vite/ .tmp/
 | 改了 productName / artifactName 会让 AppImage 的 AppArmor 路径改变 | 挂载点是 `${TMPDIR:-/tmp}/.mount_<AppImage 文件名前 6 字符>XXXXXX`。profile 里因此用 `/tmp/.mount_*/waachat` 通配；设了 `TMPDIR` 的用户需要自己再加一条。 |
 | 重画图标后必须**看一眼** `build/icon.png` | ImageMagick 在没有 librsvg 时会把渐变渲染成纯色方块，而且退出码是 0。`scripts/make-icons.sh` 会校验颜色数，但肉眼确认一次仍然值得。 |
 | 不要在 `electron-builder.yml` 里手写 `deb.depends` | Ubuntu 的 time_t 过渡把若干库改名成 `*t64`，硬编码列表会失效。理由见 `docs/packaging.md`。 |
+| **多实例隔离的唯一杠杆是启动时按实例 `app.setPath('userData'/'sessionData')`** | 它一次挪走登录态、分区存储、`settings.json` 与自定义图标；归档/缓存根再各自按同一个后缀派生（判据全在 `withInstanceSuffix()`）。**不要在子系统里再判一次实例**，也不要在 `whenReady` 之后才改路径。启动顺序（解析实例 → setPath → 申请锁）有一条断言看着：顺序错了不会报错，只会让两个实例抢同一份登录态。详见 [ADR-0062](docs/decisions.md#adr-0062)。 |
 | 上游页面结构随时会变 | 接管逻辑只允许依赖**标准内核行为**（下载事件、https 请求），不得依赖任何上游内部函数名或选择器。 |
 
 ## 6. 何时应该停下来问人

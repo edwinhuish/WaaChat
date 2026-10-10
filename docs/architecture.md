@@ -46,7 +46,7 @@
 
 | 层 | 目录 | 职责 | 明确**不**做的事 |
 |---|---|---|---|
-| L0 宿主 | `src/main/index.ts`、`window.ts` | 生命周期、窗口、单实例、`app_id` 与桌面条目对齐 | 不处理业务逻辑 |
+| L0 宿主 | `src/main/index.ts`、`window.ts`、`instance.ts` | 生命周期、**实例解析与按实例的目录隔离**、窗口、单实例、`app_id` 与桌面条目对齐 | 不处理业务逻辑；判据本身（`shared/instance.ts`）不含 IO |
 | L1 会话 | `src/main/session.ts` | 分区、持久化、UA、权限白名单、下载默认行为重写 | 不知道归档的存在 |
 | L2 接管 | `src/main/capture/` | 观察内核层事件，产出「一份文件 + 它的身份」 | **不做解密**、不解析页面结构、**不改请求与响应体**；不决定"用户点了哪个文件"（那是上游的事，我们按 URL 与内核行为判定） |
 | L3 归档 | `src/main/archive/` | 内容寻址存储、索引、去重、淘汰 | 不知道文件从哪来 |
@@ -178,6 +178,21 @@ sequenceDiagram
 ~/.cache/waachat/                  # XDG_CACHE_HOME
 └── logs/                        # 日志（含脱敏约定，见 security.md）
 ```
+
+**多实例**（[ADR-0062](decisions.md#adr-0062)）：有 `--instance <名>` 时，上面这一整套**整体平移**到带
+后缀的位置；默认实例（不带参数）用的就是上面这些路径，一个字节都不变。
+
+```
+~/Documents/WaaChat_files-work/            # 归档：根目录按实例分叉（默认 → ~/Documents/WaaChat_files）
+~/.local/share/waachat-work/cache/<账号>/  # 密文缓存：应用目录带后缀，内部结构不变
+~/.config/waachat-work/                    # userData：登录态（分区 persist:waachat-work）、settings.json、custom-icon.png
+~/.cache/waachat-work/logs/                # 日志
+```
+
+判据只有一条：`withInstanceSuffix()`（`src/shared/instance.ts`），默认实例的后缀是**空串** —— 因此"既有
+用户升级后看不出差别"这件事在一个地方成立，而不是在每一处各判一次。新增任何按实例分叉的目录都必须经过
+它（自检第 20 节会数 `paths.ts` 里的调用次数）。单实例锁也由这一步自动变成"每实例一把"：Chromium 把锁
+文件放在 `userData` 目录里。
 
 三类数据的**生命周期不同**，因此**必须分开放**：
 
