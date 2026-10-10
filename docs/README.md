@@ -60,6 +60,9 @@ waachat/
 │   ├── workflows/
 │   │   ├── ci.yml                  PR 校验：静态检查 + 打包并断言产物
 │   │   └── release.yml             打 v* 标签 → 构建 → 上传 Release + 校验值
+│   ├── scripts/
+│   │   ├── get-tags.sh             找出上一个版本标签（发布说明的对比起点）
+│   │   └── generate-changelog.sh   由提交历史生成发布说明（Release body）
 │   ├── ISSUE_TEMPLATE/             三类模板（缺陷 / 接管失效 / 功能建议）
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── dependabot.yml              依赖更新；含 typescript 的版本上限约束
@@ -90,7 +93,8 @@ waachat/
 ├── scripts/                        ← 构建与校验脚本（由 package.json 的 scripts 调用）
 │   ├── verify-package.sh           解包产物并断言桌面集成正确
 │   ├── check-capture.ts            接管健康自检（离线，不启动 Electron）
-│   └── make-icons.sh               由 SVG 生成 PNG
+│   ├── make-icons.sh               由 SVG 生成 PNG
+│   └── clean.mjs                   清理 out/ dist/ coverage/ 等构建产物
 │
 ├── src/
 │   ├── main/                       ← Electron 主进程：唯一有权限碰文件系统的地方
