@@ -9,12 +9,7 @@
 
 > Linux 桌面客户端 + 本地媒体库。**在聊天记录里点击文件，直接打开，不用先下载。**
 
-`deb` / `AppImage` 双格式分发 · 由 `whatsapp-web.js` 驱动网页版 · 归档层按内容哈希去重
-
-> ⚠️ **正在迁移。** 项目原先的架构是"Electron 承载网页版 + 只在**浏览器内核层**观察下载事件"；
-> 按 [`ADR-0043`](docs/decisions.md#adr-0043) / [`ADR-0044`](docs/decisions.md#adr-0044)，承载方式已改为
-> `whatsapp-web.js`。代码尚未迁移完，所以下面画的仍是**旧**结构；风险量级的变化（不再"零注入"）
-> 见 [`DISCLAIMER.md`](DISCLAIMER.md) 第 2 节。
+`deb` / `AppImage` 双格式分发 · Electron 承载官方网页版 · 归档层按内容哈希去重
 
 ---
 
@@ -54,15 +49,15 @@ WaaChat 把这条链路压成一步：
 
 ## 它**不是**什么
 
-这些是**仍在生效**的边界（见 [`ai/INVARIANTS.md`](ai/INVARIANTS.md)）；**曾经**的边界随
-[`ADR-0043`](docs/decisions.md#adr-0043) 撤销了两条，代价已如实写进 [`DISCLAIMER.md`](DISCLAIMER.md) 第 2 节：
+这些是**仍在生效**的边界（见 [`ai/INVARIANTS.md`](ai/INVARIANTS.md)）：
 
 - **不是**解密工具。不接触密钥协商，不修改加密流量；解密只发生在官方网页代码内部（`INV-3`，
   抽样审计见 [`docs/research/inv3-assessment.md`](docs/research/inv3-assessment.md)）。
-- **不是**协议重实现。会话与加解密继续由官方网页版代码承担，`whatsapp-web.js` 只负责驱动页面。
-- **会**通过调试协议驱动页面、并注入它自己的工具脚本 —— 这就是现在的承载方式（原 `INV-1` 已撤销）。
-  本项目不额外加入批量、群发一类自动化，但**不宣称**规避自动化检测：该库自己就会传
-  `--disable-blink-features=AutomationControlled`。
+- **不是**协议重实现。会话与加解密继续由官方网页版代码承担，本应用不自己实现协议（`INV-2`）。
+- **不是**注入脚本的客户端。页面里跑的东西与官方网页版一致（`INV-1`），只有一处**只读**例外：下载前
+  向页面问一句"这份内容的哈希 / 它属于哪个会话"，用来决定归档路径与是否复用已有文件。它不解析 DOM、
+  不驱动页面动作、也不把值交回页面。
+- **不宣称**规避自动化检测，也不加入批量、群发一类自动化。
 
 ---
 
@@ -100,11 +95,9 @@ pnpm run verify      # 完整构建 deb + AppImage，并校验产物
 
 ## 架构一览
 
-> 下面是 **ADR-0043 之前**的结构（代码仍在迁移中）；目标结构见 [`ADR-0044`](docs/decisions.md#adr-0044)。
-
 ```
 Electron 壳（Chromium 内核）
-├── 承载官方网页版            ← 迁移前：页面 JS 一行不改
+├── 承载官方网页版            ← 页面 JS 一行不改（INV-1；仅一处只读元数据例外）
 ├── 内核层 · 下载事件接管      ← 明文落盘 + 立即打开
 ├── 内核层 · 会话协议拦截      ← 密文磁盘缓存（默认开启，可在设置里关闭），二次打开零网络
 ├── 归档索引（SQLite + FTS5）  ← 去重、搜索、淘汰策略
@@ -133,7 +126,7 @@ Electron 壳（Chromium 内核）
 | [`docs/media-capture.md`](docs/media-capture.md) | 开发者 | 接管机制原理、缓存键设计、脆弱点 |
 | [`docs/decisions.md`](docs/decisions.md) | 所有人 | **决策记录（ADR）—— 唯一事实源** |
 | [`docs/roadmap.md`](docs/roadmap.md) | 所有人 | 里程碑与当前状态 |
-| [`docs/research/inv3-assessment.md`](docs/research/inv3-assessment.md) | 所有人 | INV-3 的抽样审计：接入 `whatsapp-web.js` 会不会让我们经手加密 |
+| [`docs/research/inv3-assessment.md`](docs/research/inv3-assessment.md) | 所有人 | INV-3 的抽样审计：任何承载方式下，解密都不在我们手里 |
 | [`AGENTS.md`](AGENTS.md) | **AI** | AI 操作入口：硬约束 + 文档路由 |
 | [`ai/CONTEXT.md`](ai/CONTEXT.md) | **AI** | 项目上下文、术语表 |
 | [`ai/CONVENTIONS.md`](ai/CONVENTIONS.md) | **AI** + 贡献者 | 代码、命名、提交规范 |
