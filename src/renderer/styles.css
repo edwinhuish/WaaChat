@@ -217,6 +217,28 @@ ul.archive li:last-child {
 
 /* --- 设置 ---------------------------------------------------------------- */
 
+/*
+ * 设置区域（分组）。区域不是装饰：容量上限离开它管辖的开关就读不懂，因此"谁和谁在一起"
+ * 是一条要能被断言的约定（见 shared/settings-sections.ts）。
+ */
+.group {
+  margin-bottom: 16px;
+}
+
+.group-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  /* 靠字重与颜色区分层级，不靠更大的字号 —— 小标题不该比设置项本身更抢眼。 */
+  letter-spacing: 0.02em;
+}
+
+/* 区域内最后一行不再多留一份下边距：间距由区域自己给。 */
+.group > .setting:last-child {
+  margin-bottom: 0;
+}
+
 .setting {
   display: flex;
   gap: 12px;

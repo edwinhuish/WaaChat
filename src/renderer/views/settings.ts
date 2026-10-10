@@ -12,9 +12,10 @@
  *     **"不限制"时没有失效可言**（字面意思就是不清理），只有"设了上限却不会被执行"
  *     才需要警告。因此状态由 `shared/size-limit.ts` 按"当前值 + 今天是否真的执行"算出来，
  *     而不是写在这一行里 —— 功能落地时改一个布尔值就够，不会留下一句过期的话。
- *  3. **相关的项放在一起。** 行的顺序由 {@link ROW_ORDER} 一处决定：两项容量上限紧跟它们
- *     各自的开关（归档：位置 → 上限；缓存：开关 → 上限）—— 容量没有作用对象时的提示是
- *     读不懂的，放在一起用户才知道它在给谁设限。
+ *  3. **相关的项放在同一个区域，且区域标题必须对里面的每一行都为真。**
+ *     区域与行序是数据（`shared/settings-sections.ts`），不是散在这一篇渲染代码里的分支：
+ *     两项容量上限因此必然紧跟各自管辖的开关 —— 一个容量项离开开关就读不懂（"2 GB"是给
+ *     谁设的上限？）。写成数据也意味着这条约定能被单测与离线自检断言。
  *  4. **长任务要有过程。** 换保存位置会真的搬动整个归档库，因此它有确认框（主进程）、
  *     进度、成功与失败三种可见的结果 —— 用户不该对着一个没有反应的开关猜发生了什么。
  *     密文缓存的切换走另一条路（[ADR-0028]）：它只是同目录内的搬运与删除，没有确认框、
@@ -27,6 +28,7 @@
 import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
+import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
 import { describeSizeLimit, type SizeLimitKey } from '../../shared/size-limit'
 import {
   RESTART_REQUIRED_SETTINGS,
@@ -98,40 +100,10 @@ const SIZES: readonly SizeSpec[] = [
 ]
 
 /**
- * 界面上的**行序**（唯一的顺序来源）。
- *
- * 两项容量上限紧跟各自的开关：容量没有作用对象时，用户读不懂它在给谁设限。
- * 归档那一组是「位置 → 上限 → 打开行为 → 退出清除」，缓存那一组是「开关 → 上限」。
- *
- * 每一行都必须在这里出现**且只出现一次**：{@link ALL_SETTINGS_RENDERED} 是编译期断言，
- * 漏掉一个设置项会编译不过（而不是界面上少一行、没人发现）。
+ * 行的身份。区域与顺序**不在这里** —— 它们是数据（`shared/settings-sections.ts`），
+ * 因为"哪些项该在一起"这种约定要能被离线断言，而不是靠人盯屏幕。
  */
-const ROW_ORDER = [
-  'appIcon',
-  'archiveDir',
-  'archiveMaxBytes',
-  'openOnCapture',
-  'wipeArchiveOnExit',
-  'enableCiphertextCache',
-  'cacheMaxBytes',
-  'disablePdfPreview',
-  'prefetch',
-  'launchAtLogin',
-] as const satisfies readonly (keyof Settings | 'appIcon')[]
-
-/** 一行在界面上的身份。 */
-type RowKey = (typeof ROW_ORDER)[number]
-
-/**
- * 编译期断言：**每个**设置项都有一行。
- *
- * `satisfies` 只管"这里写的名字合法"，管不了"是不是写全了"；这个类型反过来问一句
- * "`Settings` 里还有没有谁不在这张表里"。新增一个设置项却忘了给它一行时，`true` 就
- * 赋不进 `false`，编译当场失败。
- */
-export const ALL_SETTINGS_RENDERED: Exclude<keyof Settings | 'appIcon', RowKey> extends never
-  ? true
-  : false = true
+type RowKey = SettingsRowKey
 
 /**
  * 保存位置这一行的状态。
@@ -220,7 +192,23 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (settings === null) return
 
     const current = settings
-    root.replaceChildren(...ROW_ORDER.map((key) => rowFor(key, current)))
+
+    /**
+     * 每个区域画成 `<section>` + 一个小标题。
+     *
+     * 区域不是装饰：容量上限离开它管辖的开关就读不懂（"2 GB"是给谁设的上限？），而小标题
+     * 是用户扫视时的锚点。区域与行序都来自 `shared/settings-sections.ts`。
+     */
+    root.replaceChildren(
+      ...SETTINGS_SECTIONS.map((section) =>
+        h(
+          'section',
+          { class: 'group' },
+          h('h2', { class: 'group-title', text: section.title }),
+          ...section.rows.map((key) => rowFor(key, current)),
+        ),
+      ),
+    )
   }
 
   /**

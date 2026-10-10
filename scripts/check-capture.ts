@@ -58,6 +58,11 @@ import {
   isAcceptedIconName,
 } from '../src/shared/appicon'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
+import {
+  SETTINGS_ROW_ORDER,
+  SETTINGS_SECTIONS,
+  sectionOfRow,
+} from '../src/shared/settings-sections'
 import { SIZE_LIMIT_ENFORCED, describeSizeLimit } from '../src/shared/size-limit'
 import {
   applyLinuxGpuSwitches,
@@ -753,17 +758,22 @@ check(
 check('拿不准时不动作（既没有开关也没有会话信息）', !usesWaylandOzone({ ozonePlatform: '' }))
 
 // ---------------------------------------------------------------------------
-// 13. 容量上限的状态提示
+// 13. 容量上限的状态与所在区域
 // ---------------------------------------------------------------------------
 //
-// 归档 / 缓存的容量上限今天**不会被执行**（`blobs.evictToFit()` 是空实现、`protocol.ts`
-// 里是 TODO(M3)），因此界面上那两行必须如实说出来。反过来，把"尚未生效"钉死在没有上限的
-// 配置上同样是错的 —— 默认的 `archiveMaxBytes` 就是 0（不限制），而"不限制"恰恰是**正在
-// 照配置执行**的那一种：它字面意思就是不清理。
+// 两层断言。
 //
-// 这一节断言的就是这条分界：徽标只在"设了上限却不会被执行"时出现，不限制时不出现。
+// **状态**：归档 / 缓存的容量上限今天**不会被执行**（`blobs.evictToFit()` 是空实现、
+// `protocol.ts` 里是 TODO(M3)），因此界面上那两行必须如实说出来。反过来，把"尚未生效"
+// 钉死在没有上限的配置上同样是错的 —— 默认的 `archiveMaxBytes` 就是 0（不限制），而
+// "不限制"恰恰是**正在照配置执行**的那一种：它字面意思就是不清理。徽标只在"设了上限却
+// 不会被执行"时出现。
+//
+// **区域**：容量项必须与它管辖的那个开关在同一个区域里（"2 GB"离开开关就读不懂它是给谁
+// 设的上限），且每个设置项恰好有一行 —— 漏掉一个等于它在界面上消失，而那是没人会发现的
+// 一类坏结果。
 
-section('容量上限的状态提示')
+section('容量上限的状态与所在区域')
 
 const GB = 1024 * 1024 * 1024
 
@@ -803,6 +813,26 @@ check(
 check(
   '当前事实与文档一致：两项上限都还没被执行',
   !SIZE_LIMIT_ENFORCED.archiveMaxBytes && !SIZE_LIMIT_ENFORCED.cacheMaxBytes,
+)
+
+const cacheSection = sectionOfRow('cacheMaxBytes')
+check(
+  '密文缓存上限与密文磁盘缓存在同一个区域，且紧跟其后',
+  cacheSection !== null &&
+    cacheSection === sectionOfRow('enableCiphertextCache') &&
+    cacheSection.rows.indexOf('cacheMaxBytes') ===
+      cacheSection.rows.indexOf('enableCiphertextCache') + 1,
+)
+check(
+  '归档大小上限与文件保存位置在同一区域',
+  sectionOfRow('archiveMaxBytes') !== null &&
+    sectionOfRow('archiveMaxBytes') === sectionOfRow('archiveDir'),
+)
+check(
+  '每个设置项恰好有一行，且每个区域都有标题（漏一行等于它在界面上消失）',
+  SETTINGS_ROW_ORDER.length === Object.keys(DEFAULT_SETTINGS).length + 1 &&
+    new Set(SETTINGS_ROW_ORDER).size === SETTINGS_ROW_ORDER.length &&
+    SETTINGS_SECTIONS.every((section) => section.title.trim() !== '' && section.rows.length > 0),
 )
 
 // ---------------------------------------------------------------------------
