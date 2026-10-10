@@ -20,6 +20,45 @@ const NODE_SIDE = [
 const RENDERER_SIDE = ['src/renderer/**/*.ts', 'src/shared/**/*.ts']
 
 /**
+ * INV-3 的守卫（`ai/INVARIANTS.md`）：**我们自己的代码不经手密钥与加密**。
+ *
+ * 为什么现在才加：接入 `whatsapp-web.js` 之前必须回答"解密还在不在我们手里"。抽样审计的结论是
+ * **在** —— 解密由上游页面代码（`msg.downloadMedia()`）完成，该库自身不含对称解密实现（逐条证据
+ * 与作废条件见 `docs/research/inv3-assessment.md`）。那条结论有一个前提：**我们自己不去实现它**。
+ * 本守卫就是那个前提的看守。
+ *
+ * 只禁"写法"，不禁"能力"：`createHash` 是允许的例外（内容寻址用 sha256，见 INV-3 的说明）。
+ * 依赖那一半 —— 在 **Node 侧**解密的库会让解密离开上游 —— lint 拦不住，由 `pnpm run selfcheck`
+ * 对依赖清单断言；两条一起才守得住。
+ */
+const cryptoGuards = {
+  'no-restricted-syntax': [
+    'error',
+    ...Object.entries({
+      createDecipheriv: '不做对称解密 —— 解密由官方页面代码完成。',
+      createDecipher: '不做对称解密 —— 解密由官方页面代码完成。',
+      createCipheriv: '不做对称加密。',
+      createCipher: '不做对称加密。',
+      createHmac: '不做认证码运算。',
+      hkdf: '不实现密钥派生。',
+      subtle: '不碰 WebCrypto（crypto.subtle）。',
+      mediaKey: '不解析 mediaKey —— 包括不读取该库暴露的 Message.mediaKey 字段。',
+      filehash: '不接触媒体的 filehash（它是密钥派生的输入）。',
+    }).map(([name, reason]) => ({
+      /**
+       * 用 `Identifier` 而不是 `MemberExpression`：`o.mediaKey` 与 `import { mediaKey } …`
+       * 两种写法都要拦 —— 只匹配成员访问会让解构导入整条溜过去。
+       */
+      selector: `Identifier[name='${name}']`,
+      message: `INV-3: ${reason}（见 docs/research/inv3-assessment.md）`,
+    })),
+  ],
+}
+
+/** INV-3 管的是**我们的代码**（`src/`）。`scripts/` 与 `test/` 里出现这些词是自检与文档需要。 */
+const PROJECT_CODE = ['src/**/*.ts']
+
+/**
  * INV-1 与 INV-2 的守卫曾落在这里（`no-restricted-syntax` 拦 `executeJavaScript` /
  * `insertCSS`，`no-restricted-imports` 拦 puppeteer 家族 / `whatsapp-web.js` / 协议库）。
  *
@@ -64,6 +103,11 @@ export default new FlatConfigComposer()
   .append({
     files: NODE_SIDE,
     languageOptions: { globals: { ...globals.node } },
+  })
+  // INV-3：我们自己的代码不经手密钥与加密（解密由上游页面代码完成）。
+  .append({
+    files: PROJECT_CODE,
+    rules: cryptoGuards,
   })
   .append({
     files: RENDERER_SIDE,

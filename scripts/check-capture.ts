@@ -920,6 +920,92 @@ check(
 )
 
 // ---------------------------------------------------------------------------
+// 16. INV-3：不经手密钥与加密
+// ---------------------------------------------------------------------------
+//
+// 接入 `whatsapp-web.js` 之前必须回答一个问题："解密还在不在我们手里"。抽样审计的结论是
+// **在** —— 解密由上游页面代码（`msg.downloadMedia()`）完成，该库自身不含对称解密实现，
+// 逐条证据见 `docs/research/inv3-assessment.md`（该文件同时写明结论何时作废）。
+//
+// 那条结论有一个前提：**我们自己不去实现它**。本节就是那个前提的看守 —— 断言 `src/` 下
+// 不出现解密原语与密钥字段。lint 拦"写法"，这里拦"结果"；而依赖那一半（在 **Node 侧**解密
+// 的库会让解密离开上游）只能在这里对依赖清单断言，因为它的调用点可能只有一行。
+
+section('INV-3：不经手密钥与加密')
+
+/**
+ * 禁用标识符。`createHash` **不**在此列 —— 对明文算 sha256 用于内容寻址是 INV-3 明确允许的
+ * 例外（`archive/blobs.ts`）。
+ */
+const FORBIDDEN_CRYPTO_TOKENS = [
+  'createDecipheriv',
+  'createDecipher',
+  'createCipheriv',
+  'createCipher',
+  'createHmac',
+  'hkdf',
+  'crypto.subtle',
+  'mediaKey',
+  'filehash',
+]
+
+/**
+ * 剥掉注释再扫：注释里提到这些词是**允许**的（文档需要解释"为什么不做"）。这个剥离是粗糙的
+ * （字符串里的 `//` 会被误剥），对一条守卫来说够了 —— 它要抓的是真实调用，不是精确解析。
+ */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+}
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+
+    if (entry.isDirectory()) return sourceFiles(path)
+    return entry.name.endsWith('.ts') ? [path] : []
+  })
+}
+
+const srcRoot = fileURLToPath(new URL('../src', import.meta.url))
+const srcFiles = sourceFiles(srcRoot)
+const cryptoOffenders: string[] = []
+
+for (const file of srcFiles) {
+  const code = stripComments(readFileSync(file, 'utf8'))
+  for (const token of FORBIDDEN_CRYPTO_TOKENS) {
+    if (code.includes(token)) cryptoOffenders.push(`${basename(file)}:${token}`)
+  }
+}
+
+check(
+  `src/ 下不出现解密原语或密钥字段（${FORBIDDEN_CRYPTO_TOKENS.length} 个禁用标识符）`,
+  cryptoOffenders.length === 0,
+  cryptoOffenders.join(', '),
+)
+check(
+  '内容寻址用的 sha256 仍然在用（这条不是禁令的一部分，别把例外一起禁掉）',
+  srcFiles.some((file) => readFileSync(file, 'utf8').includes("createHash('sha256')")),
+)
+
+// 依赖纪律：这些库在 **Node 侧**自己做解密，会直接让"解密只由官方页面代码完成"不成立。
+// ADR-0043 撤销了 INV-2 的 lint 守卫，因此这条只能靠 ADR + 本断言兜住，而不是 lint。
+const packageJson = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+) as { dependencies?: Record<string, string> }
+
+const NODE_SIDE_DECRYPTERS = ['baileys', '@whiskeysockets/baileys', 'whatsmeow']
+const installedDecrypters = Object.keys(packageJson.dependencies ?? {}).filter((name) =>
+  NODE_SIDE_DECRYPTERS.some((bad) => name === bad || name.startsWith(`${bad}/`)),
+)
+
+check(
+  '依赖里没有在 Node 侧解密的库（它们会让解密离开上游页面代码）',
+  installedDecrypters.length === 0,
+  installedDecrypters.join(', '),
+)
+note('解密由上游页面代码完成：证据与作废条件见 docs/research/inv3-assessment.md')
+
+// ---------------------------------------------------------------------------
 
 section('结论')
 if (failures === 0) {
