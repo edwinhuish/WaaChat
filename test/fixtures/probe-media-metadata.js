@@ -11,6 +11,18 @@
  * 位置说明：放在 `test/fixtures/` 而不是 `src/` —— 它的宿主是**浏览器**不是 Node，
  * 因此 `eslint.config.mjs` 给它的是 browser globals（见 `PAGE_CONTEXT_FIXTURE`）。
  *
+ * ── 它在回答什么（两张表是全部重点）────────────────────────────────────────
+ *
+ * 1. **字段清单（按形状）**：媒体载荷可能挂在 `msg.mediaData`（给界面用的媒体模型）、
+ *    `msg.mediaObject`、或 `msg` 自身（wire 层的 fileSha256 / mediaKey / directPath 是
+ *    **消息字段**）。所以这里**逐个形状都列一遍**，而不是取第一个命中的就收工。
+ * 2. **载荷定位（字段 × 容器）**：按"字段 × 容器"数**取到值**的条数。
+ *
+ * ⚠️ 为什么必须区分「名字在」与「取到值」：实测（2026-10-10）`msg.mediaData` 上
+ * `mediaKey` / `directPath` / `fileSha256` 都是"**名字在、值为 undefined**"（原型链上的
+ * getter 取不到值），而 `filehash` / `size` / `mimetype` 有值。只看字段名就会把
+ * `mediaKey` 报成「✓ 有」，也会把一个**假阴性**（把"没在这一层"当成"客户端没有"）当成结论。
+ *
  * ── 怎么跑（推荐）─────────────────────────────────────────────────────────
  * **开发模式下不需要手动粘贴**：`pnpm run dev` 时 `src/main/dev-probe.ts` 会在页面加载后
  * 把本文件自动装进聊天窗口（只在未打包时）。然后：
@@ -60,6 +72,41 @@
   const FINGERPRINTABLE = new Set(['fileSha256', 'fileEncSha256'])
   const KEY_DERIVED = new Set(['filehash'])
 
+  /**
+   * 载荷可能在哪：这些名字来自 wire 层（research §3），而客户端模型可能把它们搬进某个容器
+   * （`$1` / `attributes` …）或干脆不留。矩阵只数**取到值**的条数。
+   */
+  const PAYLOAD_FIELDS = [
+    'fileSha256',
+    'fileEncSha256',
+    'mediaKey',
+    'mediaKeyTimestamp',
+    'directPath',
+    'filehash',
+    'encFilehash',
+    'objectId',
+    'url',
+  ]
+
+  /** 容器：从消息自身到它下面一层。`$1` / `attributes` 是上游模型的内部承载。 */
+  const CONTAINERS = [
+    ['msg', (msg) => msg],
+    ['msg.$1', (msg) => msg?.$1],
+    ['msg.attributes', (msg) => msg?.attributes],
+    ['msg.mediaData', (msg) => msg?.mediaData],
+    ['msg.mediaData.$1', (msg) => msg?.mediaData?.$1],
+    ['msg.mediaData.attributes', (msg) => msg?.mediaData?.attributes],
+    ['msg.mediaObject', (msg) => msg?.mediaObject],
+  ]
+
+  /** 表格与报告的显示顺序：载荷候选在前，消息自身在后。固定顺序，两次运行才好对照。 */
+  const SHAPE_ORDER = ['msg.mediaData', 'msg.mediaObject', 'msg.get("mediaData")', 'msg']
+
+  function shapeOrder(path) {
+    const index = SHAPE_ORDER.indexOf(path)
+    return index === -1 ? SHAPE_ORDER.length : index
+  }
+
   function describe(value) {
     if (value === null) return { kind: 'null', detail: '' }
     if (value === undefined) return { kind: 'undefined', detail: '' }
@@ -76,6 +123,8 @@
     if (type === 'object') return { kind: 'object', detail: value.constructor?.name ?? '' }
     return { kind: type, detail: '' }
   }
+
+  const kindOf = (info) => `${info.kind}${info.detail ? `(${info.detail})` : ''}`
 
   const toBytes = (value) => {
     if (value instanceof Uint8Array) return value
@@ -110,6 +159,14 @@
       ...rows.map((row) => `| ${row.map(cell).join(' | ')} |`),
     ].join('\n')
   }
+
+  /**
+   * 字段信息里"有没有取到值"。
+   *
+   * `undefined` 与 `null` 都不算值 —— 它们正是"名字在、值没有"的那一类，而这条区别是整个
+   * 探针的结论能否成立的关键（见文件头）。
+   */
+  const hasValue = (info) => [...info.kinds].some((kind) => !/^(undefined|null)/.test(kind))
 
   // ---------------------------------------------------------------------
   // 找到消息集合：不假设只有一条路（上游版本差异大），并把「哪条路通了」也当数据点。
@@ -156,7 +213,7 @@
     return []
   }
 
-  /** 媒体的形状只可能在两三个地方，逐个试。 */
+  /** 这条消息是不是"带媒体" —— 只看**有没有**媒体容器，不看里面有没有值。 */
   function mediaOf(msg) {
     if (msg?.mediaData) return { path: 'mediaData', value: msg.mediaData }
     if (msg?.mediaObject) return { path: 'mediaObject', value: msg.mediaObject }
@@ -171,6 +228,41 @@
     }
 
     return null
+  }
+
+  /**
+   * 媒体载荷可能挂在几个地方，**全都列出来**（不取第一个就收工）。
+   *
+   * 为什么必须"全都"：实测（2026-10-10）`msg.mediaData` 上的 `mediaKey` / `directPath` /
+   * `fileSha256` 全是"名字在、值为 undefined"，而 `filehash` / `size` / `mimetype` 有值 ——
+   * 说明它大概率只是**给界面用**的媒体模型，wire 层的载荷在别处。上一版只认第一个命中的对象，
+   * 于是"客户端侧没有 fileSha256"这个结论下得没有根据。
+   */
+  function shapesOf(msg) {
+    const found = []
+
+    const push = (path, value) => {
+      if (!value) return
+      if (found.some((shape) => shape.value === value)) return // 同一个对象只列一次
+      found.push({ path, value })
+    }
+
+    push('msg.mediaData', msg.mediaData)
+    push('msg.mediaObject', msg.mediaObject)
+
+    if (typeof msg.get === 'function') {
+      try {
+        push('msg.get("mediaData")', msg.get('mediaData'))
+      } catch {
+        /* 放弃 */
+      }
+    }
+
+    // 消息自身：`fileSha256` / `mediaKey` / `directPath` 在 wire 层是**消息字段**，
+    // 所以"消息上有没有"必须单独问一次（见 research §3）。
+    push('msg', msg)
+
+    return found
   }
 
   /**
@@ -229,15 +321,21 @@
    * 于是 P3 的"改名"情形从未被覆盖，元信息行却谎称覆盖了。逐个来源试，并记下**来源**
    * —— ⚠️ 只记来源与扩展名，绝不记录文件名本身（`docs/security.md` 的日志纪律）。
    */
-  function filenameSource(message, mediaValue) {
+  function filenameSource(msg) {
     const candidates = [
-      ['media.value.filename', mediaValue?.filename],
-      ['media.value.name', mediaValue?.name],
-      ['msg.filename', message?.filename],
-      ['msg.mediaData.filename', message?.mediaData?.filename],
+      ['msg.mediaData.filename', () => msg?.mediaData?.filename],
+      ['msg.mediaData.name', () => msg?.mediaData?.name],
+      ['msg.mediaObject.filename', () => msg?.mediaObject?.filename],
+      ['msg.filename', () => msg?.filename],
     ]
 
-    for (const [label, value] of candidates) {
+    for (const [label, read] of candidates) {
+      let value
+      try {
+        value = read()
+      } catch {
+        value = undefined
+      }
       if (typeof value === 'string' && value) return { label, value }
     }
 
@@ -292,31 +390,72 @@
     }
 
     const messages = listMessages(collection).slice(-CFG.maxMessages)
-    const keyIndex = new Map() // 字段名 → { count, kinds, types, sample }
+    const shapeIndex = new Map() // 形状路径 → Map(字段 → { count, kinds, types })
+    const shapeCounts = new Map() // 形状路径 → 有它的媒体条数
+    const payloadIndex = new Map() // 容器 → Map(字段 → { count, kinds })
     const byType = new Map() // 消息类型 → 字段名集合
     let mediaCount = 0
     let lastMedia = null
 
     for (const msg of messages) {
-      const media = mediaOf(msg)
-      if (!media) continue
+      if (!mediaOf(msg)) continue
 
       mediaCount += 1
-      lastMedia = { msg, media }
 
       const type = String(msg?.type ?? 'unknown')
       const typeKeys = byType.get(type) ?? new Set()
       byType.set(type, typeKeys)
 
-      for (const [name, info] of shapeOf(media.value)) {
-        typeKeys.add(name)
+      const shapes = shapesOf(msg)
+      const sizes = new Map()
 
-        const entry = keyIndex.get(name) ?? { count: 0, kinds: new Set(), types: new Set() }
-        entry.count += 1
-        entry.kinds.add(`${info.kind}${info.detail ? `(${info.detail})` : ''}`)
-        entry.types.add(type)
-        keyIndex.set(name, entry)
+      for (const { path, value } of shapes) {
+        const shape = shapeOf(value)
+        sizes.set(path, shape.size)
+        shapeCounts.set(path, (shapeCounts.get(path) ?? 0) + 1)
+
+        const fields = shapeIndex.get(path) ?? new Map()
+        shapeIndex.set(path, fields)
+
+        for (const [name, info] of shape) {
+          typeKeys.add(name)
+          const entry = fields.get(name) ?? { count: 0, kinds: new Set(), types: new Set() }
+          entry.count += 1
+          entry.kinds.add(kindOf(info))
+          entry.types.add(type)
+          fields.set(name, entry)
+        }
       }
+
+      for (const [container, get] of CONTAINERS) {
+        let holder
+        try {
+          holder = get(msg)
+        } catch {
+          holder = undefined
+        }
+        if (!holder) continue
+
+        const fields = payloadIndex.get(container) ?? new Map()
+        payloadIndex.set(container, fields)
+
+        for (const field of PAYLOAD_FIELDS) {
+          let value
+          try {
+            value = holder[field]
+          } catch {
+            value = undefined
+          }
+          if (value === undefined) continue
+
+          const entry = fields.get(field) ?? { count: 0, kinds: new Set() }
+          entry.count += 1
+          entry.kinds.add(kindOf(describe(value)))
+          fields.set(field, entry)
+        }
+      }
+
+      lastMedia = { msg, shapes, sizes }
     }
 
     state.lastMedia = lastMedia
@@ -336,7 +475,7 @@
       say(
         'warn',
         '如果这个会话明明有媒体，那说明媒体字段是**懒加载**的 —— 把那个文件点开一次（或点一次下载）\n' +
-          '        再重扫。⚠️ "字段要到点了才出现" 本身就是要记录的数据点：它决定能不能"下载前"拿到标识。',
+          '        再重扫。⚠️ "字段到了才出现" 本身就是要记录的数据点：它决定能不能"下载前"拿到标识。',
       )
       state.lastScan = {
         ok: false,
@@ -344,52 +483,116 @@
         label,
         messages: messages.length,
         mediaCount: 0,
-        rows: [],
+        shapes: [],
         byType: [],
+        payload: null,
         notes,
       }
       return { ok: false, label, messages: messages.length, mediaCount: 0 }
     }
 
-    // ---- P1 / P4：字段清单（按出现次数排序）----
-    const rows = [...keyIndex.entries()]
-      .sort((a, b) => b[1].count - a[1].count)
-      .map(([name, info]) => ({
-        字段: name,
-        出现: `${info.count}/${mediaCount}`,
-        类型: [...info.kinds].slice(0, 2).join(' | '),
-        消息类型: [...info.types].join(','),
-        明文哈希: FINGERPRINTABLE.has(name) ? '★' : '',
-        密钥派生: KEY_DERIVED.has(name) ? '⚠ INV-3' : '',
-      }))
-
-    console.table(rows)
-
-    const byTypeCounts = [...byType.entries()].map(([type, keys]) => [type, keys.size])
-    console.info('[探针] P4 逐类型字段数：', Object.fromEntries(byTypeCounts))
-    notes.push(
-      `P4 逐类型字段数：${byTypeCounts.map(([type, size]) => `${type}=${size}`).join(' ')}`,
-    )
-
-    // ---- 结论行：这是这个探针存在的唯一目的 ----
-    const keys = [...keyIndex.keys()]
-    const hasPlainSha = keys.some((name) => /sha256/i.test(name) && !/enc/i.test(name))
-    const hasEncSha = keys.some((name) => /encsha256/i.test(name))
-    const hasFileHash = keys.some((name) => /^filehash$/i.test(name))
-    const hasMediaKey = keys.some((name) => /mediakey/i.test(name))
-
-    console.group('[探针] P1 结论')
-    say('info', `明文 SHA-256 字段（fileSha256 或等价物）：${hasPlainSha ? '✓ 有' : '✗ 没有'}`)
-    say('info', `密文 SHA-256 字段（fileEncSha256）：      ${hasEncSha ? '✓ 有' : '✗ 没有'}`)
-    say('info', `密钥派生的 filehash：                    ${hasFileHash ? '✓ 有' : '✗ 没有'}`)
-    say('info', `mediaKey（只报了长度，没取值）：          ${hasMediaKey ? '✓ 有' : '✗ 没有'}`)
+    const shapePaths = [...shapeIndex.keys()].sort((a, b) => shapeOrder(a) - shapeOrder(b))
     say(
       'info',
-      hasPlainSha
+      `媒体对象出现的形状：${shapePaths.map((path) => `${path}（${shapeCounts.get(path)}/${mediaCount}）`).join('、')}`,
+    )
+
+    // ---- 字段清单：一张表一个形状 ----
+    const shapeTables = shapePaths.map((path) => ({
+      path,
+      count: shapeCounts.get(path),
+      rows: [...shapeIndex.get(path).entries()]
+        .sort((a, b) => b[1].count - a[1].count)
+        .map(([name, info]) => ({
+          字段: name,
+          出现: `${info.count}/${mediaCount}`,
+          类型: [...info.kinds].slice(0, 2).join(' | '),
+          消息类型: [...info.types].join(','),
+          明文哈希: FINGERPRINTABLE.has(name) ? '★' : '',
+          密钥派生: KEY_DERIVED.has(name) ? '⚠ INV-3' : '',
+        })),
+    }))
+
+    for (const table of shapeTables) {
+      console.info(
+        `[探针] 字段清单 · ${table.path}（${table.count}/${mediaCount} 条媒体上有这个形状）`,
+      )
+      console.table(table.rows)
+    }
+
+    const byTypeCounts = [...byType.entries()].map(([type, keys]) => [type, keys.size])
+    console.info('[探针] P4 逐类型字段数（所有形状相加）：', Object.fromEntries(byTypeCounts))
+    notes.push(
+      `P4 逐类型字段数（所有形状相加）：${byTypeCounts
+        .map(([type, size]) => `${type}=${size}`)
+        .join(' ')}`,
+    )
+
+    // ---- 载荷定位：字段 × 容器，只数**取到值**的条数 ----
+    const containers = CONTAINERS.map(([name]) => name).filter((name) => payloadIndex.has(name))
+
+    const payloadRows = PAYLOAD_FIELDS.map((field) => {
+      const row = { 字段: field }
+
+      for (const container of containers) {
+        const entry = payloadIndex.get(container)?.get(field)
+        row[container] = entry
+          ? `${entry.count}/${mediaCount} ${[...entry.kinds].join(' | ')}`
+          : '—'
+      }
+
+      return row
+    })
+
+    console.info('[探针] 载荷定位（只数**取到值**的条数；`—` = 那一层没取到值）')
+    console.table(payloadRows)
+    notes.push('载荷定位：按「字段 × 容器」数**取到值**的条数，`—` = 那一层没取到值')
+
+    // ---- 结论行：这是这个探针存在的唯一目的 ----
+    const findFields = (pattern, exclude) => {
+      const hits = []
+
+      for (const [shape, fields] of shapeIndex) {
+        for (const [name, info] of fields) {
+          if (!pattern.test(name)) continue
+          if (exclude && exclude.test(name)) continue
+          hits.push({ shape, name, valued: hasValue(info) })
+        }
+      }
+
+      return hits
+    }
+
+    const siteOf = (hit) => `${hit.shape}.${hit.name}`
+    const verdict = (hits) => {
+      const valued = hits.filter((hit) => hit.valued)
+      if (valued.length) return `✓ 有（${valued.map(siteOf).join('、')}）`
+      if (hits.length) {
+        return `✗ 没有值（名字在、但取不到值：${hits.map(siteOf).join('、')}）`
+      }
+      return '✗ 连字段名都没有'
+    }
+
+    const plainSha = findFields(/sha256/i, /enc/i)
+    const encSha = findFields(/encsha256/i)
+    const keyDerived = findFields(/^filehash$/i)
+    const mediaKeyField = findFields(/mediakey/i)
+    const hasPlain = plainSha.some((hit) => hit.valued)
+    const hasKeyDerived = keyDerived.some((hit) => hit.valued)
+
+    console.group('[探针] P1 结论（以**取到值**为准）')
+    say('info', `明文 SHA-256 字段（fileSha256 或等价物）：${verdict(plainSha)}`)
+    say('info', `密文 SHA-256 字段（fileEncSha256）：      ${verdict(encSha)}`)
+    say('info', `密钥派生的 filehash：                    ${verdict(keyDerived)}`)
+    say('info', `mediaKey（只报了长度，没取值）：          ${verdict(mediaKeyField)}`)
+    say(
+      'info',
+      hasPlain
         ? '→ 走方案 B：下载前就能拿到内容哈希，**不需要**动 INV-3。下一步做 P2（跨会话比较）。'
-        : hasFileHash
-          ? '→ ⚠️ 客户端侧只有 filehash（密钥派生）。要么退回方案 A，要么必须先就 INV-3 立一条 ADR。'
-          : '→ ⚠️ 两个都没有：说明客户端把哈希藏在别的结构里，或字段名不同。把报告一起看。',
+        : hasKeyDerived
+          ? '→ ⚠️ 只有 filehash（密钥派生）取到了值：要么退回方案 A，要么必须先就 INV-3 立一条 ADR。'
+          : '→ ⚠️ 两个 SHA-256 都没取到值：先看上面的「载荷定位」表 —— 它按「字段 × 容器」数**取到值**的条数，' +
+            '能指出载荷在哪一层。**全为 0** 才说明客户端确实没留（那时才轮到画 INV-3 的线）。',
     )
     console.groupEnd()
 
@@ -399,8 +602,9 @@
       label,
       messages: messages.length,
       mediaCount,
-      rows,
+      shapes: shapeTables,
       byType: byTypeCounts,
+      payload: { containers, rows: payloadRows },
       notes,
     }
     state.lastGoodScan = state.lastScan
@@ -414,10 +618,15 @@
   /**
    * 上游就绪了吗（只读、不打印）。
    *
-   * 存在的理由：开发模式注入发生在 `did-finish-load`，那时上游的 store 常常还没起来。
-   * 由注入方轮询本方法、就绪后再调 scan()，就不会把"找不到消息集合"这条**假警报**打出来。
+   * ⚠️ 判据是"集合存在**且已经有消息**"，不是"集合存在"：实测（2026-10-10）页面刚加载完时
+   * 集合已经能拿到、但里面 **0 条**消息 —— 那一刻扫描只会打印一条没有信息量的
+   * "当前会话里没有带媒体的消息"。等它同步出消息，自动扫描才真的扫到了东西。
    */
-  state.ready = () => resolveMsgCollection().collection !== null
+  state.ready = () => {
+    const { collection } = resolveMsgCollection()
+    if (!collection) return false
+    return listMessages(collection).length > 0
+  }
 
   // ---------------------------------------------------------------------
   // P2 / P3：跨会话比较
@@ -430,32 +639,43 @@
       return
     }
 
-    const { msg, media } = target
-    const shape = shapeOf(media.value)
+    const { msg, shapes, sizes } = target
+    const wanted = [...FINGERPRINTABLE, ...(CFG.fingerprintKeyDerived ? KEY_DERIVED : [])]
     const picked = {}
+    const origins = {}
 
-    for (const name of shape.keys()) {
-      const isWanted =
-        FINGERPRINTABLE.has(name) || (CFG.fingerprintKeyDerived && KEY_DERIVED.has(name))
-      if (!isWanted) continue
+    /**
+     * 在**所有形状**里找可指纹化的字段，而不是只看第一个：载荷可能挂在 `msg` 自身。
+     * 字段名保留为键（同一个值在两层都有时取先出现的那个），另记**来源**供报告显示
+     * —— 否则"这个指纹是从哪一层取的"就无从查起。
+     */
+    for (const { path, value } of shapes) {
+      for (const name of wanted) {
+        if (name in picked) continue
 
-      let value
-      try {
-        value = media.value[name]
-      } catch {
-        value = undefined
+        let field
+        try {
+          field = value[name]
+        } catch {
+          field = undefined
+        }
+        if (field === undefined || field === null) continue
+
+        picked[name] = fingerprint(field)
+        origins[name] = `${path}.${name}`
       }
-      picked[name] = fingerprint(value)
     }
 
-    const { label: nameFrom, value: filename } = filenameSource(msg, media.value)
+    const { label: nameFrom, value: filename } = filenameSource(msg)
+    const fieldCount = [...sizes.values()].reduce((total, size) => total + size, 0)
 
     const captured = {
       消息类型: String(msg?.type ?? 'unknown'),
       扩展名: extensionOf(filename),
       扩展名来源: nameFrom,
-      字段数: shape.size,
+      字段数: fieldCount,
       指纹: picked,
+      指纹来源: origins,
       警告: null,
     }
 
@@ -498,6 +718,40 @@
     }
 
     const [a, b] = channels
+    const extA = state.captured[a].扩展名
+    const extB = state.captured[b].扩展名
+
+    say(
+      'info',
+      `元信息：A=${JSON.stringify(extA)} B=${JSON.stringify(extB)} ` +
+        `（扩展名来源：A=${state.captured[a].扩展名来源 ?? '未找到'} / ` +
+        `B=${state.captured[b].扩展名来源 ?? '未找到'}）`,
+    )
+
+    /**
+     * P3 的判定**只与扩展名有关**，与"比没比过字段"无关 —— 所以它必须排在任何早退之前。
+     * 上一个版本把它排在"没比过就 return"之后，于是通道 A/B 都是 `.xlsx` 时报告里
+     * **根本没有 P3 的结论**（实测踩到）：看报告的人会以为 P3 已经覆盖。
+     *
+     * 覆盖 P3 的条件是**两个通道都拿得到扩展名、且两者不同**。
+     */
+    if (!extA || !extB) {
+      say(
+        'warn',
+        '至少一个通道没拿到扩展名 ⇒ P3 的「改名」情形未覆盖。' +
+          '请把上面"扩展名来源"为「未找到」的通道贴出来 —— 要么取法不对（修好后重扫），' +
+          '要么文件名在客户端侧确实不存在。',
+      )
+    } else if (extA === extB) {
+      say(
+        'warn',
+        `两个通道扩展名相同（${extA}）⇒ P3 未覆盖：` +
+          '请把**同一个文件**改个名（如 报告.pdf → 报告(1).pdf）再发一次、重扫、重新 capture。',
+      )
+    } else {
+      say('info', `扩展名不同（${extA} → ${extB}）= 已覆盖 P3 的改名情形。`)
+    }
+
     const names = new Set([
       ...Object.keys(state.captured[a].指纹),
       ...Object.keys(state.captured[b].指纹),
@@ -512,7 +766,7 @@
       say(
         'warn',
         '一个字段都没进入比较 —— 这不是"跨会话都不同"，而是**根本没比**。\n' +
-          '        原因通常是两个通道的指纹集合都为空：客户端侧没有明文/密文 SHA-256。\n' +
+          '        原因通常是两个通道的指纹集合都为空：没有哪个形状上取到了明文/密文 SHA-256。\n' +
           '        若 P1 显示只有 filehash（密钥派生），可把 CFG.fingerprintKeyDerived 改成 true 再扫一次 ——\n' +
           '        但那是 INV-3 范围，动手前必须先立 ADR（见 docs/research/early-file-identity.md §8）。',
       )
@@ -532,36 +786,6 @@
     })
 
     console.table(rows)
-
-    const extA = state.captured[a].扩展名
-    const extB = state.captured[b].扩展名
-    say(
-      'info',
-      `元信息：A=${JSON.stringify(extA)} B=${JSON.stringify(extB)} ` +
-        `（扩展名来源：A=${state.captured[a].扩展名来源 ?? '未找到'} / ` +
-        `B=${state.captured[b].扩展名来源 ?? '未找到'}）`,
-    )
-
-    /**
-     * 覆盖 P3 的条件是**两个通道都拿得到扩展名、且两者不同**。原来这行无条件地断称
-     * "扩展名不同 = 已覆盖 P3"，而实测两个通道都是 null —— P3 从未被覆盖，却看起来覆盖了。
-     */
-    if (!extA || !extB) {
-      say(
-        'warn',
-        '至少一个通道没拿到扩展名 ⇒ P3 的「改名」情形未覆盖。' +
-          '请把上面"扩展名来源"为「未找到」的通道贴出来 —— 要么取法不对（修好后重扫），' +
-          '要么文件名在客户端侧确实不存在。',
-      )
-    } else if (extA === extB) {
-      say(
-        'warn',
-        `两个通道扩展名相同（${extA}）⇒ P3 未覆盖：` +
-          '请把**同一个文件**改个名（如 报告.pdf → 报告(1).pdf）再发一次、重扫、重新 capture。',
-      )
-    } else {
-      say('info', `扩展名不同（${extA} → ${extB}）= 已覆盖 P3 的改名情形。`)
-    }
 
     /** 只有"两侧都拿得到指纹"的行才算真的比过；否则会重演零次比较那类缺陷。 */
     const compared = rows.filter((row) => row.相同 !== '—').length
@@ -617,25 +841,49 @@
     } else {
       lines.push(
         '',
-        '## P1 字段清单（最近一次成功的扫描）',
+        '## 字段清单（按形状）',
         `- 消息集合：${good.label}`,
         `- 消息 ${good.messages} 条，其中带媒体 ${good.mediaCount} 条`,
-        '',
-        markdownTable(
-          ['字段', '出现', '类型', '消息类型', '明文哈希', '密钥派生'],
-          good.rows.map((row) => [
-            row.字段,
-            row.出现,
-            row.类型,
-            row.消息类型,
-            row.明文哈希,
-            row.密钥派生,
-          ]),
-        ),
-        '',
-        '## P1 结论',
-        ...good.notes.map((note) => `- ${note}`),
+        `- 媒体对象出现的形状：${good.shapes
+          .map((shape) => `${shape.path}（${shape.count}/${good.mediaCount}）`)
+          .join('、')}`,
       )
+
+      for (const shape of good.shapes) {
+        lines.push(
+          '',
+          `### 形状 ${shape.path}（${shape.count}/${good.mediaCount}）`,
+          '',
+          markdownTable(
+            ['字段', '出现', '类型', '消息类型', '明文哈希', '密钥派生'],
+            shape.rows.map((row) => [
+              row.字段,
+              row.出现,
+              row.类型,
+              row.消息类型,
+              row.明文哈希,
+              row.密钥派生,
+            ]),
+          ),
+        )
+      }
+
+      if (good.payload) {
+        lines.push(
+          '',
+          '## 载荷定位（字段 × 容器；只数**取到值**的条数，`—` = 那一层没取到值）',
+          '',
+          markdownTable(
+            ['字段', ...good.payload.containers],
+            good.payload.rows.map((row) => [
+              row.字段,
+              ...good.payload.containers.map((container) => row[container]),
+            ]),
+          ),
+        )
+      }
+
+      lines.push('', '## P1 结论', ...good.notes.map((note) => `- ${note}`))
     }
 
     lines.push('', '## P2/P3 跨会话比较')
@@ -647,7 +895,11 @@
     for (const channel of channels) {
       const captured = state.captured[channel]
       const prints = Object.entries(captured.指纹)
-        .map(([name, value]) => `${name}=${value ?? '（算不出指纹）'}`)
+        .map(
+          ([name, value]) =>
+            `${name}=${value ?? '（算不出指纹）'}` +
+            (captured.指纹来源?.[name] ? `（来自 ${captured.指纹来源[name]}）` : ''),
+        )
         .join('；')
 
       lines.push(

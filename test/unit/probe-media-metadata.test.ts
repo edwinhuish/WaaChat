@@ -55,6 +55,7 @@ interface Captured {
   扩展名: string | null
   扩展名来源: string | null
   指纹: Record<string, string>
+  指纹来源: Record<string, string>
 }
 
 interface ProbeState {
@@ -134,6 +135,12 @@ const messageWithoutHashes = () => ({
   mediaData: { mimetype: 'image/jpeg', filesize: 999 },
 })
 
+/** 实测里最常见的那种：有文件名、有 mimetype，但两个 SHA-256 都没取到值。 */
+const messageWithFilenameOnly = (filename: string) => ({
+  type: 'document',
+  mediaData: { mimetype: 'application/vnd.ms-excel', filename },
+})
+
 /**
  * 造一个受控的运行环境。
  *
@@ -166,8 +173,23 @@ function makeProbeTarget(initial: readonly unknown[]) {
       tables.length = 0
     },
     output: () => logs.join('\n'),
+    /** 第一个形状的字段表（形状顺序固定，`msg.mediaData` 在最前）。 */
     fieldRows: () => (tables[0] ?? []) as FieldRow[],
     compareRows: () => (tables[0] ?? []) as CompareRow[],
+    /** 全部表格（顺序 = 探针打印顺序：各形状的字段表在前，载荷定位矩阵在后）。 */
+    allTables: () => tables,
+
+    /**
+     * 载荷定位矩阵里的某一行（`undefined` = 没找到）。
+     *
+     * ⚠️ 判据必须是"行里带**容器列**"（`msg` / `msg.mediaData` …）而不是"有 `fileSha256` 这一行"
+     * —— 各形状的字段表里同样有 `fileSha256` 那一行，前者才是矩阵。
+     */
+    payloadRow: (field: string) =>
+      tables
+        .map((rows) => rows as Record<string, string>[])
+        .find((rows) => rows.some((row) => 'msg' in row || 'msg.mediaData' in row))
+        ?.find((row) => row['字段'] === field),
     run: (next?: readonly unknown[]) => {
       if (next) messages = next
       logs.length = 0
@@ -248,6 +270,72 @@ describe('探针：P1 字段识别', () => {
 
     expect(output).toContain('扫了 1 条消息，其中 1 条带媒体')
     expect(output).toContain('document')
+  })
+
+  it('字段名在、值取不到时**不说**「✓ 有」—— 实测的 mediaKey 正是这样', () => {
+    /**
+     * 实测（2026-10-10）：`msg.mediaData` 上 `mediaKey` / `directPath` / `fileSha256` 都是
+     * "名字在、值为 undefined"。只看字段名的实现会报「mediaKey ✓ 有」，也会把
+     * "没在这一层取到"当成"客户端没有" —— 两个方向都错。
+     */
+    const target = makeProbeTarget([
+      {
+        type: 'document',
+        mediaData: {
+          mimetype: 'application/pdf',
+          mediaKey: undefined,
+          fileSha256: undefined,
+        },
+      },
+    ])
+
+    const output = target.run()
+
+    expect(output).toContain('明文 SHA-256 字段（fileSha256 或等价物）：✗ 没有值')
+    expect(output).toContain('名字在、但取不到值：msg.mediaData.fileSha256')
+    expect(output).toContain('mediaKey（只报了长度，没取值）：          ✗ 没有值')
+    // 结论不能就此断言"客户端没有" —— 必须把人指向载荷定位表。
+    expect(output).toContain('载荷定位')
+    expect(output).not.toContain('必须先就 INV-3 立一条 ADR')
+  })
+})
+
+describe('探针：载荷定位（载荷到底在哪一层）', () => {
+  it('指出 fileSha256 是在**哪一层**取到值的，而不是只看第一个媒体对象', () => {
+    /**
+     * 实测里 `msg.mediaData` 是个"给界面用的媒体模型"（有 size/mimetype，没有 mediaKey/
+     * directPath/fileSha256），而 wire 层的这些字段是**消息字段**。所以这里把 fileSha256
+     * 挂在消息自身 —— 探针必须能把它指出来，而不是因为 mediaData 里没有就下结论。
+     */
+    const target = makeProbeTarget([
+      {
+        type: 'image',
+        fileSha256: digest(7),
+        mediaData: { mimetype: 'image/jpeg', size: 123 },
+      },
+    ])
+
+    target.run()
+
+    const row = target.payloadRow('fileSha256')
+
+    expect(row?.msg).toBe('1/1 bytes(len=32)')
+    expect(row?.['msg.mediaData']).toBe('—')
+    // 于是结论也必须是"取到值了"，并point出它在哪一层。
+    expect(target.output()).toContain(
+      '明文 SHA-256 字段（fileSha256 或等价物）：✓ 有（msg.fileSha256）',
+    )
+    expect(target.output()).toContain('走方案 B')
+  })
+
+  it('两层都没有时，矩阵全是 `—`，结论指向矩阵而不是断言"客户端没有"', () => {
+    const target = makeProbeTarget([messageWithoutHashes()])
+
+    const output = target.run()
+
+    expect(target.payloadRow('fileSha256')?.msg).toBe('—')
+    expect(output).toContain('✗ 连字段名都没有')
+    expect(output).toContain('全为 0')
   })
 })
 
@@ -359,6 +447,35 @@ describe('探针：P2/P3 跨会话比较', () => {
     expect(captured?.指纹.filehash).toBeUndefined()
   })
 
+  it('capture 记下每个指纹的**来源形状** —— 否则"这个指纹从哪层取的"无从查起', () => {
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
+    target.run()
+    target.win.__waProbe?.capture('A')
+
+    expect(target.win.__waProbe?.captured.A?.指纹来源.fileSha256).toBe('msg.mediaData.fileSha256')
+  })
+
+  it('两通道扩展名相同且没有任何字段可比时，P3 的判定**仍然**要出现在报告里', () => {
+    /**
+     * 实测（2026-10-10）就是这样：两个通道都是 `.xlsx`、指纹都为空，而报告里只有"根本没比"
+     * —— P3 的结论被那个早退吞掉了，看报告的人会以为 P3 已经覆盖。
+     */
+    const target = makeProbeTarget([messageWithFilenameOnly('报告.xlsx')])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+    target.run([messageWithFilenameOnly('报告.xlsx')])
+    target.win.__waProbe?.capture('B')
+
+    target.clear()
+    target.win.__waProbe?.compare()
+
+    expect(target.output()).toContain('根本没比')
+    expect(target.output()).toContain('P3 未覆盖')
+    // 报告是交付物：它必须有这条，而不只是控制台里有。
+    expect(target.win.__waProbe?.report()).toContain('P3 未覆盖')
+  })
+
   it('文件名挂在媒体对象上时也能取到扩展名，并记录来源（实测消息上没有 filename）', () => {
     const target = makeProbeTarget([messageWithMediaFilename('报告.pdf')])
     target.run()
@@ -367,7 +484,8 @@ describe('探针：P2/P3 跨会话比较', () => {
     const captured = target.win.__waProbe?.captured.A
 
     expect(captured?.扩展名).toBe('.pdf')
-    expect(captured?.扩展名来源).toBe('media.value.filename')
+    // 来源写成"哪个容器的哪个字段"，而不是笼统的 `media.value` —— 报告里要能看出取到了哪一层。
+    expect(captured?.扩展名来源).toBe('msg.mediaData.filename')
   })
 
   it('两个通道扩展名相同（没改名）时明说 P3 未覆盖，而不是谎称覆盖了', () => {
@@ -422,6 +540,10 @@ describe('探针：报告（整段贴出来给人看的那件东西）', () => {
      */
     expect(report).toContain('| 字段 |')
     expect(report).toContain('| 明文哈希 |')
+    // 载荷定位矩阵是这份报告的核心：它回答"载荷在哪一层"，缺了就只能靠猜。
+    expect(report).toContain('## 载荷定位')
+    expect(report).toContain('| fileSha256 |')
+    expect(report).toContain('### 形状 msg.mediaData')
     expect(report).toContain('明文 SHA-256 字段（fileSha256 或等价物）：✓ 有')
     expect(report).toContain('P4 逐类型字段数')
     expect(report).toContain('### 通道 A')
