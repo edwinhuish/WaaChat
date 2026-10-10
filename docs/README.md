@@ -106,7 +106,7 @@ waachat/
 │   │   ├── dev-probe-source.ts     它的路径与注入代码（纯函数，可单测）
 │   │   ├── capture/                ★ 核心：内核层接管
 │   │   │   ├── cachekey.ts         幂等键推导（纯函数，可单测）
-│   │   │   ├── cache-files.ts      缓存条目形态 + 转换/暂存区/启动对账（不导入 electron）
+│   │   │   ├── cache-files.ts      缓存条目形态 + 转换/暂存区/启动对账 + 容量上限与 LRU 淘汰（ADR-0049，不导入 electron）
 │   │   │   ├── cache-switch.ts     切换开关的事务编排：转换 → 提交 → 收尾，失败回退
 │   │   │   ├── download.ts         下载事件接管 → 归档 + 打开
 │   │   │   ├── early-identity.ts   下载前的对账：读消息模型的 filehash，命中归档就打开并作废这次下载（ADR-0047）
