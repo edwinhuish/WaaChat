@@ -106,8 +106,9 @@ export function ensureArchiveFolder(folder: string): void {
 /**
  * 归档目录里某个文件（或年月子目录）的完整路径。
  *
- * @param storedName 相对归档目录的**路径**：现在是 `年/月/文件名`
- *   （如 `2026/10/合同.pdf`，[ADR-0037]），旧记录是裸文件名（原文名 / 内容哈希）。
+ * @param storedName 相对归档目录的**路径**：现在是 `<账号>/files/<年-月>/<文件名>`
+ *   （如 `18665597400/files/2026-10/合同.pdf`，[ADR-0039]）；旧记录是 `2026/10/…`
+ *   （[ADR-0037]）或裸文件名（原文名 / 内容哈希）。
  *   两种形态都对，因为这里做的就是把它接到归档目录后面。调用方从
  *   `ArchiveRecord.storedName` 或 `commitFromTemp()` 的返回值拿到它。
  */
@@ -199,8 +200,9 @@ export function sha256File(path: string): Promise<string> {
 export interface CommitResult {
   readonly hash: string
   /**
-   * 磁盘上的实际路径**相对归档目录**：`年/月/文件名`
-   * （如 `2026/10/合同.pdf`；同名冲突时文件名带一小段哈希后缀，[ADR-0031] / [ADR-0037]）。
+   * 磁盘上的实际路径**相对归档目录**：`<账号>/files/<年-月>/<文件名>`
+   * （如 `18665597400/files/2026-10/合同.pdf`；同名冲突时文件名带一小段哈希后缀，
+   * [ADR-0031] / [ADR-0039]）。
    */
   readonly storedName: string
   readonly bytes: number

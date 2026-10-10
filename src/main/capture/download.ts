@@ -137,8 +137,8 @@ async function finalize(input: FinalizeInput): Promise<void> {
     archiveStore().record({
       hash,
       name,
-      // 磁盘上的实际路径（相对归档目录：`年/月/原名`，冲突时文件名带哈希后缀）：
-      // 打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0037）。
+      // 磁盘上的实际路径（相对归档目录：`<账号>/files/<年-月>/<原名>`，冲突时文件名带哈希
+      // 后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0039）。
       storedName,
       bytes,
       mime,
