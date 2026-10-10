@@ -64,10 +64,12 @@ import {
 import { applyLaunchAtLogin } from '../integration/login'
 import { openPath, revealPath } from '../integration/open'
 import { getTray } from '../integration/tray'
+import { applyUserAgentAndLanguages } from '../language'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { getSettings, updateSettings } from '../settings'
-import { getFilesWindow, getSettingsWindow } from '../window'
+import { applySpellcheck } from '../spellcheck'
+import { getFilesWindow, getMainWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
 /**
@@ -271,6 +273,27 @@ function applySettings(value: unknown): Settings {
    * 不能让界面等），因此这里只发起、不等待 —— `enforceCacheLimit()` 自己永不抛错。
    */
   if ('cacheMaxBytes' in patch) void enforceCacheLimit(next.cacheMaxBytes)
+
+  /**
+   * 界面语言走的是**请求头**（[ADR-0060]）：`session.setUserAgent(ua, acceptLanguages)` 是
+   * Electron 唯一能设它的入口，而它明确"不影响已存在的 WebContents" —— 因此这里必须**配一次
+   * 页面重载**，否则"改完就生效"是假的。
+   *
+   * 重载不是注入（[INV-1] 与此无关，我们一个字节都没往页面里写）：它只是让页面重新装载一次，
+   * 上游据此重新挑语言包。代价是页面里**未发送**的输入会丢，因此设置页那一行写着这句话。
+   */
+  if ('uiLanguage' in patch) {
+    applyUserAgentAndLanguages(session.fromPartition(SESSION_PARTITION), next)
+    getMainWindow()?.webContents.reload()
+  }
+
+  /**
+   * 拼写检查**不需要**重载：`setSpellCheckerLanguages()` 对已存在的输入框立即生效
+   * （拼写检查是每次输入时向内核要素材的，不是页面渲染出来的）。
+   */
+  if ('spellcheck' in patch || 'spellcheckLanguages' in patch) {
+    applySpellcheck(session.fromPartition(SESSION_PARTITION), next)
+  }
 
   logger.info('settings updated', { keys: Object.keys(patch).join(',') })
   return presentSettings(next)

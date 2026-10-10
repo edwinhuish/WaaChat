@@ -19,7 +19,6 @@ import { BrowserWindow, app, shell } from 'electron'
 
 import { SESSION_PARTITION, UPSTREAM_URL } from '../shared/constants'
 import { isUpstreamPage } from '../shared/upstream'
-import { buildUserAgent } from '../shared/user-agent'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { logger } from './logger'
 
@@ -98,8 +97,6 @@ function hideOnClose(window: BrowserWindow): void {
  * 从 `.desktop` 取，这里的值会被忽略。改动自定义图标要同时照顾这两条路，见 ADR-0022。
  */
 export function createMainWindow(): BrowserWindow {
-  const userAgent = buildUserAgent(process.versions.chrome)
-
   const window = new BrowserWindow({
     ...DEFAULT_SIZE,
     show: false,
@@ -116,12 +113,16 @@ export function createMainWindow(): BrowserWindow {
   })
 
   /**
-   * UA 必须在创建 webContents 之后、加载之前设置。Electron 会把
-   * `Electron/x.y.z` 写进默认 UA，上游可能据此判定浏览器不受支持。
-   * 构造逻辑见 shared/user-agent.ts（纯函数，有单测）。
+   * ⚠️ 这里**故意不设 UA**（曾经设过 `window.webContents.setUserAgent(userAgent)`）。
+   *
+   * Electron 的 `webContents.setUserAgent()` 只接受 UA 一个参数，而 `acceptLanguages`
+   * （界面语言）只能通过 `session.setUserAgent(ua, acceptLanguages)` 设置。两处都设的后果是
+   * **窗口这一份盖掉会话那一份**：UA 是对的、语言永远是默认的，而且没有任何报错。
+   * 因此 UA 与语言一起挪到了会话上（`language.ts`，在 `configureSession()` 里、
+   * 早于这个函数被调用），这里只负责开窗口。
+   *
+   * 顺带说明：窗口**不挂 preload** 才是这扇窗口真正的结构性防线，与 UA 无关。
    */
-  window.webContents.setUserAgent(userAgent)
-
   /**
    * 链接处理：上游站内的链接留在应用内，站外的交给系统浏览器。
    * 不这样做的话，点一个外部链接会把当前页面导航走 —— 而那个页面承载着登录态。
@@ -151,7 +152,7 @@ export function createMainWindow(): BrowserWindow {
 
   void window.loadURL(UPSTREAM_URL)
 
-  logger.info('main window created', { userAgentClean: !userAgent.includes('Electron') })
+  logger.info('main window created')
 
   return window
 }

@@ -16,13 +16,18 @@ import { enforceCacheLimit, reconcileCiphertextCache } from './capture/cache-fil
 import { attachDownloadCapture } from './capture/download'
 import { onHealthChange } from './capture/health'
 import { attachCiphertextCache } from './capture/protocol'
+import { applyUserAgentAndLanguages } from './language'
 import { announceCaptureFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
+import { applySpellcheck } from './spellcheck'
 
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
   // 就固定了，运行期改不了 —— 见 shared/types.ts 的 RESTART_REQUIRED_SETTINGS。
+  //
+  // 语言与拼写检查**不**属于这一类：它们在设置被改动时会重新写到会话上
+  // （见 ipc/index.ts 的 applySettings），因此这里只是启动时的首次装配。
   const settings = getSettings()
 
   // --- 权限 -----------------------------------------------------------------
@@ -61,6 +66,23 @@ export async function configureSession(ses: Session, getSettings: () => Settings
     },
     { useSystemPicker: true },
   )
+
+  // --- 语言与输入 -------------------------------------------------------------
+  /**
+   * UA 与界面语言必须**在创建任何窗口之前**写进会话：Electron 的 `session.setUserAgent()`
+   * 明确"不影响已存在的 WebContents"（见 `language.ts`），晚一步就得靠一次页面重载补回来 ——
+   * 而那时用户已经在看着页面了。
+   *
+   * ⚠️ 承载上游页面的窗口因此**不**再自己设 UA（`window.ts` 里删掉的那一行）：UA 与
+   * `acceptLanguages` 只能成对设置，两处各设一半会得到一个"语言设了但被覆盖回去"的状态。
+   */
+  applyUserAgentAndLanguages(ses, settings)
+
+  /**
+   * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效
+   * （拼写检查是每一次输入时向内核要素材的，不是页面自己渲染的），因此它不需要重载页面。
+   */
+  applySpellcheck(ses, settings)
 
   // --- 接管点 A：下载事件 -----------------------------------------------------
   // 这一层是"点击即开"的全部实现，也是 M1 的验收目标。
