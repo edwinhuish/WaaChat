@@ -53,6 +53,7 @@ interface CompareRow {
 
 interface Captured {
   扩展名: string | null
+  扩展名来源: string | null
   指纹: Record<string, string>
 }
 
@@ -104,6 +105,28 @@ const documentMessage = (filename: string, shaSeed: number, filehash = 'aaaa') =
   type: 'document',
   filename,
   mediaData: new FakeMediaData({ shaSeed, filehash }),
+})
+
+/**
+ * 实测的第二个形状：**消息上没有 `filename`**，文件名挂在媒体对象上。
+ *
+ * 第一版的 `capture` 只读 `msg.filename`，于是两个通道都记下 `扩展名: null` ——
+ * 而元信息行仍然断称"已覆盖 P3 的改名情形"。P3 从未被覆盖，却看起来覆盖了。
+ */
+const messageWithMediaFilename = (filename: string) => ({
+  type: 'document',
+  mediaData: {
+    mimetype: 'application/pdf',
+    filesize: 42,
+    filename,
+    fileSha256: digest(42),
+  },
+})
+
+/** 既没有明文也没有密文 SHA-256 的媒体 —— 实测的第三种形状。 */
+const messageWithoutHashes = () => ({
+  type: 'image',
+  mediaData: { mimetype: 'image/jpeg', filesize: 999 },
 })
 
 /**
@@ -329,5 +352,47 @@ describe('探针：P2/P3 跨会话比较', () => {
     expect(captured?.指纹.fileSha256).toBeTruthy()
     expect(captured?.扩展名).toBe('.pdf')
     expect(captured?.指纹.filehash).toBeUndefined()
+  })
+
+  it('文件名挂在媒体对象上时也能取到扩展名，并记录来源（实测消息上没有 filename）', () => {
+    const target = makeProbeTarget([messageWithMediaFilename('报告.pdf')])
+    target.run()
+    target.win.__waProbe?.capture('A')
+
+    const captured = target.win.__waProbe?.captured.A
+
+    expect(captured?.扩展名).toBe('.pdf')
+    expect(captured?.扩展名来源).toBe('media.value.filename')
+  })
+
+  it('两个通道扩展名相同（没改名）时明说 P3 未覆盖，而不是谎称覆盖了', () => {
+    const target = makeProbeTarget([messageWithMediaFilename('报告.pdf')])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+    target.run([messageWithMediaFilename('报告.pdf')])
+    target.win.__waProbe?.capture('B')
+
+    target.clear()
+    target.win.__waProbe?.compare()
+
+    expect(target.output()).toContain('P3 未覆盖')
+    expect(target.output()).not.toContain('已覆盖 P3')
+  })
+
+  it('没有任何字段进入比较时说「根本没比」，而不是判定为「对象」标识', () => {
+    const target = makeProbeTarget([messageWithoutHashes()])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+    target.run([messageWithoutHashes()])
+    target.win.__waProbe?.capture('B')
+
+    target.clear()
+    target.win.__waProbe?.compare()
+
+    expect(target.output()).toContain('根本没比')
+    // 缺陷 2 的原症状：从零次比较里得出"都只是对象标识"。
+    expect(target.output()).not.toContain('不能当去重键')
   })
 })

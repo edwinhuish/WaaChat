@@ -203,6 +203,26 @@
     return match ? match[1] : null
   }
 
+  /**
+   * 文件名挂在哪，**不能假设**。上一个版本只读 `msg.filename`，实测两个通道都报 null，
+   * 于是 P3 的"改名"情形从未被覆盖，元信息行却谎称覆盖了。逐个来源试，并记下**来源**
+   * —— ⚠️ 只记来源与扩展名，绝不记录文件名本身（`docs/security.md` 的日志纪律）。
+   */
+  function filenameSource(message, mediaValue) {
+    const candidates = [
+      ['media.value.filename', mediaValue?.filename],
+      ['media.value.name', mediaValue?.name],
+      ['msg.filename', message?.filename],
+      ['msg.mediaData.filename', message?.mediaData?.filename],
+    ]
+
+    for (const [label, value] of candidates) {
+      if (typeof value === 'string' && value) return { label, value }
+    }
+
+    return { label: null, value: null }
+  }
+
   // ---------------------------------------------------------------------
   // 主流程：扫描当前已加载的会话
   // ---------------------------------------------------------------------
@@ -340,9 +360,12 @@
       picked[name] = fingerprint(value)
     }
 
+    const { label: nameFrom, value: filename } = filenameSource(msg, media.value)
+
     state.captured[channel] = {
       消息类型: String(msg?.type ?? 'unknown'),
-      扩展名: extensionOf(msg?.filename),
+      扩展名: extensionOf(filename),
+      扩展名来源: nameFrom,
       字段数: shape.size,
       指纹: picked,
     }
@@ -378,6 +401,21 @@
       ...Object.keys(state.captured[b].指纹),
     ])
 
+    /**
+     * ⚠️ 这是本探针最容易产出的**静默错误结论**：指纹集合为空 ⇒ 下面的 rows 也为空 ⇒
+     * "没有任何字段跨会话相同"会被当成一条结论打印出来，而我们**一个字段都没比过**。
+     * 实测就发生过：客户端侧既没有 fileSha256、也没有 fileEncSha256，picked 是 `{}`。
+     */
+    if (names.size === 0) {
+      console.warn(
+        '[探针] ⚠️ 一个字段都没进入比较 —— 这不是"跨会话都不同"，而是**根本没比**。\n' +
+          '        原因通常是两个通道的指纹集合都为空：客户端侧没有明文/密文 SHA-256。\n' +
+          '        若 P1 显示只有 filehash（密钥派生），可把 CFG.fingerprintKeyDerived 改成 true 再跑一次 ——\n' +
+          '        但那是 INV-3 范围，动手前必须先立 ADR（见 docs/research/early-file-identity.md §8）。',
+      )
+      return
+    }
+
     const rows = [...names].map((name) => {
       const va = state.captured[a].指纹[name]
       const vb = state.captured[b].指纹[name]
@@ -390,17 +428,49 @@
     })
 
     console.table(rows)
+
+    const extA = state.captured[a].扩展名
+    const extB = state.captured[b].扩展名
     console.info(
-      `[探针] 元信息：A=${JSON.stringify(state.captured[a].扩展名)} ` +
-        `B=${JSON.stringify(state.captured[b].扩展名)} ` +
-        `（扩展名不同 = 已覆盖 P3 的改名情形）`,
+      `[探针] 元信息：A=${JSON.stringify(extA)} B=${JSON.stringify(extB)} ` +
+        `（扩展名来源：A=${state.captured[a].扩展名来源 ?? '未找到'} / ` +
+        `B=${state.captured[b].扩展名来源 ?? '未找到'}）`,
     )
+
+    /**
+     * 覆盖 P3 的条件是**两个通道都拿得到扩展名、且两者不同**。原来这行无条件地断称
+     * "扩展名不同 = 已覆盖 P3"，而实测两个通道都是 null —— P3 从未被覆盖，却看起来覆盖了。
+     */
+    if (!extA || !extB) {
+      console.warn(
+        '[探针] ⚠️ 至少一个通道没拿到扩展名 ⇒ P3 的「改名」情形未覆盖。' +
+          '请把上面"扩展名来源"为「未找到」的通道贴出来 —— 要么取法不对（修好后重跑），' +
+          '要么文件名在客户端侧确实不存在。',
+      )
+    } else if (extA === extB) {
+      console.warn(
+        `[探针] ⚠️ 两个通道扩展名相同（${extA}）⇒ P3 未覆盖：` +
+          '请把**同一个文件**改个名（如 报告.pdf → 报告(1).pdf）再发一次、重跑探针、重新 capture。',
+      )
+    } else {
+      console.info(`[探针] 扩展名不同（${extA} → ${extB}）= 已覆盖 P3 的改名情形。`)
+    }
+
+    /** 只有"两侧都拿得到指纹"的行才算真的比过；否则会重演缺陷 2。 */
+    const compared = rows.filter((row) => row.相同 !== '—').length
+    if (compared === 0) {
+      console.warn(
+        `[探针] ⚠️ ${names.size} 个字段里没有一个两侧都拿得到指纹（值不是字节/字符串，指纹算不出来）` +
+          ' —— 仍然**没有比过**。请把上面表格贴出来一起看这些字段的类型。',
+      )
+      return
+    }
 
     const contentLike = rows.filter((row) => row.相同 === '✓ 是').map((row) => row.字段)
     console.info(
       contentLike.length
         ? `→ 标识「内容」的字段：${contentLike.join(', ')} —— 可用作早期去重键。`
-        : '→ 没有任何字段跨会话相同：它们都只是「对象」标识，不能当去重键（会漏命中）。',
+        : `→ 比过的 ${compared} 个字段跨会话都不同：它们只是「对象」标识，不能当去重键（会漏命中）。`,
     )
   }
 
