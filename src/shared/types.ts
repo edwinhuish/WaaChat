@@ -290,8 +290,6 @@ export interface CaptureHealth {
   readonly lastCaptureAt: number | null
   /** 最近一次落盘失败的原因，用于界面提示。 */
   readonly lastError: CaptureFailure | null
-  /** 接管点 B（密文缓存）当前是否生效。 */
-  readonly ciphertextCacheActive: boolean
 }
 
 export type CaptureFailure =

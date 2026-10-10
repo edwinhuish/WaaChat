@@ -50,7 +50,6 @@ import {
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
 import { forceDownloadIfPdf } from './pdf'
-import { setCiphertextCacheActive } from './health'
 import { fetchWithRetry, type RetryAttempt } from './retry'
 import { failureReason } from '../errors'
 import { hostOf, logger } from '../logger'
@@ -123,7 +122,6 @@ export function attachCiphertextCache(ses: Session): void {
   })
 
   attached = true
-  setCiphertextCacheActive(true)
   logger.info('capture: ciphertext layer attached', { dir })
 
   // TODO(M3)：容量上限与淘汰。当前实现只增不减，达到上限时会无声地吃掉磁盘。
@@ -138,14 +136,14 @@ export function attachCiphertextCache(ses: Session): void {
  * （探针见 ADR-0027 理由 1）。这正是要的效果 —— "关闭"应当意味着与原生内核无差别，而不是
  * 留下一段什么都不做的直通代码在路径上。
  *
- * 幂等；对已经摘掉的会话调用只是把状态标签置回关闭。
+ * 幂等；对已经摘掉的会话调用只是把进程内的状态置回关闭。
  */
 export function detachCiphertextCache(ses: Session): void {
   if (attached) {
     try {
       ses.protocol.unhandle('https')
     } catch (error) {
-      // 摘不掉也不能把流程卡住：状态标签置回关闭，行为上等同于直通（下一次启动会重来）。
+      // 摘不掉也不能把流程卡住：状态置回关闭，行为上等同于直通（下一次启动会重来）。
       logger.warn('capture: could not unhandle the ciphertext layer', {
         reason: failureReason(error),
       })
@@ -154,7 +152,6 @@ export function detachCiphertextCache(ses: Session): void {
     attached = false
   }
 
-  setCiphertextCacheActive(false)
   logger.info('capture: ciphertext layer detached')
 }
 

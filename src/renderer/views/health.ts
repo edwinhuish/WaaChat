@@ -9,6 +9,12 @@
  *
  * 所以状态必须**一直可见**，而不是藏在设置页深处。同时它也只是状态：
  * 不弹窗、不打断，因为接管失败时应用仍然可用。
+ *
+ * ── 顶栏只放"接管"这一件事（[ADR-0040]）──
+ *
+ * 密文缓存的开关状态**不在这里**。它由设置里那个开关自己表达（位置、文字、转换期间与
+ * 结束后的结果都在同一行），在顶栏再复述一遍会让"设置值"与"当前生效值"看起来像两件事；
+ * 而顶栏要留给**别处看不到**的信息 —— 文件究竟是被本应用接管的，还是退回给了浏览器。
  */
 
 import type { CaptureHealth } from '../../shared/types'
@@ -65,19 +71,6 @@ function pills(health: CaptureHealth): HTMLElement[] {
   } else {
     result.push(h('span', { class: 'pill', text: '尚无接管记录', data: { state: 'unknown' } }))
   }
-
-  // 密文缓存的**当前生效值**必须可见：否则用户无法判断"第二次打开还要联网"是设置没关掉，
-  // 还是缓存坏了。
-  result.push(
-    h('span', {
-      class: 'pill',
-      text: health.ciphertextCacheActive ? '密文缓存：开' : '密文缓存：关',
-      title: health.ciphertextCacheActive
-        ? '重复打开同一个文件不会再走网络。'
-        : '每次打开都会重新从 CDN 拉取。可在设置里打开。',
-      data: { state: health.ciphertextCacheActive ? 'ok' : 'unknown' },
-    }),
-  )
 
   return result
 }
