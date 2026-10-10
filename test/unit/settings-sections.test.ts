@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ALL_SETTINGS_RENDERED,
+  EXTRA_SETTINGS_ROWS,
   SETTINGS_ROW_ORDER,
   SETTINGS_SECTIONS,
   sectionOfRow,
@@ -21,10 +22,10 @@ import {
 } from '../../src/shared/settings-sections'
 import { DEFAULT_SETTINGS, type Settings } from '../../src/shared/types'
 
-/** 界面上应当出现的全部行：每个设置项 + 应用图标那一行。 */
+/** 界面上应当出现的全部行：每个设置项 + 声明过的额外行（应用图标、关于）。 */
 const ALL_ROWS: readonly SettingsRowKey[] = [
   ...(Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]),
-  'appIcon',
+  ...EXTRA_SETTINGS_ROWS,
 ]
 
 describe('SETTINGS_SECTIONS', () => {
@@ -52,6 +53,18 @@ describe('SETTINGS_SECTIONS', () => {
     for (const key of ALL_ROWS) {
       expect(sectionOfRow(key)).not.toBeNull()
     }
+  })
+
+  it('额外行与设置项不重名（重名会让"每个设置项恰好一行"那条断言失去意义）', () => {
+    const settingKeys = new Set(Object.keys(DEFAULT_SETTINGS))
+
+    for (const row of EXTRA_SETTINGS_ROWS) {
+      expect(settingKeys.has(row)).toBe(false)
+    }
+  })
+
+  it('「关于」是最后一行 —— 它是只读的说明，不该挡在设置项中间', () => {
+    expect(SETTINGS_ROW_ORDER.at(-1)).toBe('about')
   })
 })
 

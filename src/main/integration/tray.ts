@@ -65,9 +65,16 @@ export function createTray(windows: TrayWindows): Tray | null {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: '显示聊天', click: () => presentWindow(windows.main) },
+        /**
+         * 分隔线在这里分的是**两类东西**：上面是应用的主体（那扇承载聊天的窗口），下面是
+         * **我们的本地界面**（两扇窗口，[ADR-0025]）。不分组时三项是同一串，用户看不出
+         * 「设置」是跟着「文件列表」的一类 —— 而它确实不是"另一个聊天入口"。
+         */
+        { type: 'separator' },
         // 两项各开一扇窗口：本地界面拆开之后，托盘不再需要"打开某一扇再自己找"。
         { label: '文件列表', click: () => presentWindow(windows.files) },
         { label: '设置', click: () => presentWindow(windows.settings) },
+        // 「退出」与前两类都不同（它结束整个应用），因此也要分开。
         { type: 'separator' },
         {
           label: '退出',

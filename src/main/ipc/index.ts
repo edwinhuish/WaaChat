@@ -742,5 +742,16 @@ export function registerIpcHandlers(): void {
 
   guard(CHANNELS.appIconReset, () => refreshTrayIcon(resetAppIcon()))
 
+  // --- 应用 -----------------------------------------------------------------
+
+  /**
+   * 应用版本（设置窗口的「关于」那一行）。
+   *
+   * 取的是 `app.getVersion()` —— 打包后它来自产物里的 `package.json`，因此**用户装的到底是
+   * 哪一个版本**这个问题只有一个答案。不接受参数，也不缓存：这个值在一次运行里不会变，
+   * 但多一次字符串读取不值得为它维护一份状态。
+   */
+  guard(CHANNELS.appVersion, () => app.getVersion())
+
   logger.info('ipc: handlers registered')
 }

@@ -71,6 +71,14 @@ export const CHANNELS = {
   appIconSet: 'appicon:set',
   /** 恢复默认图标：删掉自定义图标与**我们自己写的**启动器条目。 */
   appIconReset: 'appicon:reset',
+
+  /**
+   * 应用版本（`app.getVersion()`，即打包时那份 `package.json` 的 `version`）。
+   *
+   * 只读、无参数、无副作用。设置窗口的「关于」区域显示它：用户报问题时第一句总是
+   * "你用哪个版本"，而在它出现之前，界面里根本没有这个答案 —— 只能靠安装包文件名去猜。
+   */
+  appVersion: 'app:version',
 } as const
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS]

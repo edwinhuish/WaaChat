@@ -17,8 +17,23 @@
 
 import type { Settings } from './types'
 
-/** 界面上一行的身份：设置的每一项 + 一行不是设置的（应用图标）。 */
-export type SettingsRowKey = keyof Settings | 'appIcon'
+/**
+ * 设置项之外的**额外行**。
+ *
+ * 它们同样是"界面上一行的身份"，但不落进 `Settings`：应用图标是"设置之外的一个动作"，
+ * 「关于」是"只读的说明"。单独列一个清单的理由有两条：
+ *
+ *   1. {@link ALL_SETTINGS_RENDERED} 只能断言"每个**设置项**都有一行"，因此多出来的行必须
+ *      有一个**显式**的来源 —— 单测与离线自检据此核对总数，而不是写一个会过期的魔法数字；
+ *   2. 新增一行却忘了放进区域时，总数对不上，报错能直接指出是哪个清单的问题。
+ */
+export const EXTRA_SETTINGS_ROWS = ['appIcon', 'about'] as const
+
+/** 上面那个清单里的行。 */
+export type ExtraSettingsRow = (typeof EXTRA_SETTINGS_ROWS)[number]
+
+/** 界面上一行的身份：设置的每一项 + {@link EXTRA_SETTINGS_ROWS}。 */
+export type SettingsRowKey = keyof Settings | ExtraSettingsRow
 
 export interface SettingsSection {
   /** 区域标题（渲染成小标题）。 */
@@ -31,13 +46,16 @@ export interface SettingsSection {
  * 界面上的区域。
  *
  * 归档在前（那是用户自己的文件），密文缓存随后（它是为了少一次网络往返而留下的派生数据），
- * 最后是桌面集成。两项容量上限**紧跟各自管辖的开关**：
+ * 然后是桌面集成，最后是只读的说明。两项容量上限**紧跟各自管辖的开关**：
  *
  *   - 「归档大小上限」跟在「文件保存位置」后面（都在说归档占多少、在哪）；
  *   - 「密文缓存上限」跟在「密文磁盘缓存」后面（容量项离开开关就没有作用对象）。
  *
  * 「后台预取文档」放在密文缓存区域：它预取的就是密文 —— 缓存关着时这个开关没有意义，
  * 两者本来就该一起看。
+ *
+ * 「关于」永远在最后一行：它不是设置项，而是**只读的说明**（应用名与版本）。用户报问题时
+ * 第一句总是"你用哪个版本"，而在它出现之前，界面里没有这个答案（[ADR-0056]）。
  *
  * ⚠️ **区域不能是空的**（单测与离线自检都断言"每个区域至少有一行"）：删掉某一行的同时，
  * 要把它**独占**的那个区域一起删掉。
@@ -54,6 +72,10 @@ export const SETTINGS_SECTIONS = [
   {
     title: '外观与启动',
     rows: ['appIcon', 'launchAtLogin'],
+  },
+  {
+    title: '关于',
+    rows: ['about'],
   },
 ] as const satisfies readonly SettingsSection[]
 

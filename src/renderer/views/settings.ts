@@ -195,6 +195,12 @@ export interface SettingsView {
 
 export function mountSettingsView(root: HTMLElement): SettingsView {
   let settings: Settings | null = null
+  /**
+   * 应用版本（「关于」那一行）。
+   *
+   * 取不到时保持 `null`，那一行显示一个破折号 —— 见 {@link aboutRow} 里那段理由。
+   */
+  let appVersion: string | null = null
   let location: LocationState = { kind: 'idle' }
   let appIcon: AppIconState | null = null
   let icon: IconState = { kind: 'idle' }
@@ -246,6 +252,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   function rowFor(key: RowKey, current: Settings): HTMLElement {
     if (key === 'appIcon') return iconRow()
     if (key === 'archiveDir') return locationRow(current)
+    if (key === 'about') return aboutRow()
 
     const toggle = TOGGLES.find((spec) => spec.key === key)
     if (toggle !== undefined) return toggleRow(toggle, current)
@@ -734,6 +741,28 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
+   * 「关于」那一行：应用名与版本。
+   *
+   * 这一行**没有可改的东西**（因此没有 `.actions`）—— 它回答的是"我装的到底是哪一个"，
+   * 而这个问题在别处没有答案：安装包会被改名、托盘与启动器里都不显示版本号。
+   *
+   * 版本读不到时显示破折号，而不是编一个：用户会把这个值抄进 issue 里，错的版本号比
+   * 没有版本号更坏。它不是设置项，因此也不该长成一个开关的样子。
+   */
+  function aboutRow(): HTMLElement {
+    return h(
+      'div',
+      { class: 'setting' },
+      h(
+        'div',
+        { class: 'meta' },
+        h('div', { class: 'label', text: 'WaaChat' }),
+        h('div', { class: 'path', data: { role: 'version' }, text: appVersion ?? '—' }),
+      ),
+    )
+  }
+
+  /**
    * 迁移进度是**主进程推过来的**。
    *
    * 不轮询：迁移可能只持续几百毫秒，轮询要么错过过程、要么白跑一堆 IPC。
@@ -746,23 +775,31 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   return {
     async refresh(): Promise<void> {
       /**
-       * 并行取：两者互不依赖，串行只会让窗口晚一点画出内容。
+       * 并行取：三者互不依赖，串行只会让窗口晚一点画出内容。
        *
        * 每次刷新都重新读一次图标状态，而不是只在挂载时读 —— 图标文件可能被外部删掉
        * （主进程读到坏文件就会清掉它），那时界面必须跟着回到"默认图标"。
        *
-       * 图标状态取不到时退化为"没有自定义图标"：这一行的问题不该把**别的**行也带走 ——
-       * 让整个设置页空掉，用户连保存位置都看不到。
+       * 后两者取不到时各自退化为"没有自定义图标"与"版本未知"：某一行的问题不该把**别的**
+       * 行也带走 —— 让整个设置页空掉，用户连保存位置都看不到。
        */
-      const [nextSettings, nextIcon] = await Promise.all([
+      const [nextSettings, nextIcon, nextVersion] = await Promise.all([
         bridge().getSettings(),
         bridge()
           .getAppIcon()
+          .catch(() => null),
+        /**
+         * 版本失败同样只影响它自己那一行（界面显示破折号）—— 一条元数据取不到，
+         * 不该把整扇设置窗口带走。
+         */
+        bridge()
+          .getAppVersion()
           .catch(() => null),
       ])
 
       settings = nextSettings
       appIcon = nextIcon
+      appVersion = nextVersion
       render()
     },
 

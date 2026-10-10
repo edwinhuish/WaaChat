@@ -64,6 +64,7 @@ import {
 import { ACTION_BUTTON_CLASS } from '../src/shared/action-button'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
 import {
+  EXTRA_SETTINGS_ROWS,
   SETTINGS_ROW_ORDER,
   SETTINGS_SECTIONS,
   sectionOfRow,
@@ -831,10 +832,11 @@ check(
 )
 check(
   '每个设置项恰好有一行，且每个区域都有标题（漏一行等于它在界面上消失）',
-  SETTINGS_ROW_ORDER.length === Object.keys(DEFAULT_SETTINGS).length + 1 &&
+  SETTINGS_ROW_ORDER.length === Object.keys(DEFAULT_SETTINGS).length + EXTRA_SETTINGS_ROWS.length &&
     new Set(SETTINGS_ROW_ORDER).size === SETTINGS_ROW_ORDER.length &&
     SETTINGS_SECTIONS.every((section) => section.title.trim() !== '' && section.rows.length > 0),
 )
+check('「关于」是最后一行（它是只读的说明，不是设置项）', SETTINGS_ROW_ORDER.at(-1) === 'about')
 
 // ---------------------------------------------------------------------------
 // 13. 设置窗口的按钮样式
