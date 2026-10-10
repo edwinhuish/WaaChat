@@ -116,13 +116,23 @@ describe('parseLanguageList / formatLanguageList', () => {
 })
 
 describe('SPELLCHECK_LANGUAGES', () => {
-  it('语言码不重复、全是小写 `xx-YY` 形状', () => {
+  it('语言码不重复、全是 `xx` 或 `xx-YY` 形状', () => {
     const codes = SPELLCHECK_LANGUAGES.map((entry) => entry.code)
     expect(new Set(codes).size).toBe(codes.length)
 
     for (const code of codes) {
       expect(code).toMatch(/^[a-z]{2}(-[A-Z]{2})?$/)
     }
+  })
+
+  it('用的是内核的词典命名：区域码只出现在真有区域变体的那几门语言上', () => {
+    // `de-DE` 这种写法看起来更规范，但内核的清单里没有它 —— 勾了之后**不报错也不生效**。
+    // 这条断言把"别把基础语言码补成区域码"钉住。
+    const regionCodes = SPELLCHECK_LANGUAGES.map((entry) => entry.code).filter((code) =>
+      code.includes('-'),
+    )
+
+    expect(regionCodes.sort()).toEqual(['en-GB', 'en-US', 'pt-BR'])
   })
 
   it('刻意不含中文 —— 内核的词典清单里没有它（列上去等于一个永远不生效的选项）', () => {

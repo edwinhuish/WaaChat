@@ -106,35 +106,45 @@ export interface SpellcheckLanguage {
 /**
  * 可选为拼写检查词典的语言。
  *
- * ⚠️ **这份清单只是"候选人"**：真正能装哪些语言由内核决定，运行时以
- * `session.availableSpellCheckerLanguages` 为准 —— 主进程会把表里内核没有的那些**剔掉并记
- * 一条日志**（见 `main/spellcheck.ts`）。两处都留着是必要的：这里决定"界面上能勾什么"，
- * 内核决定"勾了之后真的会不会查"，而两者不一致时唯一的坏结果是"勾了却不查"，
- * 那正是必须留痕的那种静默失效。
+ * ⚠️ **码的形状是内核的命名，不是我们的偏好**：Hunspell 词典用的是**基础语言码**
+ * （`de` / `fr` / `nl` / `ru` …），只有英语、葡萄牙语、西班牙语这类有区域变体的才有
+ * `en-US` / `pt-BR` 这种形式。写成 `de-DE` 看起来更"规范"，但内核的清单里没有它 ——
+ * 症状是"用户勾了德语、德语词照样被画红线"，而且**没有任何报错**。
  *
- * ⚠️ **没有中文**，而且不是遗漏：Hunspell 那套词典是为**词形语言**做的（词与词之间有空格、
- * 拼写可以逐词判定）。中文没有词形拼写可查，内核的词典清单里也没有中文条目 ——
- * 列上去只会让用户勾一个永远不生效的选项。
+ * ⚠️ **这份清单仍然只是"候选人"**：真正能装哪些由内核决定，运行时以
+ * `session.availableSpellCheckerLanguages` 为准 —— 主进程会把表里内核没有的那些**剔掉并记一条
+ * 日志**（见 `main/spellcheck.ts`）。两处都留着是必要的：这里决定"界面上能勾什么"，内核决定
+ * "勾了之后真的会不会查"；两者不一致时唯一的坏结果就是"勾了却不查"，那正是必须留痕的那种静默失效。
+ *
+ * ⚠️ **没有中文**，而且不是遗漏：Hunspell 是为**词形语言**做的（词与词之间有空格、拼写可以
+ * 逐词判定）。中文没有词形拼写可查，内核的词典清单里也没有中文条目 —— 列上去只会让用户勾一个
+ * 永远不生效的选项。
  */
 export const SPELLCHECK_LANGUAGES: readonly SpellcheckLanguage[] = [
   { code: 'en-US', label: '英语（美国）' },
   { code: 'en-GB', label: '英语（英国）' },
-  { code: 'de-DE', label: '德语' },
-  { code: 'fr-FR', label: '法语' },
-  { code: 'es-ES', label: '西班牙语' },
+  { code: 'de', label: '德语' },
+  { code: 'fr', label: '法语' },
+  { code: 'es', label: '西班牙语' },
   { code: 'pt-BR', label: '葡萄牙语（巴西）' },
-  { code: 'it-IT', label: '意大利语' },
-  { code: 'nl-NL', label: '荷兰语' },
-  { code: 'sv-SE', label: '瑞典语' },
-  { code: 'da-DK', label: '丹麦语' },
-  { code: 'nb-NO', label: '挪威语' },
-  { code: 'pl-PL', label: '波兰语' },
-  { code: 'cs-CZ', label: '捷克语' },
-  { code: 'ru-RU', label: '俄语' },
-  { code: 'uk-UA', label: '乌克兰语' },
-  { code: 'tr-TR', label: '土耳其语' },
-  { code: 'id-ID', label: '印度尼西亚语' },
-  { code: 'vi-VN', label: '越南语' },
+  { code: 'it', label: '意大利语' },
+  { code: 'nl', label: '荷兰语' },
+  { code: 'sv', label: '瑞典语' },
+  { code: 'da', label: '丹麦语' },
+  { code: 'nb', label: '挪威语' },
+  { code: 'pl', label: '波兰语' },
+  { code: 'cs', label: '捷克语' },
+  { code: 'sk', label: '斯洛伐克语' },
+  { code: 'hu', label: '匈牙利语' },
+  { code: 'ro', label: '罗马尼亚语' },
+  { code: 'hr', label: '克罗地亚语' },
+  { code: 'el', label: '希腊语' },
+  { code: 'ru', label: '俄语' },
+  { code: 'uk', label: '乌克兰语' },
+  { code: 'tr', label: '土耳其语' },
+  { code: 'id', label: '印度尼西亚语' },
+  { code: 'vi', label: '越南语' },
+  { code: 'ko', label: '韩语' },
 ]
 
 /**
