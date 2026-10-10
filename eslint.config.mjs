@@ -20,67 +20,15 @@ const NODE_SIDE = [
 const RENDERER_SIDE = ['src/renderer/**/*.ts', 'src/shared/**/*.ts']
 
 /**
- * The `no-restricted-*` block is not style. It encodes the project's hard
- * invariants (see ai/INVARIANTS.md) so that a violating change fails CI instead of
- * depending on a reviewer remembering. Loosening any of these is a decision that
- * belongs in docs/decisions.md, not in a commit.
+ * INV-1 与 INV-2 的守卫曾落在这里（`no-restricted-syntax` 拦 `executeJavaScript` /
+ * `insertCSS`，`no-restricted-imports` 拦 puppeteer 家族 / `whatsapp-web.js` / 协议库）。
  *
- * 注意它必须落在 `rules` 下面 —— 平铺在 config 层会被 ESLint 直接判为非法键
- * （报错是 `Unexpected key "no-restricted-syntax" found`）。
+ * **已由 [ADR-0043](../../docs/decisions.md) 撤销** —— 项目改用 `whatsapp-web.js` 承载会话与媒体，
+ * 那两条约束与承载方式不再兼容，因此整段移除（撤销的完整理由与迁移清单见该 ADR）。
+ *
+ * 仍然生效的边界是**渲染进程的进程边界**（G-1，见下面 RENDERER_SIDE 那段）：渲染进程不得
+ * import `electron` / `node:fs` / `node:path`。那不是本次要动的约束。
  */
-const invariantGuards = {
-  'no-restricted-syntax': [
-    'error',
-    {
-      selector: "MemberExpression[property.name='executeJavaScript']",
-      message:
-        'INV-1: never evaluate script inside the loaded page. It breaks the "page JS is untouched" guarantee that keeps this client off the unofficial-client radar. Attach at the Electron kernel layer instead (session downloads / protocol handlers).',
-    },
-    {
-      selector: "MemberExpression[property.name='executeJavaScriptInIsolatedWorld']",
-      message: 'INV-1: same as executeJavaScript — attach at the Electron kernel layer instead.',
-    },
-    {
-      selector: "MemberExpression[property.name='insertCSS']",
-      message:
-        'INV-1: styling the remote page is still page mutation. Keep local UI in src/renderer, not injected into the remote document.',
-    },
-  ],
-  'no-restricted-imports': [
-    'error',
-    {
-      paths: [
-        {
-          name: 'puppeteer',
-          message: 'INV-1: the browser-automation client family is explicitly out of scope.',
-        },
-        {
-          name: 'puppeteer-core',
-          message: 'INV-1: the browser-automation client family is explicitly out of scope.',
-        },
-        {
-          name: 'puppeteer-in-electron',
-          message: 'INV-1: the browser-automation client family is explicitly out of scope.',
-        },
-        {
-          name: 'whatsapp-web.js',
-          message: 'INV-1: driving the page through CDP is the approach this project rejects.',
-        },
-        {
-          name: 'wwebjs-electron',
-          message: 'INV-1: driving the page through CDP is the approach this project rejects.',
-        },
-      ],
-      patterns: [
-        {
-          group: ['*/baileys', '@whiskeysockets/*', 'whatsmeow*'],
-          message:
-            'INV-2: reimplementing the transport protocol is rejected (see docs/decisions.md ADR-0001).',
-        },
-      ],
-    },
-  ],
-}
 
 export default new FlatConfigComposer()
   .append({
@@ -116,7 +64,6 @@ export default new FlatConfigComposer()
   .append({
     files: NODE_SIDE,
     languageOptions: { globals: { ...globals.node } },
-    rules: invariantGuards,
   })
   .append({
     files: RENDERER_SIDE,
