@@ -12,7 +12,3 @@ contact_links:
   - name: 项目为什么这样设计
     url: https://github.com/edwinhuish/waachat/blob/main/docs/decisions.md
     about: 决策记录（ADR）。"为什么不用 XX 方案"的答案通常在这里。
-
-  - name: 从零开始的可行性研究
-    url: https://github.com/edwinhuish/waachat/blob/main/docs/research/feasibility-study.md
-    about: 立项前的完整调研，包含被否决的技术路线与理由。

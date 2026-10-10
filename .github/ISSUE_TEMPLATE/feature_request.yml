@@ -8,7 +8,8 @@ body:
       value: |
         提建议前请先看 [ai/INVARIANTS.md](https://github.com/edwinhuish/waachat/blob/main/ai/INVARIANTS.md)
         与 [docs/roadmap.md](https://github.com/edwinhuish/waachat/blob/main/docs/roadmap.md)。
-        有四条硬约束是不可协商的，围绕它们的建议不会被接受。
+        仍生效的硬约束是 **INV-3（不经手密钥与加密）** 与 **INV-4（不使用服务方的视觉标识资产）**，
+        围绕它们的建议不会被接受（原 INV-1 / INV-2 已由 ADR-0043 撤销）。
 
   - type: textarea
     id: problem
@@ -40,7 +41,6 @@ body:
       label: 与硬约束的关系
       description: 如果这个建议需要放宽其中任何一条，请直接说明，那会改变讨论的性质
       options:
-        - label: 这个建议不需要向被承载的页面注入脚本
-        - label: 这个建议不需要重实现任何私有传输协议
-        - label: 这个建议不需要触碰密钥或加密
+        - label: 这个建议不需要触碰密钥或加密（INV-3）
+        - label: 这个建议不需要使用服务方的视觉标识资产（INV-4）
         - label: 这个建议不需要新增原生依赖或系统级权限（若需要，请在下方说明）

@@ -83,5 +83,5 @@ body:
     attributes:
       label: 确认
       options:
-        - label: 我没有通过注入脚本或调试协议的方式"修好"它（那会改变问题的性质）
+        - label: 我没有临时改代码绕过接管逻辑来"修好"它（那会让复现变得不可能）
           required: true
