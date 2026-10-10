@@ -70,6 +70,14 @@ import {
 import { ACTION_BUTTON_CLASS } from '../src/shared/action-button'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
 import {
+  ARCHIVE_DIR_BASE_NAME,
+  DEFAULT_INSTANCE_ID,
+  INSTANCE_ARG,
+  instancePartition,
+  parseInstanceArg,
+  withInstanceSuffix,
+} from '../src/shared/instance'
+import {
   DEFAULT_SPELLCHECK_LANGUAGES,
   DEFAULT_UI_LANGUAGE,
   SPELLCHECK_LANGUAGES,
@@ -1274,6 +1282,77 @@ check(
     ),
   ),
   '有一个设置项只有界面上的一行，没有任何主进程代码读它',
+)
+
+// ---------------------------------------------------------------------------
+// 20. 实例隔离（多实例）
+// ---------------------------------------------------------------------------
+//
+// 多实例唯一的杠杆是"按实例改写 `userData`"（`main/index.ts`），而它成立依赖三件**顺序**上
+// 的事：先解析实例、再改写 userData/sessionData、最后才申请单实例锁。任何一件错位都**不会
+// 报错**，只会让两个实例抢同一份登录态（症状是随机要重新扫码）。因此这一节除了断言判据，
+// 还断言源码里的先后次序。
+
+section('实例隔离')
+
+check(
+  '默认实例派生的名字与改动之前逐字符相同（升级不该让用户的数据"消失"）',
+  instancePartition(DEFAULT_INSTANCE_ID) === 'persist:waachat' &&
+    withInstanceSuffix(ARCHIVE_DIR_BASE_NAME, DEFAULT_INSTANCE_ID) === 'WaaChat_files',
+  '默认实例的名字变了 —— 既有用户的登录态与归档会找不到自己',
+)
+check(
+  '不同实例派生出的分区名两两不同',
+  new Set([DEFAULT_INSTANCE_ID, 'work', 'home'].map(instancePartition)).size === 3,
+)
+check(
+  '非法实例名给的是错误，而不是"悄悄回落到默认实例"',
+  parseInstanceArg([INSTANCE_ARG, 'Work']).error !== null &&
+    parseInstanceArg([INSTANCE_ARG, 'default']).error !== null &&
+    parseInstanceArg([]).error === null,
+  '有一个非法输入被当成了合法实例',
+)
+
+const entrySource = source('../src/main/index.ts')
+
+/**
+ * 指针都带上调用形状（`app.setPath('userData',` 而不是 `setPath`）—— 上面那几段注释里就写着
+ * 这些方法名，只按名字找会指到注释上，于是这条断言在"代码顺序真的被改反"时也不变红。
+ */
+const atResolve = entrySource.indexOf('= resolveInstance()')
+const atUserData = entrySource.indexOf(`app.setPath('userData',`)
+const atSessionData = entrySource.indexOf(`app.setPath('sessionData',`)
+const atLock = entrySource.indexOf('if (!app.requestSingleInstanceLock())')
+
+check(
+  '启动顺序：解析实例 → 改 userData/sessionData → 才申请单实例锁',
+  atResolve > -1 && atUserData > atResolve && atSessionData > atUserData && atLock > atSessionData,
+  '顺序错了不会报错，只会让两个实例抢同一份登录态',
+)
+
+const pathSource = source('../src/main/paths.ts')
+
+check(
+  '按实例分叉的目录都由 withInstanceSuffix() 派生（不许另起一套命名）',
+  (pathSource.match(/withInstanceSuffix\(/g) ?? []).length >= 3,
+  '归档 / 缓存 / 日志三个目录里至少有一个没有跟着实例走',
+)
+check(
+  '没有写死的会话分区名了（分区必须按实例解析）',
+  !/SESSION_PARTITION|fromPartition\('persist:/.test(
+    entrySource + pathSource + source('../src/main/window.ts') + source('../src/main/ipc/index.ts'),
+  ),
+)
+check(
+  'shared/instance.ts 与 main/instance.ts 都不导入 electron（判据要能在没有 Electron 的环境里断言）',
+  !source('../src/shared/instance.ts').includes(`from 'electron'`) &&
+    !source('../src/main/instance.ts').includes(`from 'electron'`),
+)
+check(
+  '用户级 .desktop 条目与 autostart 条目都只由默认实例维护',
+  source('../src/main/integration/appicon.ts').includes('usingDefaultInstance()') &&
+    source('../src/main/integration/login.ts').includes('usingDefaultInstance()'),
+  '两个实例会互相覆写同一份系统条目，而外面看不出是谁写的',
 )
 
 // ---------------------------------------------------------------------------
