@@ -54,6 +54,7 @@
 | [0044](#adr-0044) | 承载架构定为**由 `whatsapp-web.js` 自己启动独立 Chromium**；Electron 降级为归档层与本地界面 | 已生效（承接 [ADR-0043](#adr-0043) 的未决项 2） |
 | [0045](#adr-0045) | **INV-3 保持不变并加固**：解密仍由上游页面代码完成（抽样审计见 `research/inv3-assessment.md`）；新增 `cryptoGuards`（`src/**`）+ 自检第 16 节 + 依赖纪律，并明确禁止读取 `Message.mediaKey` | 已生效（**修正** [ADR-0043](#adr-0043) 未决项 1 的前提） |
 | [0046](#adr-0046) | 开发模式自动把**只读探针**注入聊天窗口；**不给那扇窗口加 preload**、只装 API 不自动扫描、产物零变化 | 已生效（第一次真正使用 [ADR-0043](#adr-0043) 撤销 INV-1 带来的注入能力） |
+| [0047](#adr-0047) | 用页面模型的 **`filehash`** 作早期内容标识（实测它就是文件明文的 SHA-256，与归档 `hash` 同构）：下载前先与归档对账，命中即打开已有文件并作废这次下载；**把 `filehash` 从 INV-3 的禁用标识符里移出** | 已生效（**修正** [ADR-0045](#adr-0045) 对 `filehash` 的判定前提；INV-3 的实质未放宽） |
 
 ---
 
@@ -2290,3 +2291,85 @@ WA Web 上跑一段探针**来回答（客户端侧到底有没有 `fileSha256`�
   那段 JavaScript）与载体无关，可原样复用。
 - **它依赖探针文件留在仓库里的那个位置**：`test/unit/dev-probe-source.test.ts` 会断言它存在，
   于是挪动文件时是**变红**，而不是静默失效。
+
+---
+
+## ADR-0047
+
+**决定**：用客户端消息模型上的 **`filehash`** 作为**早期内容标识**，在下载发生前就与归档对账；
+命中则打开已有文件、作废这次下载。并把 `filehash` 从 INV-3 的禁用标识符里**移出**。
+
+1. **标识**：`msg.filehash`（`msg` / `msg.attributes` / `msg.mediaData` / `msg.mediaObject` 上都有）
+   是**文件内容的明文 SHA-256**，base64 编码的 32 字节。它与归档索引里的 `hash`（hex）
+   **是同一个值**，只差一次 base64→hex。
+2. **时机**：它随消息模型到达 —— **不需要点击、不需要下载、不需要密钥**。
+3. **守卫**：`filehash` 从 `cryptoGuards`（`eslint.config.mjs`）与自检第 16 节的禁用标识符里移出 ——
+   它原来的理由（[ADR-0045](#adr-0045)："它是密钥派生的输入"）**被实测推翻**。`mediaKey` 与全部
+   解密原语**不在本次放宽之列**，INV-3（不经手密钥与加密）的实质**未变**。
+4. **实现（H1）**：主进程在 `will-download` 时用 `webContents.executeJavaScript()` 向页面查询
+   "本次下载（文件名 + 字节数）对应哪条媒体消息、其 `filehash` 是什么"；命中归档则 `item.cancel()`
+   + `openPath()`；**任何不确定一律回落**到今天的行为。**不给聊天窗口加 preload**，沿用
+   [ADR-0046](#adr-0046) 的注入方式。
+
+**状态**：已生效（第一次把"下载前就拿到内容身份"用于**功能**，而不是诊断；INV-3 未放宽）
+
+**背景**：[`research/early-file-identity.md`](research/early-file-identity.md) 把"跳过下载"的钥匙锁在
+一个问题上一 —— **客户端模型有没有留下明文的 SHA-256**。P1 的结论（实测：没有 `fileSha256` /
+`fileEncSha256`，只有 `filehash` / `encFilehash` 家族）当时只能得出"岔路口到了"，而那个岔路口
+（`filehash` 是明文哈希还是密钥派生的 HMAC）**写在** §3 候选 3 里，判定是**后者**。
+
+**实测（2026-10-10，真机会话，252 条消息 / 26 条媒体）** 把那个判定推翻了：
+
+| 观测 | 结果 |
+|---|---|
+| `filehash` | **26/26 存在**，26 个互不相同，全部 44 字符（base64 的 32 字节）；覆盖 image / video / ptt / document / interactive 五类 |
+| `fileEncSha256` / `fileSha256` | **一处都没有**（连字段名都没有） |
+| `encFilehash` | 存在，但与明文哈希**零命中** |
+| 与归档对账 | 对**两个已归档文档**逐字节相同：`sha256(DZ2602 freight cost.xlsx)` = `sTNpud/…3c=` = 页面 `msg.filehash`；`sha256(INVOICE SELLADO.pdf)` = `JDaBgl0…9M=` = 页面 `msg.filehash` |
+
+即：**`filehash` 就是明文 SHA-256**，且**在点击之前就在模型上**（那 26 条一条都没点过）。
+
+**理由**：
+
+1. **只有它同时满足三个条件**：下载前可得、与归档键同构、不碰密钥。这三点正是
+   research §3 给"首选候选"定的门槛 —— 只是字段名不是当初预期的 `fileSha256`。
+2. **它不是密钥派生的，所以不撞 INV-3。** 我们可以自己对同一份明文算出同样的值（归档里的 `hash`
+   就是那么来的），读它不构成"解析密钥"或"实现解密"。
+3. **消息 ID 不是内容身份。** `msg.id` 只标识"哪一条消息"；同一文件转发/发到另一个会话就是另一条
+   消息 ⇒ 那条路必然漏命中（research §3 候选 5）。这次也不再依赖它。
+4. **上游 DOM 不可依赖。** 实测当前页面上 `.message-in` / `.message-out` /
+   `[data-icon="download"]` / `[data-testid="btn-download"]` 命中 **0** 个；且 `msg.id._serialized`
+   在**客户端模型上是 `undefined`**（那是 `whatsapp-web.js` 自己拼出来的字段）。而字段读取只依赖
+   消息模型本身。
+
+**被否决的替代方案**：
+
+- **用消息 ID（`msg.id` / `_serialized`）当键**：见理由 3；实测 `_serialized` 在客户端模型上不存在。
+- **拦截点击 + 解析 DOM / React Fiber**：实测那套选择器命中 0 个；且 AGENTS.md 明文禁止接管逻辑依赖
+  上游内部函数名或选择器（`docs/research/early-file-identity.md` §7 也把"点击关联"列为最脆的一环）。
+- **按文件名匹配本地文件**：文件名不是身份（[ADR-0031](#adr-0031) 之后同一内容可多名、同名可不同内容）。
+- **在页面里对明文 Blob 算 SHA-256**（hook `URL.createObjectURL` + `crypto.subtle`）：可行且不读
+  `filehash`，但要再放开 `subtle`、还要在页面里对大文件做摘要 —— `filehash` 已经现成，先不取。
+- **URL → hash 的持久化映射**（research §5 方案 A）：**仍然要完整下载一次**才能建表，达不到目的。
+- **继续只靠密文缓存（[ADR-0028](#adr-0028)）**：它省的是**网络**，但每次打开仍要把明文复制进临时
+  文件并算一遍哈希；本 ADR 省的是这一层。
+
+**影响**：
+
+- `eslint.config.mjs` 的 `cryptoGuards` 与 `scripts/check-capture.ts` 第 16 节各去掉 `filehash`
+  （理由注释同步改成实测结论）。
+- 新增页面侧查询脚本与主进程侧判定（`src/main/capture/early-identity.ts`），并在
+  `capture/download.ts` 的 `will-download` 里接入；判定逻辑是纯函数，由单测覆盖。
+- `docs/research/early-file-identity.md` **追加**一节（该文件只增不改），更正 §3 候选 3。
+- `docs/media-capture.md` 增补这一层；`docs/usage.md` 说明行为变更：命中时**不再产生新归档条目、
+  不更新归档时间、不新增文件名**。
+
+**已知限制**：
+
+- **`filehash` 由对端/服务方提供**（research §7.3）：命中时**至少比对一次大小**，**绝不用它直接
+  写索引** —— 错命中会导致"打开到错文件"，比多下载一次严重得多（`media-capture.md` 的
+  "宁可漏命中，不可错命中"）。
+- **图片/视频在客户端模型里没有文件名**（实测 5/5 文档有、15/15 图片无），所以"按文件名 + 字节数"
+  的关联主要覆盖会带文件名的媒体（文档为主）；其余靠"字节数唯一"兜一层，再不行就回落。
+- **关联依赖"下载时页面里查得到那条消息"**：切了会话、字段懒加载、上游改版都会让它落空 ——
+  一律回落，行为与今天完全一致。
