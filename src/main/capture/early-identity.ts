@@ -60,7 +60,7 @@ export function pageLookupExpression(name: string, bytes: number): string {
     };
 
     const nameOf = (msg) => str(msg, 'filename') || str(msg, 'name') || str(msg.mediaData, 'filename') || str(msg.mediaData, 'name');
-    const sizeOf = (msg) => num(msg, 'size') || num(msg.mediaData, 'size') || num(msg, 'filesize') || num(msg.mediaData, 'filesize');
+    const sizeOf = (msg) => num(msg, 'size') || num(msg, 'filesize') || num(msg, 'fileLength') || num(msg, 'byteLength') || num(msg.mediaData, 'size') || num(msg.mediaData, 'filesize') || num(msg.mediaData, 'fileLength');
     const hashOf = (msg) => str(msg, 'filehash') || str(msg.mediaData, 'filehash') || str(msg.mediaObject, 'filehash');
 
     const media = messages.filter((msg) => msg && (msg.mediaData || msg.mediaObject));
@@ -71,10 +71,17 @@ export function pageLookupExpression(name: string, bytes: number): string {
       if (!byName.length) return JSON.stringify({ hashes: [] });
       candidates = byName;
     }
+
+    // 字节数只用来**缩小范围**，不是判据：字段名取不到（上游改版）时"筛完为空"只说明我们
+    // 不知道它多大，**不等于没匹配上** —— 那就保留按名字得到的候选。真正的安全校验在主进程：
+    // 拿**下载本身**的大小去比归档记录，与这里的字段名无关。反过来，没有文件名（图片/视频
+    // 在模型里没有）时字节数是唯一线索，筛不空才敢用。
     if (BYTES !== null) {
       const bySize = candidates.filter((msg) => sizeOf(msg) === BYTES);
-      if (!bySize.length) return JSON.stringify({ hashes: [] });
-      candidates = bySize;
+      if (bySize.length) candidates = bySize;
+      else if (!NAME) return JSON.stringify({ hashes: [] });
+    } else if (!NAME) {
+      return JSON.stringify({ hashes: [] });
     }
 
     const hashes = [];

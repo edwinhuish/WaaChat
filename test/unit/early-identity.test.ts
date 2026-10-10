@@ -133,15 +133,34 @@ describe('H1：页面脚本（真跑一遍）', () => {
     expect(hashesOf(raw)).toEqual([])
   })
 
-  it('没有文件名（图片/视频在模型里没有）时才按字节数筛', () => {
+  it('没有文件名（图片/视频在模型里没有）时，字节数是唯一线索', () => {
     const messages: FakeMessage[] = [
       { type: 'image', mediaData: { size: 999, mimetype: 'image/jpeg' }, filehash: 'IMG_HASH' },
       documentMessage('a.xlsx', 1, REAL_BASE64),
     ]
 
     expect(hashesOf(runOnPage(messages, '', 999))).toEqual(['IMG_HASH'])
-    // 大小对不上 ⇒ 空
+    // 大小对不上、又没有文件名 ⇒ 空（没有别的线索可用）
     expect(hashesOf(runOnPage(messages, '', 1000))).toEqual([])
+    // 连下载大小都拿不到 ⇒ 同样放弃
+    expect(hashesOf(runOnPage(messages, '', 0))).toEqual([])
+  })
+
+  it('字节数字段取不到（上游改名）时，仍按文件名命中 —— 大小只用来缩范围', () => {
+    // 这条消息**没有**任何 size 字段：模拟上游把那个字段改名之后的样子。
+    const withoutSize: FakeMessage = {
+      type: 'document',
+      filename: '报告.pdf',
+      filehash: REAL_BASE64,
+      mediaData: { mimetype: 'application/pdf' },
+    }
+
+    expect(hashesOf(runOnPage([withoutSize], '报告.pdf', 11980))).toEqual([REAL_BASE64])
+
+    // 但同名的那几条给出不同哈希时，仍然放弃 —— 名字一样不代表内容一样。
+    const ambiguous: FakeMessage[] = [withoutSize, { ...withoutSize, filehash: OTHER_BASE64 }]
+
+    expect(pickContentHash(runOnPage(ambiguous, '报告.pdf', 11980))).toBeNull()
   })
 
   it('同一份内容被转发（两条消息、同一个哈希）仍算唯一', () => {
