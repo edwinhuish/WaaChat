@@ -5,46 +5,49 @@
 
 四条硬约束对应四条被否决的技术路线。它们不是为了"好看"而立的规矩，每一条都排除掉一整类风险。
 
+> **现状（[ADR-0043](../docs/decisions.md#adr-0043)）**：**INV-1 与 INV-2 已撤销**（项目改用
+> `whatsapp-web.js`）；仍生效的是 **INV-3 与 INV-4**。被撤销的两节保留在下面，作为历史说明。
+
 ---
 
-## INV-1 · 绝不向被承载的页面注入脚本
+## INV-1 · ~~绝不向被承载的页面注入脚本~~（**已撤销**）
 
-**陈述**：不使用 `webContents.executeJavaScript`、`executeJavaScriptInIsolatedWorld`、`insertCSS`；
-不让 preload 直连页面世界（`contextIsolation: false`）；不通过调试协议（CDP）驱动页面；
-不引入浏览器自动化库（puppeteer 家族、whatsapp-web.js 家族）。
+**状态**：**已由 [ADR-0043](../docs/decisions.md#adr-0043) 撤销**。现行路线以 `whatsapp-web.js`
+承载会话与媒体，而该库本身就通过调试协议（CDP）驱动页面，因此本约束及其 ESLint 守卫都已移出
+（`eslint.config.mjs` 的 `invariantGuards` 里那段 `no-restricted-syntax`）。
 
-**为什么**：本项目的立身之本是"页面里跑的东西与上游逐字节一致"。一旦注入，这条立论消失，
-产品性质从"宿主进程"变成"修改过的客户端"，而后者正是风险最高的那一类用法。
-技术上也不划算：上游已把内部状态对象从全局作用域收回，依赖内部结构的代码会随版本反复失效。
+**原陈述**（历史，保留以便追溯）：不使用 `webContents.executeJavaScript`、
+`executeJavaScriptInIsolatedWorld`、`insertCSS`；不让 preload 直连页面世界
+（`contextIsolation: false`）；不通过调试协议（CDP）驱动页面；不引入浏览器自动化库
+（puppeteer 家族、whatsapp-web.js 家族）。
 
-**自查**：
+**原理由**：本项目的立身之本是"页面里跑的东西与上游逐字节一致"。一旦注入，这条立论消失，
+产品性质从"宿主进程"变成"修改过的客户端"。**该立论随承载方式改变而失效**，这是撤销的依据。
+
+**原自查**（历史；下面的命令如今**应当有输出**，不再代表违规）：
 
 ```bash
-# 应当无输出
 rg -n 'executeJavaScript|insertCSS|contextIsolation:\s*false|webSecurity:\s*false' src/
 rg -n "from '(puppeteer|puppeteer-core|puppeteer-in-electron|whatsapp-web\.js|wwebjs-electron)'" src/
 ```
 
-ESLint 的两条规则（`no-restricted-syntax` / `no-restricted-imports`）会直接拦下。
-
-**被拦下时怎么办**：不要改 lint 配置。改为在 **Electron 内核层**寻找挂载点 ——
-下载事件（`session` 的 download 事件）或会话协议层（`session.protocol.handle`）。
-如果确实无法在内核层实现，那说明该需求超出了本项目的能力边界，应该记录下来而不是绕过去。
-
 ---
 
-## INV-2 · 绝不重实现传输协议
+## INV-2 · ~~绝不重实现传输协议~~（**已撤销**）
 
-**陈述**：不引入 whatsmeow、Baileys、WPPConnect、Venom 之类的协议库；
-不调用网页版的内部 API；不自行实现握手、密钥协商、消息编解码。
+**状态**：**已由 [ADR-0043](../docs/decisions.md#adr-0043) 撤销**。现行路线允许依赖网页版内部 API
+与协议驱动型客户端库；`eslint.config.mjs` 里那段 `no-restricted-imports` 已随之移除。
 
-**为什么**：见 [ADR-0001](../docs/decisions.md#adr-0001)。协议级客户端的能力缺口是结构性的
+**原陈述**（历史）：不引入 whatsmeow、Baileys、WPPConnect、Venom 之类的协议库；不调用网页版的
+内部 API；不自行实现握手、密钥协商、消息编解码。
+
+**原理由**：见 [ADR-0001](../docs/decisions.md#adr-0001)。协议级客户端的能力缺口是结构性的
 （无音视频通话、应用状态只读、广播列表不支持），且是被重点识别的一类客户端。
+**该风险已由项目所有者明确接受**（[ADR-0043](../docs/decisions.md#adr-0043) 理由 3）。
 
-**自查**：
+**原自查**（历史；如今**应当有输出**，不再代表违规）：
 
 ```bash
-# 应当无输出
 rg -n "whatsmeow|baileys|@whiskeysockets|WPPConnect|venom" --glob '!docs/**' --glob '!ai/**' .
 rg -n 'WAWeb|window\.Store|internalStore' src/
 ```
