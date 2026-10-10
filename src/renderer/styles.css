@@ -307,11 +307,6 @@ ul.archive li:last-child {
   color: var(--danger);
 }
 
-/* 按钮不参与拉伸，避免它被 flex 分配到与复选框不同的占位。 */
-.setting > button.action {
-  flex: 0 0 auto;
-}
-
 /* 图标预览。固定尺寸是必须的：让不同形状的图片自己决定行高，会让这一行忽高忽低。 */
 .icon-preview {
   flex: 0 0 auto;
@@ -332,7 +327,14 @@ ul.archive li:last-child {
   font-size: 20px;
 }
 
-/* 图标那一行有两个按钮，同样不参与拉伸，竖排以免把提示文字挤成窄条。 */
+/*
+ * 行的操作列：**永远是行的最后一个子节点**，因此按钮贴右边缘 —— 文字列（`.meta`）撑开
+ * 剩余宽度，这一列不参与拉伸（否则它会跟复选框抢位）。竖排是为了两个按钮时不会把提示
+ * 文字挤成窄条。两种行共用它：应用图标（两个按钮）与文件保存位置（一个）。
+ *
+ * 按钮本身的外观只有 `button.action` 一处（属性来自 `shared/action-button.ts`）——
+ * 两行因此不可能各长一套。
+ */
 .setting .actions {
   display: flex;
   flex-direction: column;

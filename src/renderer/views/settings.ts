@@ -25,6 +25,7 @@
  *     以为功能坏了 —— 理由与取舍见 ADR-0022。
  */
 
+import { actionButtonAttrs } from '../../shared/action-button'
 import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
@@ -286,6 +287,24 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
+   * 设置行里的动作按钮（"选择图片…" / "恢复默认" / "更改…"）。
+   *
+   * **它们必须长得一模一样**，因此视觉属性只有一个来源：`shared/action-button.ts`
+   * （断言在 `test/unit/action-button.test.ts` 与离线自检里）。这里只补上事件 ——
+   * 外观与行为分开，是因为"看起来一样"与"点了做什么"本来就是两件事。
+   */
+  function actionButton(options: {
+    readonly text: string
+    readonly disabled?: boolean
+    readonly onClick: () => void
+  }): HTMLButtonElement {
+    return h('button', {
+      ...actionButtonAttrs(options.text, options.disabled),
+      onClick: options.onClick,
+    })
+  }
+
+  /**
    * 应用图标。
    *
    * 三件事必须说清楚，否则用户会把"平台限制"读成"功能坏了"：
@@ -388,16 +407,12 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       h(
         'div',
         { class: 'actions' },
-        h('button', {
-          class: 'action',
-          type: 'button',
+        actionButton({
           text: busy ? '处理中…' : '选择图片…',
           disabled: busy,
           onClick: () => void pick(),
         }),
-        h('button', {
-          class: 'action',
-          type: 'button',
+        actionButton({
           text: '恢复默认',
           // 没有自定义图标时禁用它：那个按钮此时什么也不会发生。
           disabled: busy || !custom,
@@ -463,16 +478,14 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       render()
     }
 
+    /**
+     * 结构与应用图标那一行**同构**：文字列在前（`.meta` 撑开剩余宽度），操作列在最后
+     * （`.actions`，因此按钮贴右边缘）。按钮换个位置就会让两行的对齐规则各说各话 ——
+     * `test/unit/settings-view.test.ts` 把这条顺序钉住。
+     */
     return h(
       'div',
       { class: 'setting' },
-      h('button', {
-        class: 'action',
-        type: 'button',
-        text: running ? '迁移中…' : '更改…',
-        disabled: running,
-        onClick: () => void pick(),
-      }),
       h(
         'div',
         { class: 'meta' },
@@ -483,6 +496,15 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         }),
         h('div', { class: 'path', text: current.archiveDir }),
         locationStateNode(),
+      ),
+      h(
+        'div',
+        { class: 'actions' },
+        actionButton({
+          text: running ? '迁移中…' : '更改…',
+          disabled: running,
+          onClick: () => void pick(),
+        }),
       ),
     )
   }

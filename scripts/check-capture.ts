@@ -20,6 +20,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { ARCHIVE_FILE_MODE } from '../src/main/archive/blobs'
 import {
@@ -57,6 +58,7 @@ import {
   desktopEntryExec,
   isAcceptedIconName,
 } from '../src/shared/appicon'
+import { ACTION_BUTTON_CLASS } from '../src/shared/action-button'
 import { APP_ID, DESKTOP_FILE_NAME } from '../src/shared/constants'
 import {
   SETTINGS_ROW_ORDER,
@@ -833,6 +835,36 @@ check(
   SETTINGS_ROW_ORDER.length === Object.keys(DEFAULT_SETTINGS).length + 1 &&
     new Set(SETTINGS_ROW_ORDER).size === SETTINGS_ROW_ORDER.length &&
     SETTINGS_SECTIONS.every((section) => section.title.trim() !== '' && section.rows.length > 0),
+)
+
+// ---------------------------------------------------------------------------
+// 14. 设置窗口的按钮样式
+// ---------------------------------------------------------------------------
+//
+// 动作按钮（"选择图片…" / "恢复默认" / "更改…"）的外观只有两样东西：`shared/action-button.ts`
+// 里的 class 名，与 `styles.css` 里那条规则。两者对不上时**没有任何报错** —— 按钮只是突然
+// 变成浏览器默认样式，而"系统里看着有点不一样"不会有人当 bug 报。因此这里把那个连接钉住：
+// 基础规则、悬停效果、禁用态三条都必须在样式表里。
+//
+// 属性那一半（两处按钮除文字外完全一致）见 `test/unit/action-button.test.ts`。
+
+section('设置窗口的按钮样式')
+
+const stylesheet = readFileSync(
+  fileURLToPath(new URL('../src/renderer/styles.css', import.meta.url)),
+  'utf8',
+)
+
+check(
+  '动作按钮的 class 在样式表里有定义（改名却忘改 CSS 会让按钮静默失去外观）',
+  stylesheet.includes(`button.${ACTION_BUTTON_CLASS} {`) ||
+    stylesheet.includes(`button.${ACTION_BUTTON_CLASS},`),
+  `styles.css 里找不到 button.${ACTION_BUTTON_CLASS} 的基础规则`,
+)
+check(
+  '悬停与禁用态也定义在同一处（两处按钮因此共用同一套交互反馈）',
+  stylesheet.includes(`button.${ACTION_BUTTON_CLASS}:hover`) &&
+    stylesheet.includes(`button.${ACTION_BUTTON_CLASS}[disabled]`),
 )
 
 // ---------------------------------------------------------------------------
