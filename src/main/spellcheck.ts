@@ -34,6 +34,20 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
   }
 
   const available = ses.availableSpellCheckerLanguages
+
+  /**
+   * `available` 为空是一个**独立**的情况，不能与"勾的词典内核没有"混为一谈：它意味着内核此刻还没有
+   * 给出清单（它来得及的第一时间不一定在这里）。
+   *
+   * 此时**保持内核默认**，而不是顺着下面的逻辑把检查器关掉 —— 后者会把一个本来是默认开启的功能
+   * 变成默认关闭，而那正是本项目最讨厌的一类失败：安静的、看起来像"功能没做"。
+   */
+  if (available.length === 0) {
+    ses.setSpellCheckerEnabled(true)
+    logger.warn('spellcheck: the kernel reported no dictionaries yet; keeping its defaults')
+    return
+  }
+
   const { applied, rejected } = resolveSpellcheckLanguages(settings.spellcheckLanguages, available)
 
   /**
