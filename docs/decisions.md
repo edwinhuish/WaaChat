@@ -3048,7 +3048,9 @@ ADR-0041 又按实测修正了承诺 —— 挡掉的只有**内容**，上游�
    "每次归档注入一次、不受 `openOnCapture` 影响、超时回落"）：脚本仍按内容哈希反查那条消息，
    只是改读它的 `msg.id.remote`；`remote` 取不到时回落 `msg.from`，**绝不**回落
    `msg.id._serialized`（那个串是 `<fromMe>_<remote>_<消息ID>`，拿它当会话用等于给每条消息建
-   一个目录）。
+   一个目录）。真机实测（`docs/research/early-file-identity.md` §10）给出的形状是
+   `msg.id = {fromMe, remote, id, $1}` —— `remote` 就在那里，而 `_serialized` 在**客户端模型上
+   根本是 `undefined`**（那是 `whatsapp-web.js` 自己拼的），因此回落链里也不该有它。
 3. **净化白名单加回 `@`**：会话标识就是 JID，抹掉 `@` 之后目录名再也对不上会话。因此
    `normalizeChatId()` 的合法字符是 `[A-Za-z0-9._@-]`，其余（`/`、反斜杠、控制字符）照旧剥掉，
    空 / `.` / `..` / 点开头照旧整条拒掉。

@@ -45,8 +45,9 @@ export interface ArchiveRecord {
   /**
    * 会话的人类可读标签。
    *
-   * 可选，因为来源不保证可得：我们不读取页面内部数据（INV-1），只能从下载
-   * 事件与窗口标题等间接信息推断。拿不到就是 undefined，不要为此引入新的数据源。
+   * 可选，且目前**总是**空的（`capture/download.ts` 那边解释了为什么）：要从页面取名字，
+   * 而现在唯一读得到的会话字段是会话 JID（`msg.id.remote`，[ADR-0055]）—— 那是**标识**，
+   * 不是给人看的标签。拿不到就是 `undefined`，不要为此引入新的数据源。
    */
   readonly chatLabel?: string
 }

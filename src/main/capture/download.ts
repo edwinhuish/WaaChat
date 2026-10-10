@@ -321,14 +321,16 @@ async function finalize(input: FinalizeInput): Promise<void> {
     archiveStore().record({
       hash,
       name,
-      // 磁盘上的实际路径（相对归档目录：`<账号>/<消息ID>/files/<原名>`，冲突时文件名带哈希
-      // 后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0052）。
+      // 磁盘上的实际路径（相对归档目录：`<账号>/<会话ID>/files/<原名>`，冲突时文件名带哈希
+      // 后缀）：打开与"在文件夹中显示"靠它定位（ADR-0031 / ADR-0055）。
       storedName,
       bytes,
       mime,
       openedAt,
-      // chatLabel 仍刻意留空：会话标签要有可靠的来源，而现在唯一会读的页面字段是
-      // 内容哈希与消息ID（ADR-0047 / ADR-0052）。不要为了填上它而引入新的数据源。
+      // chatLabel 仍刻意留空：它是一个**给人看的标签**，而我们现在能拿到的只有会话 JID
+      // （`msg.id.remote`，ADR-0055）—— JID 不是标签，把它直接显示在列表上等于把对端号码
+      // 摆到界面上。真要填，得先有"JID → 人类可读名字"的来源，那是一个独立的决定。
+      // 不要为了填上它而顺手引入新的数据源。
     })
   } catch (error) {
     logger.warn('capture: failed to index file', {

@@ -54,7 +54,7 @@ export function describeDeleteFailure(reason: ArchiveDeleteFailure): string {
  *   2. 这是**可以**挽回的 —— 重新在聊天里点一次即可再次归档。不说的话用户会以为文件永久丢了；
  *   3. 同一份内容被别的消息引用时那一份不受影响 —— 否则"删了却没腾出空间"看起来像 bug；
  *   4. 删空的那一层目录会一并收掉（[ADR-0054]）—— 它是本次删除的一个**可见后果**，用户下次
- *      在文件管理器里翻归档时看不到那个消息目录了，不该等到那时才发现。
+ *      在文件管理器里翻归档时看不到那个会话目录了，不该等到那时才发现。
  */
 export function describeDeleteConfirmation(count: number, bytes: string): string {
   return [
