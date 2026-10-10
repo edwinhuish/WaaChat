@@ -78,18 +78,37 @@ interface ProbeWindow {
 /** 造一个 32 字节的可辨识摘要：同一个 seed 必然得到同一份字节。 */
 const digest = (seed: number) => Uint8Array.from({ length: 32 }, (_, index) => (index + seed) % 256)
 
+/**
+ * 每个实例默认就是**一次独立的上传** ⇒ 一个独立的媒体对象，因此 `directPath` 必须各自不同。
+ *
+ * ⚠️ 第一版把 `directPath` 写成常量：于是任何跨会话比较都把它判成"相同"，`compare()` 会据此
+ * 打出"两个通道是同一个媒体对象"的**假警报**，同时又把那个常量当成「内容身份」—— 正好与
+ * 那条警告相反。真实世界里 `directPath` 是每个对象一个。想模拟**转发/复用同一对象**时，
+ * 给两个 `documentMessage` 传同一个 `objectId`。
+ */
+let nextObjectId = 0
+
 /** 假的媒体模型：刻意把 `url` 做成**原型链上的 getter** —— 只看 own keys 的实现会漏掉它。 */
 class FakeMediaData {
   mimetype = 'application/pdf'
   filesize = 12345
-  directPath = '/v/t62.7118-24/1234567890_n.enc'
+  directPath: string
   // 用字符串而不是 Uint8Array：只要有人把"值"打出来，标记串就会出现在输出里。
   mediaKey: unknown = SECRET_MEDIA_KEY
   fileSha256: Uint8Array
   fileEncSha256: Uint8Array
   filehash: string
 
-  constructor({ shaSeed, filehash }: { shaSeed: number; filehash: string }) {
+  constructor({
+    shaSeed,
+    filehash,
+    objectId = `upload-${++nextObjectId}`,
+  }: {
+    shaSeed: number
+    filehash: string
+    /** 同一个 id = 同一个媒体对象（转发）。默认每个实例都是新对象。 */
+    objectId?: string
+  }) {
     /**
      * 两个哈希都随内容变化 —— 它们本来就是同一份内容的两种摘要。
      *
@@ -100,6 +119,8 @@ class FakeMediaData {
     this.fileSha256 = digest(shaSeed)
     this.fileEncSha256 = digest(shaSeed + 7)
     this.filehash = filehash
+    // 对象标识随实例变化 —— 这正是"控制项"能与"内容字段"区分开的前提。
+    this.directPath = `/v/t62.7118-24/${objectId}_n.enc`
   }
 
   get url(): string {
@@ -107,10 +128,15 @@ class FakeMediaData {
   }
 }
 
-const documentMessage = (filename: string, shaSeed: number, filehash = 'aaaa') => ({
+const documentMessage = (
+  filename: string,
+  shaSeed: number,
+  filehash = 'aaaa',
+  objectId?: string,
+) => ({
   type: 'document',
   filename,
-  mediaData: new FakeMediaData({ shaSeed, filehash }),
+  mediaData: new FakeMediaData({ shaSeed, filehash, objectId }),
 })
 
 /**
@@ -241,7 +267,7 @@ describe('探针：P1 字段识别', () => {
     const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
     const output = target.run()
 
-    expect(output).toContain('明文 SHA-256 字段（fileSha256 或等价物）：✓ 有')
+    expect(output).toContain('媒体本身的明文 SHA-256：✓ 有')
     expect(output).toContain('走方案 B')
     expect(output).not.toContain('必须先就 INV-3 立一条 ADR')
   })
@@ -291,9 +317,9 @@ describe('探针：P1 字段识别', () => {
 
     const output = target.run()
 
-    expect(output).toContain('明文 SHA-256 字段（fileSha256 或等价物）：✗ 没有值')
+    expect(output).toContain('媒体本身的明文 SHA-256：✗ 没有值')
     expect(output).toContain('名字在、但取不到值：msg.mediaData.fileSha256')
-    expect(output).toContain('mediaKey（只报了长度，没取值）：          ✗ 没有值')
+    expect(output).toContain('mediaKey（只报了长度，没取值）：✗ 没有值')
     // 结论不能就此断言"客户端没有" —— 必须把人指向载荷定位表。
     expect(output).toContain('载荷定位')
     expect(output).not.toContain('必须先就 INV-3 立一条 ADR')
@@ -322,9 +348,7 @@ describe('探针：载荷定位（载荷到底在哪一层）', () => {
     expect(row?.msg).toBe('1/1 bytes(len=32)')
     expect(row?.['msg.mediaData']).toBe('—')
     // 于是结论也必须是"取到值了"，并point出它在哪一层。
-    expect(target.output()).toContain(
-      '明文 SHA-256 字段（fileSha256 或等价物）：✓ 有（msg.fileSha256）',
-    )
+    expect(target.output()).toContain('媒体本身的明文 SHA-256：✓ 有（msg.fileSha256）')
     expect(target.output()).toContain('走方案 B')
   })
 
@@ -396,6 +420,31 @@ describe('探针：P2/P3 跨会话比较', () => {
 
     expect(target.compareRows().find((row) => row.字段 === 'fileSha256')?.相同).toBe('✗ 否')
     expect(target.output()).toContain('不能当去重键')
+  })
+
+  it('两个通道指向**同一个对象**（转发）时警告，且不把它算作「内容身份」', () => {
+    /**
+     * 转发复用同一个媒体对象 ⇒ 所有字段本来就会"相同"。少了控制项检查，
+     * "指纹相同 ⇒ 内容身份"这条推理就建立在一个**没被检查过**的前提上。
+     *
+     * 控制项自己也不该出现在「标识内容」的那一行：否则会与上面的警告自相矛盾。
+     */
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42, 'aaaa', 'forwarded')])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+    // 同内容、同对象 id（= 转发），只换了文件名。
+    target.run([documentMessage('转发副本.pdf', 42, 'aaaa', 'forwarded')])
+    target.win.__waProbe?.capture('B')
+
+    target.clear()
+    target.win.__waProbe?.compare()
+
+    const output = target.output()
+    expect(output).toContain('同一个媒体对象')
+    // 明文哈希仍可作内容身份；directPath 只能出现在控制项警告里，不能混进这一行。
+    expect(output).toContain('标识「内容」的字段：fileSha256')
+    expect(output).not.toMatch(/标识「内容」的字段：.*directPath/)
   })
 
   it('只 capture 了一个通道时给出提示，而不是静默返回', () => {
@@ -544,7 +593,7 @@ describe('探针：报告（整段贴出来给人看的那件东西）', () => {
     expect(report).toContain('## 载荷定位')
     expect(report).toContain('| fileSha256 |')
     expect(report).toContain('### 形状 msg.mediaData')
-    expect(report).toContain('明文 SHA-256 字段（fileSha256 或等价物）：✓ 有')
+    expect(report).toContain('媒体本身的明文 SHA-256：✓ 有')
     expect(report).toContain('P4 逐类型字段数')
     expect(report).toContain('### 通道 A')
     expect(report).toContain('扩展名：".pdf"（来源：msg.filename）')

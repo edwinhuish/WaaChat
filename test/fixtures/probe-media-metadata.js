@@ -23,6 +23,26 @@
  * getter 取不到值），而 `filehash` / `size` / `mimetype` 有值。只看字段名就会把
  * `mediaKey` 报成「✓ 有」，也会把一个**假阴性**（把"没在这一层"当成"客户端没有"）当成结论。
  *
+ * ⚠️ 也别被名字骗过去：`thumbnailSha256` / `thumbnailEncSha256` 是**缩略图**的那一对，
+ * 与"媒体文件本身的内容身份"无关。上一版按 /sha256/ 一匹配就把它们当成了 `fileSha256`，
+ * 于是打出了「走方案 B」。**假阳性比"没找到"危险得多**：它会让人以为路已经通了。
+ *
+ * ── 实测到的事实（2026-10-10，两次扫描，21 条媒体）─────────────────────────
+ *
+ * | 字段 | 在哪儿取到了值 |
+ * |---|---|
+ * | `directPath` / `mediaKey` / `mediaKeyTimestamp` / `deprecatedMms3Url` | `msg`（**消息**自身；`msg.mediaData` 上只有名字、没有值） |
+ * | `filehash` / `encFilehash`（各 44 字符 = base64 的 32 字节） | `msg`、`msg.attributes`、`msg.mediaData`、`msg.mediaObject` |
+ * | `thumbnailSha256` / `thumbnailEncSha256` | `msg`、`msg.attributes` |
+ * | `fileSha256` / `fileEncSha256` | **一处都没有**（连名字都没有） |
+ *
+ * 由此得到一个**只能靠 P2 判定**的问题：`filehash` 究竟是
+ * 「明文的 SHA-256（= 方案 B 要的那个值，与归档里的 `hash` 同构）」还是
+ * 「对密文做的 HMAC（mediaKey 经 HKDF 派生 ⇒ 属 INV-3）」。
+ * 命名上它与 `encFilehash` 成对，像 `fileSha256`/`fileEncSha256` 的改名；但研究文档
+ * （`early-file-identity.md` §3 候选 3）记的是后者。**P2 能直接区分**：
+ * 同一个文件在两个会话里**各自重新发送**，内容型必然相同、对象型必然不同。
+ *
  * ── 怎么跑（推荐）─────────────────────────────────────────────────────────
  * **开发模式下不需要手动粘贴**：`pnpm run dev` 时 `src/main/dev-probe.ts` 会在页面加载后
  * 把本文件自动装进聊天窗口（只在未打包时）。然后：
@@ -39,7 +59,10 @@
  * ── P2 / P3 怎么用（跨会话比较）────────────────────────────────────────────
  * WA Web 是单页应用，切聊天不刷新页面，所以 window.__waProbe 会跨会话存活：
  *   a. 在会话 A 里发送/查看那个文件 → __waProbe.scan() → __waProbe.capture('A')
- *   b. 切到会话 B，把**同一个文件**再发一次（P3 可以先改个名字再发）
+ *   b. 切到会话 B，把**同一个文件重新发送一次**（⚠️ **不是转发**；P3 可以先改个名字再发）
+ *      → 为什么要强调"不是转发"：转发会复用**同一个媒体对象**，两个通道于是本来就指向同一份
+ *        东西 —— 那时任何字段"相同"都不能证明它是内容身份。`compare()` 会检查这一点
+ *        （对象标识控制项：`directPath` / `deprecatedMms3Url`），相同就警告。
  *      → ⚠️ **必须再 scan 一次**：capture 记录的是"上一次扫描到的消息"，
  *         切会话本身不会更新它。忘了重扫 ⇒ 两个通道记的是同一条消息 ⇒ P2 得出**错误**结论。
  *      → __waProbe.capture('B')
@@ -50,9 +73,11 @@
  * ── 纪律（务必保持）──────────────────────────────────────────────────────
  * - 只读：不下载、不建 Blob、不发请求、不修改任何东西。
  * - 不读密钥：mediaKey 之类只报「长度」，绝不取值、绝不打印。
- * - filehash 是对**密文**做的 HMAC（macKey 由 mediaKey 经 HKDF 派生），属 INV-3 范围。
- *   默认**不**计算它的指纹。只有 P1 表明"客户端侧没有 fileSha256、只有 filehash"时，
- *   才把 CFG.fingerprintKeyDerived 改成 true 再跑一次 —— 那是为了确认岔路口存在，不是实现。
+ * - `filehash` 家族（`filehash` / `encFilehash`）**默认不指纹化**：它可能是对密文做的 HMAC
+ *   （macKey 由 mediaKey 经 HKDF 派生），那属 INV-3 范围。实测（2026-10-10）P1 已经表明
+ *   "客户端侧没有 fileSha256、只有这一族"，也就是说**岔路口到了**：要读它们的值来判定
+ *   内容/对象身份，就必须**先就 INV-3 立一条 ADR**（research §8），再把
+ *   `CFG.fingerprintKeyDerived` 改成 true。那是为了确认岔路口存在，不是实现。
  * - 报告里出现的一切（字段名、类型、长度、指纹前缀）都不是值：report() 之所以能整段贴出来，
  *   前提就是这条纪律没被破。
  */
@@ -69,8 +94,76 @@
   // 值描述：**只报类型与长度**，不报内容。这样不可能把密钥泄漏到控制台。
   // ---------------------------------------------------------------------
 
-  const FINGERPRINTABLE = new Set(['fileSha256', 'fileEncSha256'])
-  const KEY_DERIVED = new Set(['filehash'])
+  /**
+   * 可以指纹化的字段。
+   *
+   * **不含 `mediaKey`** —— 那是密钥本身，任何情况下都不读它的值（INV-3）。
+   * `filehash` 家族（`filehash` / `encFilehash`）默认也在外面：它到底是不是密钥派生的，
+   * 要靠 P2 判定（见文件头），所以读它的值需要先就 INV-3 表态。
+   * 这里列的是**实测里真的取到过值**的名字（2026-10-10）。
+   */
+  const FINGERPRINTABLE = new Set([
+    'fileSha256',
+    'fileEncSha256',
+    'thumbnailSha256',
+    'thumbnailEncSha256',
+    'directPath',
+    'deprecatedMms3Url',
+  ])
+
+  /**
+   * 对象标识的**控制项**：它们标识"哪一个媒体对象"，不是"哪一份内容"。
+   *
+   * 为什么必须有：P2 的推理前提是"两个会话**各自上传**了一次"。若第二次是**转发**（或上游
+   * 复用了同一个对象），两个通道本来就指向同一个对象 —— 那时任何字段"相同"都不能证明它是
+   * 内容身份。上一版没有这个控制项，于是"指纹相同 ⇒ 内容身份"可能建立在假前提上。
+   */
+  const OBJECT_MARKERS = new Set(['directPath', 'deprecatedMms3Url'])
+
+  /** 表里的 ★：媒体本身的明文 SHA-256（**不含**缩略图的）。 */
+  const isPlainSha = (name) => /^(file)?sha256$/i.test(name)
+
+  /** 表里的 ⚠ INV-3：`filehash` 家族 —— 保守起见在**判定之前**都不碰。 */
+  const isFileHashFamily = (name) => /filehash$/i.test(name)
+
+  /**
+   * 打开 `CFG.fingerprintKeyDerived` 之后才允许指纹化的**名字**（实测里存在的两个）。
+   *
+   * ⚠️ 这一步是**要就 INV-3 表态**的：它读的是可能由 mediaKey 派生的值。开关默认关着，
+   * 且开之前必须先立 ADR（见文件头与 `docs/research/early-file-identity.md` §8）。
+   */
+  const KEY_DERIVED = ['filehash', 'encFilehash']
+
+  /**
+   * P1 的候选项分成**组**，每个字段归入"第一个匹配的规则"。
+   *
+   * ⚠️ 为什么必须分组：`thumbnailSha256` 同样匹配 /sha256/i，但它是**缩略图**的明文哈希，与
+   * "媒体文件本身的内容身份"是两码事。上一版把它当成了 `fileSha256`，于是对着一份客户端根本
+   * 不暴露 fileSha256 的数据打出了「走方案 B —— 下载前就能拿到内容哈希」。这是**假阳性**，
+   * 比"没找到"危险得多：它会让人以为路已经通了（实测 2026-10-10 踩到）。
+   */
+  const CANDIDATE_RULES = [
+    {
+      key: 'plain',
+      label: '媒体本身的明文 SHA-256',
+      test: (name) => /^(file)?sha256$/i.test(name),
+    },
+    {
+      key: 'enc',
+      label: '媒体本身的密文 SHA-256',
+      test: (name) => /^(file)?encsha256$/i.test(name),
+    },
+    {
+      key: 'thumbnail',
+      label: '缩略图的 SHA-256（与媒体去重无关）',
+      test: (name) => /^thumbnail/i.test(name),
+    },
+    {
+      key: 'filehash',
+      label: 'filehash 家族（是不是密钥派生，**待判定**）',
+      test: isFileHashFamily,
+    },
+  ]
 
   /**
    * 载荷可能在哪：这些名字来自 wire 层（research §3），而客户端模型可能把它们搬进某个容器
@@ -508,8 +601,8 @@
           出现: `${info.count}/${mediaCount}`,
           类型: [...info.kinds].slice(0, 2).join(' | '),
           消息类型: [...info.types].join(','),
-          明文哈希: FINGERPRINTABLE.has(name) ? '★' : '',
-          密钥派生: KEY_DERIVED.has(name) ? '⚠ INV-3' : '',
+          明文哈希: isPlainSha(name) ? '★' : '',
+          密钥派生: isFileHashFamily(name) ? '⚠ INV-3' : '',
         })),
     }))
 
@@ -549,18 +642,18 @@
     notes.push('载荷定位：按「字段 × 容器」数**取到值**的条数，`—` = 那一层没取到值')
 
     // ---- 结论行：这是这个探针存在的唯一目的 ----
-    const findFields = (pattern, exclude) => {
-      const hits = []
+    const byRule = new Map(CANDIDATE_RULES.map((rule) => [rule.key, []]))
+    const mediaKeyHits = []
 
-      for (const [shape, fields] of shapeIndex) {
-        for (const [name, info] of fields) {
-          if (!pattern.test(name)) continue
-          if (exclude && exclude.test(name)) continue
-          hits.push({ shape, name, valued: hasValue(info) })
-        }
+    for (const [shape, fields] of shapeIndex) {
+      for (const [name, info] of fields) {
+        const hit = { shape, name, valued: hasValue(info) }
+        if (/^mediakey$/i.test(name)) mediaKeyHits.push(hit)
+
+        /** 归入**第一个**匹配的规则 —— 顺序即优先级（`thumbnail*` 因此不会被当成媒体本身的）。 */
+        const rule = CANDIDATE_RULES.find((candidate) => candidate.test(name))
+        if (rule) byRule.get(rule.key).push(hit)
       }
-
-      return hits
     }
 
     const siteOf = (hit) => `${hit.shape}.${hit.name}`
@@ -573,26 +666,24 @@
       return '✗ 连字段名都没有'
     }
 
-    const plainSha = findFields(/sha256/i, /enc/i)
-    const encSha = findFields(/encsha256/i)
-    const keyDerived = findFields(/^filehash$/i)
-    const mediaKeyField = findFields(/mediakey/i)
-    const hasPlain = plainSha.some((hit) => hit.valued)
-    const hasKeyDerived = keyDerived.some((hit) => hit.valued)
+    const hasPlain = byRule.get('plain').some((hit) => hit.valued)
+    const hasFileHashFamily = byRule.get('filehash').some((hit) => hit.valued)
 
     console.group('[探针] P1 结论（以**取到值**为准）')
-    say('info', `明文 SHA-256 字段（fileSha256 或等价物）：${verdict(plainSha)}`)
-    say('info', `密文 SHA-256 字段（fileEncSha256）：      ${verdict(encSha)}`)
-    say('info', `密钥派生的 filehash：                    ${verdict(keyDerived)}`)
-    say('info', `mediaKey（只报了长度，没取值）：          ${verdict(mediaKeyField)}`)
+    for (const rule of CANDIDATE_RULES) {
+      say('info', `${rule.label}：${verdict(byRule.get(rule.key))}`)
+    }
+    say('info', `mediaKey（只报了长度，没取值）：${verdict(mediaKeyHits)}`)
     say(
       'info',
       hasPlain
         ? '→ 走方案 B：下载前就能拿到内容哈希，**不需要**动 INV-3。下一步做 P2（跨会话比较）。'
-        : hasKeyDerived
-          ? '→ ⚠️ 只有 filehash（密钥派生）取到了值：要么退回方案 A，要么必须先就 INV-3 立一条 ADR。'
-          : '→ ⚠️ 两个 SHA-256 都没取到值：先看上面的「载荷定位」表 —— 它按「字段 × 容器」数**取到值**的条数，' +
-            '能指出载荷在哪一层。**全为 0** 才说明客户端确实没留（那时才轮到画 INV-3 的线）。',
+        : hasFileHashFamily
+          ? '→ ⚠️ 媒体本身没有 fileSha256/fileEncSha256；取到值的是 `filehash` 家族（各 44 字符 = base64 的' +
+            ' 32 字节）。它**到底是"明文的 SHA-256"还是"对密文做的 HMAC（密钥派生）"，只能靠 P2 判定**——' +
+            '要读它的值必须先就 INV-3 表态（见文件头与 research §8）。'
+          : '→ ⚠️ 媒体本身两个 SHA-256 都没取到值：先看上面的「载荷定位」表 —— 它按「字段 × 容器」数**取到值**的' +
+            '条数，能指出载荷在哪一层。**全为 0** 才说明客户端确实没留（那时才轮到画 INV-3 的线）。',
     )
     console.groupEnd()
 
@@ -787,19 +878,41 @@
 
     console.table(rows)
 
+    /**
+     * 对象标识的**控制项**先判：P2 的推理前提是"两个会话各自上传了一次"。若第二次是**转发**
+     * （或上游复用了同一个对象），两个通道本来就指向同一个对象 —— 那时任何字段"相同"都不能
+     * 证明它是内容身份。少了这一步，"指纹相同 ⇒ 内容身份"会建立在一个**没被检查过**的前提上。
+     */
+    const sameObject = rows.filter((row) => OBJECT_MARKERS.has(row.字段) && row.相同 === '✓ 是')
+    if (sameObject.length) {
+      say(
+        'warn',
+        `⚠️ 对象标识控制项跨会话相同（${sameObject.map((row) => row.字段).join('、')}）⇒ 两个通道很可能是**同一个媒体对象**` +
+          '（转发、或上游复用了它）。这时任何字段"相同"都**不能**证明它是内容身份 —— ' +
+          '请让第二次是**把同一个文件重新发送一次**（不是转发），再重扫、重新 capture。',
+      )
+    }
+
+    /**
+     * 「内容身份」只能由**非控制项**裁定：对象标识（`directPath` / `deprecatedMms3Url`）按定义
+     * 只回答"哪一个对象"，上面已单独判过。若把它们算进来，转发场景下会打出
+     * "标识「内容」的字段：directPath" —— 与上一条警告正好相反（实测踩到）。
+     */
+    const contentRows = rows.filter((row) => !OBJECT_MARKERS.has(row.字段))
+
     /** 只有"两侧都拿得到指纹"的行才算真的比过；否则会重演零次比较那类缺陷。 */
-    const compared = rows.filter((row) => row.相同 !== '—').length
+    const compared = contentRows.filter((row) => row.相同 !== '—').length
     if (compared === 0) {
       say(
         'warn',
-        `${names.size} 个字段里没有一个两侧都拿得到指纹（值不是字节/字符串，指纹算不出来）` +
+        `${contentRows.length} 个可当内容身份的字段里没有一个两侧都拿得到指纹（值不是字节/字符串，指纹算不出来）` +
           ' —— 仍然**没有比过**。请把报告贴出来一起看这些字段的类型。',
       )
       record(a, b, rows)
       return
     }
 
-    const contentLike = rows.filter((row) => row.相同 === '✓ 是').map((row) => row.字段)
+    const contentLike = contentRows.filter((row) => row.相同 === '✓ 是').map((row) => row.字段)
     say(
       'info',
       contentLike.length
