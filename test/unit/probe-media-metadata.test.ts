@@ -169,12 +169,20 @@ describe('探针：定位消息集合', () => {
 
     expect(output).toContain('没找到消息集合')
     expect(output).toContain('这本身就是一个结论')
+    // 失败分支必须给出**可执行的下一步**，否则这一趟就白跑了。
+    expect(output).toContain('webpackChunk')
   })
 
   it('没有带媒体的消息时给出可读提示，而不是静默通过', () => {
     const target = makeProbeTarget([{ type: 'chat' }])
+    const output = target.run()
 
-    expect(target.run()).toContain('没有带媒体的消息')
+    expect(output).toContain('没有带媒体的消息')
+    /**
+     * "字段是懒加载的" 与 "这个会话确实没有媒体" 是两回事，但症状一样。
+     * 它们对结论的影响完全不同：懒加载意味着**下载前拿不到标识**，方案 B 就废了一半。
+     */
+    expect(output).toContain('懒加载')
   })
 })
 
@@ -283,6 +291,32 @@ describe('探针：P2/P3 跨会话比较', () => {
     target.win.__waProbe?.compare()
 
     expect(target.output()).toContain('至少 capture 两个通道')
+  })
+
+  it('忘了重跑探针就 capture 时会警告 —— 否则会静默地得出错误结论', () => {
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+
+    target.clear()
+    // 切了会话却没有重新扫描：这时 lastMedia 还指着上一条消息。
+    target.win.__waProbe?.capture('B')
+
+    expect(target.output()).toContain('没有重新扫描')
+  })
+
+  it('每个通道之间都重跑时不报警', () => {
+    const target = makeProbeTarget([documentMessage('报告.pdf', 42)])
+
+    target.run()
+    target.win.__waProbe?.capture('A')
+
+    target.clear()
+    target.run()
+    target.win.__waProbe?.capture('B')
+
+    expect(target.output()).not.toContain('没有重新扫描')
   })
 
   it('capture 默认不碰密钥派生的 filehash（INV-3）', () => {

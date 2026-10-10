@@ -21,8 +21,11 @@
  *
  * ── P2 / P3 怎么用（跨会话比较）────────────────────────────────────────────
  * WA Web 是单页应用，切聊天不刷新页面，所以 window.__waProbe 会跨会话存活：
- *   a. 在会话 A 里发送/查看那个文件，然后：__waProbe.capture('A')
- *   b. 切到会话 B，把**同一个文件**再发一次（P3 可以先改个名字再发），然后：__waProbe.capture('B')
+ *   a. 在会话 A 里发送/查看那个文件 → **跑一次本探针** → __waProbe.capture('A')
+ *   b. 切到会话 B，把**同一个文件**再发一次（P3 可以先改个名字再发）
+ *      → ⚠️ **必须再跑一次本探针**：capture 记录的是"上一次扫描到的消息"，
+ *         切会话本身不会更新它。忘了重跑 ⇒ 两个通道记的是同一条消息 ⇒ P2 得出**错误**结论。
+ *      → __waProbe.capture('B')
  *   c. 比较：__waProbe.compare()
  *      → 指纹相同 = 这个字段标识的是「内容」；不同 = 只是「对象」
  *
@@ -211,6 +214,11 @@
     console.warn('[探针] 没找到消息集合。试过的路径：')
     tried.forEach((line) => console.warn('   ', line))
     console.warn('[探针] 这本身就是一个结论：上游把这个内部结构换了位置。请把它记下来。')
+    console.warn(
+      '[探针] 顺手在同一个控制台里再跑这两条，连输出一起贴回来（用来定位新的入口）：\n' +
+        '   Object.keys(window).filter((k) => /require|Store|webpack/i.test(k))\n' +
+        '   Object.keys(window).filter((k) => /^webpackChunk/.test(k))',
+    )
     return
   }
 
@@ -244,6 +252,8 @@
 
   state.lastMedia = lastMedia
   state.runs.push({ at: new Date().toISOString(), label, mediaCount, messages: messages.length })
+  /** 第几次扫描产生了 current 的 lastMedia —— capture 靠它判断"有没有忘掉重跑"。 */
+  state.lastScanRun = state.runs.length
 
   console.info(`[探针] 消息集合来自：${label}`)
   console.info(
@@ -254,6 +264,10 @@
   if (!mediaCount) {
     console.warn(
       '[探针] 当前会话里没有带媒体的消息。请先打开一个含有图片/视频/文档/语音的会话再跑一次。',
+    )
+    console.warn(
+      '[探针] 如果这个会话明明有媒体，那说明媒体字段是**懒加载**的 —— 把那个文件点开一次（或点一次下载）\n' +
+        '        再重跑本探针。⚠️ "字段要到点了才出现" 本身就是要记录的数据点：它决定能不能"下载前"拿到标识。',
     )
     return
   }
@@ -333,6 +347,20 @@
       指纹: picked,
     }
 
+    /**
+     * 忘了重跑就 capture，两个通道会记下**同一条消息** —— 于是 compare() 会报"指纹相同"，
+     * 而 P2 的结论正好相反（那个字段其实只标识对象）。这是**静默的错误结论**，
+     * 比报错更糟，所以这里必须出声。
+     */
+    if (state.capturedInRun === state.lastScanRun) {
+      console.warn(
+        `[探针] ⚠️ 自上次扫描以来没有重新扫描过。capture 取的是"上一次扫描到的消息"，` +
+          `切了会话就必须**再跑一次本探针**，否则通道 "${channel}" 与上一个通道可能是同一条消息，` +
+          'compare() 会给出**错误**的结论。',
+      )
+    }
+
+    state.capturedInRun = state.lastScanRun
     console.info(`[探针] 已记录通道 "${channel}"：`, state.captured[channel])
     return state.captured[channel]
   }
