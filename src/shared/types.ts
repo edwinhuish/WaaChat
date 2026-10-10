@@ -219,6 +219,61 @@ export type ArchiveMigrationResult =
     }
 
 // ---------------------------------------------------------------------------
+// 批量导出（[ADR-0050]）
+// ---------------------------------------------------------------------------
+
+/**
+ * 单条导出失败的结构化原因。文案只有一份，在 `shared/export.ts`（与
+ * {@link MigrationFailure} 同样的理由：主进程与界面各写一份，同一个失败会有两种措辞）。
+ */
+export type ArchiveExportFailure =
+  /** 归档里已经没有这条记录的正文（被容量淘汰、或磁盘上的文件被手工删掉）。 */
+  | 'missing'
+  /** 目标目录里同名到挑不出可用名字（序号与哈希后缀全部被占）。 */
+  | 'name-taken'
+  /** 复制失败（权限、磁盘满、目标被挂载成只读）。 */
+  | 'write-failed'
+
+/**
+ * 逐条失败。
+ *
+ * `name` 是**记录里的那个名字**（导出的目标名也从它来），界面要靠它说清"哪一个失败了"。
+ * `null` 表示这条记录**本身**已经不在索引里了（在用户点"导出"与主进程读到它之间被淘汰）
+ * —— 连名字都取不到，而"n 条记录已经不在归档里了"仍然要说出来。
+ */
+export interface ArchiveExportFailureItem {
+  readonly name: string | null
+  readonly reason: ArchiveExportFailure
+}
+
+/** 整次调用被拒绝的原因。这类失败**一个文件都没写**。 */
+export type ArchiveExportRejection =
+  /** 目标目录是归档目录本身、或落在它里面。 */
+  | 'inside-archive'
+  /** 选中的条数超过一次导出的上限。 */
+  | 'too-many'
+  /** 目标目录读不了（不存在、不是目录、不可写）。 */
+  | 'target-unusable'
+
+/**
+ * 一次批量导出的结果。
+ *
+ * 三态（与 {@link ArchiveMigrationResult} 同构）：
+ *   - `null`（不在这个类型里）：用户在选择目录时取消 —— 不是错误，界面不留任何痕迹；
+ *   - `ok: false`：整次调用被拒绝，一个文件都没写；
+ *   - `ok: true`：真的写了，可能**部分失败**（`failed` 逐条给出）。
+ */
+export type ArchiveExportResult =
+  | {
+      readonly ok: true
+      /** 目标目录。要显示出来 —— 用户才知道文件去哪了。 */
+      readonly dir: string
+      readonly exported: number
+      readonly failed: readonly ArchiveExportFailureItem[]
+    }
+  | { readonly ok: false; readonly reason: ArchiveExportRejection; readonly detail: string }
+
+// ---------------------------------------------------------------------------
 // 密文缓存的切换（静默转换，见 ADR-0027 / ADR-0028）
 // ---------------------------------------------------------------------------
 

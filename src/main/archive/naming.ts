@@ -98,12 +98,76 @@ export function archiveNameCandidates(rawName: string, hash: string): string[] {
  * 之一。同时按 {@link MAX_NAME_LENGTH} 截断主干：加上后缀之后可能超出限制。
  */
 function withHashSuffix(name: string, suffix: string): string {
+  return withMarker(name, ` (${suffix})`)
+}
+
+/**
+ * 把后缀插在**扩展名之前**并截断主干。两种后缀（归档的哈希、导出的序号）共用它 ——
+ * 扩展名必须留在最后一段的理由见 {@link archiveNameCandidates}。
+ */
+function withMarker(name: string, marker: string): string {
   const dot = name.lastIndexOf('.')
   const extension = dot <= 0 ? '' : name.slice(dot)
   const stem = dot <= 0 ? name : name.slice(0, dot)
 
-  const marker = ` (${suffix})`
   const room = Math.max(1, MAX_NAME_LENGTH - extension.length - marker.length)
 
   return `${stem.slice(0, room)}${marker}${extension}`
+}
+
+// ---------------------------------------------------------------------------
+// 导出的重名处理（[ADR-0050]）
+// ---------------------------------------------------------------------------
+
+/**
+ * 序号后缀最多尝试到这个数，之后就退回归档那套哈希后缀。
+ *
+ * 999 是个"现实中到不了"的数：它的作用是**保证终止**，而不是限制用户 —— 一个目录里同时
+ * 存在 999 个同名文件时，多试几次也没有意义了。
+ */
+const EXPORT_NAME_ATTEMPTS = 999
+
+/**
+ * 导出时的序号后缀：`报告.pdf` + 1 → `报告 (1).pdf`（[ADR-0050] 决定 2）。
+ *
+ * **与归档那套哈希后缀是两套规则，因为约束不同**：归档的名字要存进索引，而序号会随目录内容
+ * 漂移（删掉 `(1)` 之后下一个同名文件又变成 `(1)`）⇒ 索引里存的名字一旦失配，症状就是"搜得到
+ * 但打不开"（见 {@link archiveNameCandidates} 的原话）。导出目录里**没有索引**，名字是一次性
+ * 的，而 ` (1)` 是用户在文件管理器里熟悉的形态 —— 哈希后缀在那种场合看起来像文件名坏了。
+ */
+export function numberedName(name: string, index: number): string {
+  return withMarker(name, ` (${index})`)
+}
+
+/**
+ * 导出时该用哪个名字：给定"目标目录里已经被占用的名字"，返回第一个可用的。
+ *
+ * 纯函数 —— 只看一个集合，因此重名规则能脱离文件系统直接断言（{@link archiveNameCandidates}
+ * 同理）。候选顺序：
+ *
+ *   报告.pdf → 报告 (1).pdf … 报告 (999).pdf → 报告 (8 位哈希).pdf → …（完整哈希）
+ *
+ * 最后一级仍然可能全部被占（用户手工造了这些名字，或同一份内容已经导出过）。那时返回 `null`，
+ * 让调用方按"挑不出名字"**逐条报告** —— 而不是硬写一个可能覆盖别人的名字：覆盖是不可逆的，
+ * 多报一条失败是可恢复的。
+ */
+export function pickExportName(
+  taken: ReadonlySet<string>,
+  rawName: string,
+  hash: string,
+): string | null {
+  const plain = sanitizeFileName(rawName)
+  if (!taken.has(plain)) return plain
+
+  for (let index = 1; index <= EXPORT_NAME_ATTEMPTS; index += 1) {
+    const candidate = numberedName(plain, index)
+    if (!taken.has(candidate)) return candidate
+  }
+
+  // `archiveNameCandidates()` 的第一个候选就是 `plain`（已知被占），因此从第二个开始看。
+  for (const candidate of archiveNameCandidates(rawName, hash).slice(1)) {
+    if (!taken.has(candidate)) return candidate
+  }
+
+  return null
 }
