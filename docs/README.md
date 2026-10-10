@@ -97,7 +97,7 @@ waachat/
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
-│   │   ├── notice.ts               主动提示用户：系统通知 + 节流（目前只有"预览被挡下"这一条）
+│   │   ├── notice.ts               主动提示用户：系统通知 + 节流（接管失效、PDF 预览被挡下）
 │   │   ├── account.ts              账号标识：读页面记下的 WID / `wa_ul` cookie（ADR-0039）
 │   │   ├── paths.ts                目录布局：归档位置、账号层次目录、缓存根与索引路径
 │   │   ├── capture/                ★ 核心：内核层接管
@@ -107,7 +107,7 @@ waachat/
 │   │   │   ├── download.ts         下载事件接管 → 归档 + 打开
 │   │   │   ├── pdf.ts              「禁用 PDF 预览」的路径：挡预览页 + 把响应降级成下载（ADR-0029/0030）
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
-│   │   │   └── health.ts           接管状态的唯一事实源（界面据此显示）
+│   │   │   └── health.ts           接管失效的事实源（markCaptured / markFailure / onHealthChange）
 │   │   ├── archive/                ★ 核心：本地归档（账号 / 月份分层，见 ADR-0039）
 │   │   │   ├── blobs.ts            归档落盘：原文名命名 + <年>/<月>/ 分层 + 只读 + 去重（硬链接）+ 清扫、淘汰（M2）
 │   │   │   ├── naming.ts           文件名净化 + 同名冲突的候选名（纯函数，安全关键，可单测）
@@ -130,7 +130,7 @@ waachat/
 │   │   ├── files.html              「文件列表」窗口：结构 + CSP
 │   │   ├── files.ts                它的装配（只挂文件列表）
 │   │   ├── settings.html           「设置」窗口：结构 + CSP
-│   │   ├── settings.ts             它的装配（设置项 + 接管状态）
+│   │   ├── settings.ts             它的装配（只挂设置项；顶栏已去掉，见 ADR-0042）
 │   │   ├── fatal.ts                装配失败的兜底提示（两个入口共用）
 │   │   ├── bridge.ts               取 window.waachat（拿不到就抛）
 │   │   ├── env.d.ts                window.waachat 的类型声明
@@ -139,8 +139,7 @@ waachat/
 │   │   ├── styles.css
 │   │   └── views/
 │   │       ├── archive.ts          文件列表窗口的主体（含搜索竞态处理）
-│   │       ├── settings.ts         偏好设置（含应用图标；行序与容量上限的状态提示见下）
-│   │       └── health.ts           设置窗口顶栏的接管状态
+│   │       └── settings.ts         偏好设置（含应用图标；行序与容量上限的状态提示见下）
 │   │
 │   └── shared/                     ← 主进程与渲染进程共享的纯类型/常量（不含副作用）
 │       ├── action-button.ts        设置行里动作按钮的视觉属性（一个来源，两处按钮因此一致）
@@ -150,7 +149,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
-│       ├── preview-notice.ts       「禁用 PDF 预览」挡下预览时的提示文案与节流判据（纯函数，可单测）
+│       ├── notice.ts               主动提示用户的文案与判据：接管失效、PDF 预览被挡下（纯函数，可单测）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
