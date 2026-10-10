@@ -41,7 +41,7 @@ import type {
 } from '../../shared/types'
 import { planMigration } from '../archive/migrate'
 import { relocateArchive } from '../archive/relocate'
-import { archiveStore } from '../archive/store'
+import { archiveStore, enforceArchiveLimit } from '../archive/store'
 import { planCacheConversion } from '../capture/cache-files'
 import { switchCiphertextCache } from '../capture/cache-switch'
 import {
@@ -186,6 +186,13 @@ function applySettings(value: unknown): Settings {
 
   // 自启是"设置 → 系统"的副作用，必须在这里落地，否则用户会以为开关坏了。
   if ('launchAtLogin' in patch) applyLaunchAtLogin(next.launchAtLogin)
+
+  /**
+   * 改小了归档上限就**立刻**按新值淘汰一次（[ADR-0048]）：不这么做的话，占用会一直停在
+   * 旧值上直到下一次下载 —— 用户刚把上限调到 1 GB、界面却还说占了 5 GB，那是"设置没生效"
+   * 的观感。调大或改成"不限制"时这次淘汰是空操作（`enforceLimit()` 自己判）。
+   */
+  if ('archiveMaxBytes' in patch) enforceArchiveLimit(next.archiveMaxBytes)
 
   logger.info('settings updated', { keys: Object.keys(patch).join(',') })
   return presentSettings(next)

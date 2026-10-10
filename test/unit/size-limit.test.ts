@@ -13,7 +13,11 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { SIZE_LIMIT_ENFORCED, describeSizeLimit } from '../../src/shared/size-limit'
+import {
+  SIZE_LIMIT_ENFORCED,
+  describeSizeLimit,
+  sizeLimitBytesFromInput,
+} from '../../src/shared/size-limit'
 
 const GB = 1024 * 1024 * 1024
 
@@ -85,10 +89,10 @@ describe('describeSizeLimit（密文缓存）', () => {
 })
 
 describe('describeSizeLimit（值的处理）', () => {
-  it('今天是"未实现"这一档（改这里必须同时改界面文案的断言）', () => {
+  it('归档上限已执行、缓存上限还没有（改这里必须同时改界面文案的断言）', () => {
     // 断言事实而不是断言宣传：这两项落地时，这条用例会红，提醒把 `SIZE_LIMIT_ENFORCED`
     // 与 docs/usage.md 一起改掉。
-    expect(SIZE_LIMIT_ENFORCED.archiveMaxBytes).toBe(false)
+    expect(SIZE_LIMIT_ENFORCED.archiveMaxBytes).toBe(true)
     expect(SIZE_LIMIT_ENFORCED.cacheMaxBytes).toBe(false)
   })
 
@@ -115,5 +119,28 @@ describe('describeSizeLimit（值的处理）', () => {
     expect(state.inputValue).not.toBe('0')
     // 精确值仍然出现在提示里。
     expect(state.hint).toContain('1 B')
+  })
+})
+
+describe('sizeLimitBytesFromInput（界面 → 设置）', () => {
+  it('GB 数字换成字节，且与 describeSizeLimit 用的是同一套换算', () => {
+    expect(sizeLimitBytesFromInput('2')).toBe(2 * GB)
+
+    // 显示 → 解析 → 显示 必须稳定：两处各写一套基数时，症状是"我设了 1.5 GB、它按别的
+    // 数字执行"，而界面上看不出来。
+    const parsed = sizeLimitBytesFromInput('1.5')
+    expect(describeSizeLimit('archiveMaxBytes', parsed, true).inputValue).toBe('1.5')
+  })
+
+  it('空串 / 0 / 负数 / 非数字一律按"不限制"（0）处理', () => {
+    for (const text of ['', '   ', '0', '-1', 'abc', 'NaN', 'Infinity']) {
+      expect(sizeLimitBytesFromInput(text)).toBe(0)
+    }
+  })
+
+  it('清空输入框 = 不限制：与 describeSizeLimit 对同一个值的解释一致', () => {
+    const cleared = sizeLimitBytesFromInput('')
+
+    expect(describeSizeLimit('archiveMaxBytes', cleared, true).unlimited).toBe(true)
   })
 })

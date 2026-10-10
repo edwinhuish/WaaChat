@@ -15,7 +15,7 @@ import Database from 'better-sqlite3'
 import type { ArchiveQuery, ArchiveRecord, ArchiveStats } from '../../shared/types'
 import { logger, redactPath } from '../logger'
 import { indexDbPath, setArchiveDir } from '../paths'
-import { ensureArchiveDir, usage } from './blobs'
+import { ensureArchiveDir, evictToFit, usage, type EvictionCandidate } from './blobs'
 import schema from './schema.sql?raw'
 
 /** 目录权限收紧：索引里含"谁在何时打开过什么文件"这类元数据。 */
@@ -173,8 +173,8 @@ export class ArchiveStore {
   /**
    * 删除指定内容哈希的所有记录。
    *
-   * **必须**与 `blobs.evictToFit()` 的返回值配合使用：文件被删而记录还在，
-   * 会产生"搜得到但打不开"的悬空记录。这个方法的调用者负有同步义务。
+   * 生产路径上由 {@link enforceLimit} 调用：文件被删而记录还在，会产生"搜得到但打不开"的
+   * 悬空记录（[ADR-0048]）。直接调用它的地方必须自己保证文件也确实被删掉了。
    */
   deleteByHashes(hashes: readonly string[]): number {
     if (hashes.length === 0) return 0
@@ -187,6 +187,62 @@ export class ArchiveStore {
     })
 
     return run(hashes)
+  }
+
+  /**
+   * 让归档占用不超过 `maxBytes`：按最久未访问优先淘汰**内容**，并在**同一次调用里**
+   * 删掉它们的索引记录（[ADR-0048]）。
+   *
+   * 两步不能分开 —— 只删文件会留下悬空记录，只删记录则会把仍然躺在磁盘上的正文"遗忘"。
+   * 淘汰顺序的依据是索引里的 `opened_at`（一份内容的最后访问时间取它所有记录的最大值）。
+   *
+   * @param maxBytes 上限（字节）。`<= 0` 或不合法一律按"不限制"处理（与设置里对同一个值的
+   *   解释一致）。
+   * @returns 删掉的**索引记录**条数（便于日志确认）。没触发淘汰时为 0。
+   */
+  enforceLimit(maxBytes: number): number {
+    if (!Number.isFinite(maxBytes) || maxBytes <= 0) return 0
+
+    const evicted = evictToFit(maxBytes, this.#evictionCandidates())
+    return this.deleteByHashes(evicted)
+  }
+
+  /**
+   * 索引里每份内容的一条聚合视图（[ADR-0048] 的淘汰排序依据）。
+   *
+   * 在 JS 里聚合而不是写一条 `GROUP BY … GROUP_CONCAT`：`stored_name` 是文件名，**可以含
+   * 逗号**，而 `GROUP_CONCAT` 默认的分隔符正是逗号 —— 那会把一个名字切成两个，于是淘汰
+   * 会去删一个不存在的路径。名字这种数据不能用分隔符拼接。
+   */
+  #evictionCandidates(): EvictionCandidate[] {
+    const rows = this.#db
+      .prepare('SELECT hash, stored_name, bytes, opened_at FROM files')
+      .all() as Pick<FileRow, 'hash' | 'stored_name' | 'bytes' | 'opened_at'>[]
+
+    const byHash = new Map<string, { bytes: number; names: Set<string>; lastAccessedAt: number }>()
+
+    for (const row of rows) {
+      // 空 stored_name → 旧布局下正文就是哈希名（与 `toRecord()` 的回落一致）。
+      const name = row.stored_name ?? row.hash
+      const entry = byHash.get(row.hash) ?? {
+        bytes: 0,
+        names: new Set<string>(),
+        lastAccessedAt: 0,
+      }
+
+      entry.names.add(name)
+      entry.bytes = Math.max(entry.bytes, row.bytes)
+      // 任何一条记录被打开都算这份内容被打开过，因此取最大值而不是最小值。
+      entry.lastAccessedAt = Math.max(entry.lastAccessedAt, row.opened_at)
+      byHash.set(row.hash, entry)
+    }
+
+    return [...byHash].map(([hash, entry]) => ({
+      hash,
+      bytes: entry.bytes,
+      storedNames: [...entry.names],
+      lastAccessedAt: entry.lastAccessedAt,
+    }))
   }
 
   stats(): ArchiveStats {
@@ -209,6 +265,24 @@ let instance: ArchiveStore | null = null
 export function archiveStore(): ArchiveStore {
   instance ??= new ArchiveStore()
   return instance
+}
+
+/**
+ * 让归档占用不超过 `maxBytes`，失败只记日志（[ADR-0048]）。
+ *
+ * 三个触发点（启动、每次归档落盘之后、改上限设置时）都用它，因此把"永不抛错"收在这里：
+ * 淘汰是一次维护动作，它失败了也不该让"打开一个文件"或"改一个设置"失败。真正需要知道的
+ * 是日志与占用数字，而不是一个能把主流程打断的异常。
+ *
+ * @returns 删掉的索引记录条数（便于日志确认）。
+ */
+export function enforceArchiveLimit(maxBytes: number): number {
+  try {
+    return archiveStore().enforceLimit(maxBytes)
+  } catch (error) {
+    logger.warn('archive: failed to enforce the size limit', { reason: (error as Error).name })
+    return 0
+  }
 }
 
 /**

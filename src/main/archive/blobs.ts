@@ -40,6 +40,7 @@ import {
   createReadStream,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -442,15 +443,96 @@ export function wipeArchive(): number {
 }
 
 /**
- * 按最久未访问优先淘汰，直到占用不超过上限。
+ * 一份内容在索引里的聚合视图（[ADR-0048] 的淘汰排序依据）。
  *
- * 返回被删掉的文件哈希列表，供调用方同步清理索引 —— **索引不清理会留下悬空记录**，
- * 表现为"搜得到但打不开"。这一步的返回值不能被忽略。
+ * 由 `store.ts` 从 `files` 表聚合后**注入**，而不是在这里查索引 —— `archive/` 内部的方向是
+ * `store → blobs`（`store.ts` 要 import 这里的 `ensureArchiveDir` 与 `usage`），反过来会成环。
  *
- * TODO(M2)：实现。需要与 archive/store.ts 配合，避免删掉索引中仍被引用的文件。
- * 当前是**空实现**，因此 `archiveMaxBytes` 现在不生效 —— 界面上的对应项应显示为
- * "尚未启用"，而不是假装有效（见 docs/roadmap.md M2）。
+ * "一份内容"即同一个 `hash`；它的 `storedNames` 是硬链接到同一个 inode 的多个磁盘名。
  */
-export function evictToFit(_maxBytes: number): string[] {
-  return []
+export interface EvictionCandidate {
+  readonly hash: string
+  /** 这份内容的大小（字节）。同 `hash` 的每条记录都相同，取最大值即可。 */
+  readonly bytes: number
+  /** 索引认识的磁盘名（相对归档目录）。可能不止一个（同一内容多名 / 跨月）。 */
+  readonly storedNames: readonly string[]
+  /** 最后一次被访问的时间（Unix 毫秒）：同 `hash` 的所有记录里 `opened_at` 的最大值。 */
+  readonly lastAccessedAt: number
+}
+
+/**
+ * 按最久未访问优先淘汰，直到占用不超过 `maxBytes`。
+ *
+ * 返回**被淘汰内容的哈希**（去重），供调用方在**同一次操作里**删掉对应的索引记录 ——
+ * **索引不清理会留下悬空记录**，表现为"搜得到但打不开"。这一步的返回值不能被忽略
+ * （`store.ts` 的 `enforceLimit()` 是唯一的生产调用方）。
+ *
+ * 三条边界：
+ *  1. **只删候选里给出的名字**（候选由索引聚合而来）⇒ 归档目录里索引不认识的文件一个都不碰；
+ *  2. **一份内容的全部名字一起删**：它们共用一个 inode，删一个名字不释放任何字节；
+ *  3. **有一个名字删不掉，这份内容的哈希就不回传**：那意味着磁盘上还有它的字节，
+ *     索引记录必须继续指着它 —— 否则会得到一个"文件还在、却谁也说不清它是谁"的结果。
+ *     单个名字的失败不影响后面的候选（淘汰是维护动作，不该让它打断一次落盘）。
+ *
+ * @param maxBytes 上限（字节）。`<= 0` 或不合法一律按"不限制"处理 —— 与设置里对同一个值的
+ *   解释一致（配置被改坏时，"不清理"是唯一安全的解释）。
+ * @param candidates 索引给出的内容聚合视图，顺序不限（这里会按 `lastAccessedAt` 升序排）。
+ */
+export function evictToFit(maxBytes: number, candidates: readonly EvictionCandidate[]): string[] {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return []
+
+  const before = usage().bytes
+  if (before <= maxBytes) return []
+
+  const ordered = [...candidates].sort((left, right) => left.lastAccessedAt - right.lastAccessedAt)
+
+  let freed = 0
+  const counted = new Set<number>()
+  const evicted: string[] = []
+
+  for (const candidate of ordered) {
+    // 已经降到达标就停：不做"多删一点更安全"，淘汰的每一份都是用户的数据。
+    if (before - freed <= maxBytes) break
+
+    let removable = true
+
+    for (const storedName of candidate.storedNames) {
+      const path = archiveFilePath(storedName)
+
+      try {
+        // lstat 而不是 stat：归档目录内不跟随符号链接（INVARIANTS G-4）。
+        const stat = lstatSync(path)
+
+        // 名字还在、却不是普通文件：不动它，也不当它被淘汰（记录要留着）。
+        if (!stat.isFile()) {
+          removable = false
+          continue
+        }
+
+        unlinkSync(path)
+
+        // 同一份内容的多个名字共用一个 inode：字节只算一次，否则会把"释放量"高估。
+        if (counted.has(stat.ino)) continue
+        counted.add(stat.ino)
+        freed += stat.size
+      } catch (error) {
+        /**
+         * 两种情况在这里合并了：
+         *  - 名字本来就不在（索引记录已悬空）→ 清掉它是**修复**，不算失败；
+         *  - 名字在、但删不掉（权限、被占用）→ 记录必须留着，否则磁盘上会多出一份"没有
+         *    索引指向的正文"，而它永远不会再被淘汰。
+         */
+        if (existsSync(path)) {
+          removable = false
+          logger.warn('archive: could not evict a stored file', {
+            reason: (error as Error).name,
+          })
+        }
+      }
+    }
+
+    if (removable) evicted.push(candidate.hash)
+  }
+
+  return evicted
 }

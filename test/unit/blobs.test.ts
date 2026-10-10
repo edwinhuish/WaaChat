@@ -34,9 +34,11 @@ import {
   archiveFilePath,
   commitFromTemp,
   ensureArchiveDir,
+  evictToFit,
   sweepTempFiles,
   tempPath,
   usage,
+  type EvictionCandidate,
 } from '../../src/main/archive/blobs'
 import { setArchiveDir } from '../../src/main/paths'
 
@@ -316,5 +318,115 @@ describe('usage', () => {
     // 多了一个名字，但占用不变 —— 这正是硬链接的意义，也是"按 inode 去重"存在的理由。
     expect(bodies()).toContain(`${DIR}/b.pdf`)
     expect(usage()).toEqual(before)
+  })
+})
+
+describe('evictToFit', () => {
+  /** 一份内容的最小候选（一个名字）。每条用例只关心自己那几个字段。 */
+  function candidate(
+    result: { hash: string; bytes: number; storedName: string },
+    lastAccessedAt: number,
+  ): EvictionCandidate {
+    return {
+      hash: result.hash,
+      bytes: result.bytes,
+      storedNames: [result.storedName],
+      lastAccessedAt,
+    }
+  }
+
+  it('按最久未访问优先淘汰，而不是按候选给出的顺序', async () => {
+    const stamp = Date.now()
+    const old = await commitFromTemp(staged(`evict-old-${stamp}`), `旧-${stamp}.pdf`, {
+      openedAt: AT,
+    })
+    const fresh = await commitFromTemp(staged(`evict-new-${stamp}`), `新-${stamp}.pdf`, {
+      openedAt: AT,
+    })
+
+    // 只差一个字节：必须删掉至少一份。
+    const evicted = evictToFit(usage().bytes - 1, [
+      // 顺序刻意把"新的"排在前面 —— 排序必须由 lastAccessedAt 决定。
+      candidate(fresh, 2_000),
+      candidate(old, 1_000),
+    ])
+
+    expect(evicted).toEqual([old.hash])
+    expect(existsSync(archiveFilePath(old.storedName))).toBe(false)
+    expect(existsSync(archiveFilePath(fresh.storedName))).toBe(true)
+  })
+
+  it('一份内容的全部磁盘名一起删（删一个硬链接名不释放任何字节）', async () => {
+    const stamp = Date.now()
+    const content = `evict-alias-${stamp}`
+    const first = await commitFromTemp(staged(content), `别名甲-${stamp}.pdf`, { openedAt: AT })
+    const second = await commitFromTemp(staged(content), `别名乙-${stamp}.pdf`, {
+      openedAt: AT,
+      findStored: (hash) => (hash === first.hash ? first.storedName : null),
+    })
+
+    // 两个名字、同一个 inode。目标正好是"腾出这一份内容"。
+    const evicted = evictToFit(usage().bytes - content.length, [
+      { ...candidate(first, 1), storedNames: [first.storedName, second.storedName] },
+    ])
+
+    expect(evicted).toEqual([first.hash])
+    expect(existsSync(archiveFilePath(first.storedName))).toBe(false)
+    expect(existsSync(archiveFilePath(second.storedName))).toBe(false)
+  })
+
+  it('只删候选里的名字：归档目录里索引不认识的文件一个都不碰', async () => {
+    const stamp = Date.now()
+    const known = await commitFromTemp(staged(`evict-known-${stamp}`), `已知-${stamp}.pdf`, {
+      openedAt: AT,
+    })
+
+    // 用户自己放进来（或旧布局遗留）的文件：索引不认识它，淘汰没有理由碰它。
+    mkdirSync(join(archive, DIR), { recursive: true })
+    const strayRelative = `${DIR}/来路不明-${stamp}.pdf`
+    writeFileSync(archiveFilePath(strayRelative), 'not ours')
+
+    const evicted = evictToFit(usage().bytes - known.bytes, [candidate(known, 1)])
+
+    expect(evicted).toEqual([known.hash])
+    expect(existsSync(archiveFilePath(known.storedName))).toBe(false)
+    // 关键：已经清到"不超过上限"了，但这个来路不明的文件还在 —— 上限宁可没能达成，
+    // 也不去删一个我们说不清来历的文件。
+    expect(existsSync(archiveFilePath(strayRelative))).toBe(true)
+  })
+
+  it('候选指向的文件已经不在时，回传它的哈希（清掉那条悬空记录就是修复）', async () => {
+    const stamp = Date.now()
+    const live = await commitFromTemp(staged(`evict-live-${stamp}`), `活着-${stamp}.pdf`, {
+      openedAt: AT,
+    })
+    const dangling = 'a'.repeat(64)
+
+    const evicted = evictToFit(usage().bytes - live.bytes, [
+      {
+        hash: dangling,
+        bytes: 999,
+        storedNames: [`${DIR}/早就没了-${stamp}.pdf`],
+        lastAccessedAt: 1,
+      },
+      candidate(live, 2),
+    ])
+
+    // 悬空的那份释放不了字节，于是循环继续到下一份 —— 两条哈希都该回传。
+    expect(evicted).toEqual([dangling, live.hash])
+    expect(existsSync(archiveFilePath(live.storedName))).toBe(false)
+  })
+
+  it('上限 <= 0（不限制）或占用已达标时不删任何东西', async () => {
+    const stamp = Date.now()
+    const kept = await commitFromTemp(staged(`evict-keep-${stamp}`), `保留-${stamp}.pdf`, {
+      openedAt: AT,
+    })
+
+    expect(evictToFit(0, [candidate(kept, 1)])).toEqual([])
+    expect(evictToFit(-1, [candidate(kept, 1)])).toEqual([])
+    expect(evictToFit(Number.NaN, [candidate(kept, 1)])).toEqual([])
+    expect(evictToFit(usage().bytes, [candidate(kept, 1)])).toEqual([])
+    expect(existsSync(archiveFilePath(kept.storedName))).toBe(true)
   })
 })

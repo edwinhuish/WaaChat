@@ -20,15 +20,16 @@
  * `test/helpers/sqlite.ts` —— 探测在**子进程**里跑，正是为了能识别最后那种情况。
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 // 类型导入会被编译期擦除，因此这一行**不会**在模块加载时拉起 better-sqlite3。
 import type { ArchiveStore } from '../../src/main/archive/store'
 import type { ArchiveRecord } from '../../src/shared/types'
+import { archiveFilePath, ensureArchiveDir, usage } from '../../src/main/archive/blobs'
 import { setArchiveDir } from '../../src/main/paths'
 import { probeSqlite } from '../helpers/sqlite'
 
@@ -261,5 +262,121 @@ describe.skipIf(available)('ArchiveStore（跳过）', () => {
     // 这条用例存在的唯一目的是让"为什么跳过了"出现在测试输出里，
     // 而不是留下一个没有解释的 skip 标记：原因里包含崩在哪一段与什么信号。
     expect(available).toBe(false)
+  })
+})
+
+/**
+ * 归档容量上限的淘汰（[ADR-0048]）。
+ *
+ * 与上一组分开：这里需要**真实存在于磁盘上**的正文（`usage()` 数的是文件，不是索引记录），
+ * 而且每条用例都从空的索引与空的归档目录开始 —— 淘汰会删记录，共用一份数据会让用例之间
+ * 互相影响，"哪条先跑"就变成了断言的一部分。
+ */
+describe.skipIf(!available)('ArchiveStore.enforceLimit', () => {
+  /** 每条用例自己的归档目录：`usage()` 读的是这个全局值。 */
+  const DIR = 'unknown-account/files/2026-10'
+
+  let root: string
+  let media: string
+  let instance: ArchiveStore | null = null
+  let sequence = 0
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'waachat-limit-'))
+    media = join(root, 'media')
+  })
+
+  beforeEach(async () => {
+    rmSync(media, { recursive: true, force: true })
+    setArchiveDir(media)
+    ensureArchiveDir()
+
+    // 每条用例一个新库：淘汰会删记录，复用同一个库等于把上一条用例的状态写进断言。
+    sequence += 1
+    const module = await import('../../src/main/archive/store')
+    instance = new module.ArchiveStore(join(root, `index-${String(sequence)}.sqlite`))
+  })
+
+  afterEach(() => {
+    instance?.close()
+    instance = null
+  })
+
+  afterAll(() => {
+    setArchiveDir('')
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  /** 已初始化的 store（访问器而不是非空断言：失败时给出原因，而不是一串 TypeError）。 */
+  function store(): ArchiveStore {
+    if (instance === null) throw new Error('ArchiveStore 未初始化（beforeEach 未成功执行）')
+    return instance
+  }
+
+  /** 造一份**真实存在于磁盘上**的正文，并把它记进索引（`bytes` 必须与磁盘一致）。 */
+  function archived(hash: string, name: string, content: string, openedAt: number): string {
+    const storedName = `${DIR}/${name}`
+    const path = archiveFilePath(storedName)
+
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+    store().record({ hash, name, storedName, bytes: content.length, mime: '', openedAt })
+
+    return storedName
+  }
+
+  it('删掉最久未访问的那份：文件与索引记录一起消失（不留悬空记录）', () => {
+    const oldest = archived('1'.repeat(64), '最早.pdf', 'x'.repeat(10), 1_000)
+    const newest = archived('2'.repeat(64), '较新.pdf', 'y'.repeat(10), 2_000)
+
+    // 两个 10 字节的文件，上限放在"只够留一份"的位置上。
+    const removed = store().enforceLimit(usage().bytes - 10)
+
+    expect(removed).toBe(1)
+    expect(existsSync(archiveFilePath(oldest))).toBe(false)
+    expect(existsSync(archiveFilePath(newest))).toBe(true)
+
+    // 关键：索引必须同步清掉 —— 只删文件会留下"搜得到但打不开"的悬空记录。
+    expect(store().list({ text: '最早' })).toHaveLength(0)
+    expect(store().list({ text: '较新' })).toHaveLength(1)
+  })
+
+  it('一份内容的所有记录一起删（同一个 hash = 同一份内容）', () => {
+    const hash = '3'.repeat(64)
+    const primary = archived(hash, '甲.pdf', 'z'.repeat(10), 1_000)
+
+    // 第二个名字：硬链接到同一个 inode，因此占用不变，但索引里是**另一条记录**。
+    const alias = `${DIR}/乙.pdf`
+    linkSync(archiveFilePath(primary), archiveFilePath(alias))
+    store().record({
+      hash,
+      name: '乙.pdf',
+      storedName: alias,
+      bytes: 10,
+      mime: '',
+      openedAt: 2_000,
+    })
+
+    expect(store().byHash(hash)).toHaveLength(2)
+
+    const removed = store().enforceLimit(1)
+
+    // 两条记录一起消失：只删一条会留下一个指向"其实已经不存在的内容"的名字。
+    expect(removed).toBe(2)
+    expect(store().byHash(hash)).toHaveLength(0)
+    expect(existsSync(archiveFilePath(primary))).toBe(false)
+    expect(existsSync(archiveFilePath(alias))).toBe(false)
+  })
+
+  it('上限为 0（不限制）或占用没超标时什么都不做', () => {
+    const kept = archived('4'.repeat(64), '保留.pdf', 'k'.repeat(10), 1_000)
+
+    expect(store().enforceLimit(0)).toBe(0)
+    expect(store().enforceLimit(-1)).toBe(0)
+    expect(store().enforceLimit(Number.NaN)).toBe(0)
+    expect(store().enforceLimit(usage().bytes)).toBe(0)
+
+    expect(existsSync(archiveFilePath(kept))).toBe(true)
+    expect(store().list({ text: '保留' })).toHaveLength(1)
   })
 })

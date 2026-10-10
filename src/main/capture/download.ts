@@ -30,7 +30,7 @@ import {
   sweepTempFiles,
   tempPath,
 } from '../archive/blobs'
-import { archiveStore } from '../archive/store'
+import { archiveStore, enforceArchiveLimit } from '../archive/store'
 import { failureReason } from '../errors'
 import { openPath } from '../integration/open'
 import { hashPrefix, logger } from '../logger'
@@ -49,11 +49,26 @@ export function attachDownloadCapture(ses: Session, getSettings: () => Settings)
   // 里面那些链接会让"文件看起来还在占空间"（[ADR-0031]）。
   removeLegacyOpenDir()
 
+  // 启动时按当前上限淘汰一次（[ADR-0048]）：上次退出时可能超额，而用户下次设了更小的
+  // 上限、又没再下载任何东西的话，占用会一直停在旧值上 —— 那看起来像设置没生效。
+  enforceLimit(getSettings)
+
   ses.on('will-download', (_event, item, contents) => {
     handleDownload(item, getSettings, contents)
   })
 
   logger.info('capture: download layer attached')
+}
+
+/**
+ * 按设置里的上限淘汰一次（[ADR-0048]）。
+ *
+ * 失败只记日志：淘汰是维护动作，不该让它打断一次落盘或一次打开（`enforceArchiveLimit()`
+ * 本身也不抛错）。`records` 是被删掉的**索引记录**条数。
+ */
+function enforceLimit(getSettings: () => Settings): void {
+  const records = enforceArchiveLimit(getSettings().archiveMaxBytes)
+  if (records > 0) logger.info('capture: archive limit enforced', { records })
 }
 
 function handleDownload(
@@ -233,6 +248,15 @@ async function finalize(input: FinalizeInput): Promise<void> {
    * 只取**一次**时钟 —— 两处各取一次，跨月的那一毫秒就会得到"索引说 10 月、文件在 9 月"。
    */
   const openedAt = Date.now()
+
+  /**
+   * 先腾地方、再写这一份（[ADR-0048]）。顺序是刻意的：**在落盘之前**淘汰，这一份就绝不会
+   * 被它自己的那次淘汰挑中 —— 用户刚点的文件如果因为"上限太小"而当场被删，随后打开必然
+   * 失败。代价是占用可能短暂高出上限一份文件的大小，下一次落盘时收回。
+   *
+   * 临时文件（`.part-*`）是点开头的，不计入 `usage()`，因此这里统计的只是已归档的正文。
+   */
+  enforceLimit(input.getSettings)
 
   try {
     ;({ hash, storedName, bytes, created } = await commitFromTemp(temp, name, {

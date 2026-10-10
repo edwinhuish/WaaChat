@@ -786,8 +786,8 @@ check('拿不准时不动作（既没有开关也没有会话信息）', !usesWa
 //
 // 两层断言。
 //
-// **状态**：归档 / 缓存的容量上限今天**不会被执行**（`blobs.evictToFit()` 是空实现、
-// `protocol.ts` 里是 TODO(M3)），因此界面上那两行必须如实说出来。反过来，把"尚未生效"
+// **状态**：归档上限**已经会被执行**（`store.enforceLimit()`，[ADR-0048]），缓存上限还
+// 没有（`protocol.ts` 里是 TODO(M3)）—— 界面上那两行必须如实说出来。反过来，把"尚未生效"
 // 钉死在没有上限的配置上同样是错的 —— 默认的 `archiveMaxBytes` 就是 0（不限制），而
 // "不限制"恰恰是**正在照配置执行**的那一种：它字面意思就是不清理。徽标只在"设了上限却
 // 不会被执行"时出现。
@@ -834,8 +834,8 @@ check(
     describeSizeLimit('cacheMaxBytes', -1, false).unlimited,
 )
 check(
-  '当前事实与文档一致：两项上限都还没被执行',
-  !SIZE_LIMIT_ENFORCED.archiveMaxBytes && !SIZE_LIMIT_ENFORCED.cacheMaxBytes,
+  '当前事实与文档一致：归档上限已执行，缓存上限还没有',
+  SIZE_LIMIT_ENFORCED.archiveMaxBytes && !SIZE_LIMIT_ENFORCED.cacheMaxBytes,
 )
 
 const cacheSection = sectionOfRow('cacheMaxBytes')

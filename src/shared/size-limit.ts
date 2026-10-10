@@ -28,15 +28,17 @@ export type SizeLimitKey = 'archiveMaxBytes' | 'cacheMaxBytes'
  *
  * 判据（改动这里时请一并核对）：
  *
- *   - `archiveMaxBytes`：`archive/blobs.ts` 的 `evictToFit()` 目前是**空实现**（计划 M2，
- *     见 `docs/roadmap.md`），没有任何地方读这个设置；
+ *   - `archiveMaxBytes`：**已实现**（[ADR-0048]）。`archive/store.ts` 的 `enforceLimit()`
+ *     在三个触发点被调用（启动 / 每次归档落盘前 / 改上限设置时），超限时按最久未访问
+ *     淘汰内容并同步删索引记录；
  *   - `cacheMaxBytes`：`capture/protocol.ts` 里是 `TODO(M3)`，当前缓存**只增不减**。
  *
- * 实现落地时把对应的值改成 `true`：徽标会消失、提示会换成"超过之后会发生什么"。
+ * 实现落地时把对应的值改成 `true`：徽标会消失、提示会换成"超过之后会发生什么"，
+ * 输入框也会**解除禁用**（能改就说明它真的会被执行 —— 见 `views/settings.ts`）。
  * 两条分支都有单测覆盖，因此改这一个布尔值就是全部改动。
  */
 export const SIZE_LIMIT_ENFORCED: Readonly<Record<SizeLimitKey, boolean>> = {
-  archiveMaxBytes: false,
+  archiveMaxBytes: true,
   cacheMaxBytes: false,
 }
 
@@ -154,4 +156,20 @@ function toGbString(bytes: number): string {
   const gb = Number((bytes / BYTES_PER_GB).toFixed(1))
 
   return String(Math.max(gb, 0.1))
+}
+
+/**
+ * 输入框里的 GB 数字 → 字节。{@link describeSizeLimit} 的反方向。
+ *
+ * 空串 / `0` / 负数 / 非数字一律返回 `0`（"不限制"）—— 与 `describeSizeLimit()` 对同一个值
+ * 的解释一致：用户清空输入框，意思是"不要上限"。
+ *
+ * 放进这个模块而不是界面里：两个方向必须在**同一个地方**成对定义，否则它们会以各自的方式
+ * 漂移（改了一处基数、另一处不同步），而症状是"我设了 2 GB，它却按别的数字执行"。
+ */
+export function sizeLimitBytesFromInput(text: string): number {
+  const value = Number(text.trim())
+  if (!Number.isFinite(value) || value <= 0) return 0
+
+  return Math.round(value * BYTES_PER_GB)
 }

@@ -5,13 +5,15 @@
  *
  *  1. **改动即时生效，不设「保存」按钮。** 每个开关独立提交，回填主进程返回的
  *     完整设置 —— 界面显示的就是实际生效的，不存在"我改了但它没生效"这种模糊状态。
- *  2. **没实现的项不假装能用，但状态要说的是"你当前的配置"。** `archiveMaxBytes` /
- *     `cacheMaxBytes` 的淘汰策略还没实现（见 docs/roadmap.md M2/M3），因此它们渲染成
- *     **禁用的**控件。一个能改但不起作用的开关，比一个明确标注"尚未生效"的开关糟得多 ——
- *     前者会让用户相信一件不成立的事。但徽标本身也不该是一句写死的话：
- *     **"不限制"时没有失效可言**（字面意思就是不清理），只有"设了上限却不会被执行"
- *     才需要警告。因此状态由 `shared/size-limit.ts` 按"当前值 + 今天是否真的执行"算出来，
- *     而不是写在这一行里 —— 功能落地时改一个布尔值就够，不会留下一句过期的话。
+ *  2. **没实现的项不假装能用，但状态要说的是"你当前的配置"。** `cacheMaxBytes` 的容量控制
+ *     还没实现（见 docs/roadmap.md M3），因此它渲染成**禁用的**控件；`archiveMaxBytes`
+ *     已经真的会被执行（[ADR-0048]），于是它是可改的。禁用与否只能由
+ *     `shared/size-limit.ts` 的 `SIZE_LIMIT_ENFORCED` 决定 —— 一个能改但不起作用的开关，
+ *     比一个明确标注"尚未生效"的开关糟得多，前者会让用户相信一件不成立的事。但徽标本身
+ *     也不该是一句写死的话：**"不限制"时没有失效可言**（字面意思就是不清理），只有"设了
+ *     上限却不会被执行"才需要警告。因此状态由 `describeSizeLimit()` 按"当前值 + 今天是否
+ *     真的执行"算出来，而不是写在这一行里 —— 功能落地时改一个布尔值就够，不会留下一句
+ *     过期的话。
  *  3. **相关的项放在同一个区域，且区域标题必须对里面的每一行都为真。**
  *     区域与行序是数据（`shared/settings-sections.ts`），不是散在这一篇渲染代码里的分支：
  *     两项容量上限因此必然紧跟各自管辖的开关 —— 一个容量项离开开关就读不懂（"2 GB"是给
@@ -30,7 +32,12 @@ import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
-import { describeSizeLimit, type SizeLimitKey } from '../../shared/size-limit'
+import {
+  SIZE_LIMIT_ENFORCED,
+  describeSizeLimit,
+  sizeLimitBytesFromInput,
+  type SizeLimitKey,
+} from '../../shared/size-limit'
 import {
   RESTART_REQUIRED_SETTINGS,
   type AppIconState,
@@ -661,7 +668,12 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
-   * 容量项：显示当前值，但**禁用**输入（淘汰策略还没实现，能改就等于骗人）。
+   * 容量项。
+   *
+   * **能改的判据是"它真的会被执行"**（[`SIZE_LIMIT_ENFORCED`]）：已实现的那一项（今天的
+   * 归档上限，[ADR-0048]）解除禁用、改动即时提交；还没实现的那一项仍**禁用** —— 一个能改但
+   * 不起作用的输入框，比一个明确标注"尚未生效"的输入框糟得多。禁用与徽标因此来自**同一个**
+   * 布尔值，不会出现"能改却不会执行"或"会执行却改不了"这两种半截状态。
    *
    * 三种状态（不限制 / 设了但不会执行 / 生效中）由 `describeSizeLimit()` 算出来 —— 徽标与
    * 提示都跟着当前值走，因此不会出现"配置是不限制，却标着尚未生效"这种与配置无关的话。
@@ -671,13 +683,24 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    */
   function sizeRow(spec: SizeSpec, current: Settings): HTMLElement {
     const state = describeSizeLimit(spec.key, current[spec.key])
+    const editable = SIZE_LIMIT_ENFORCED[spec.key]
 
     const input = h('input', {
       type: 'number',
       value: state.inputValue,
       placeholder: '不限制',
-      disabled: true,
+      disabled: !editable,
       title: state.badge ?? (state.unlimited ? '不限制' : '生效中'),
+      // 清空输入框 = 不限制（`sizeLimitBytesFromInput()` 把空串解释成 0），因此这一行
+      // 与"怎么取消上限"只有一种说法。
+      ...(editable
+        ? {
+            onChange: (event: Event) => {
+              const bytes = sizeLimitBytesFromInput((event.target as HTMLInputElement).value)
+              void patch({ [spec.key]: bytes } as Partial<Settings>)
+            },
+          }
+        : {}),
     })
 
     return h(
