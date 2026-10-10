@@ -30,12 +30,14 @@ function record(id: number, name: string, storedName: string): ArchiveRecord {
 interface Fake {
   readonly removed: string[]
   readonly forgotten: number[]
+  readonly pruned: string[]
   readonly removeFile: (storedName: string) => boolean
   readonly forget: (id: number) => boolean
+  readonly prune: (storedName: string) => void
 }
 
 /**
- * 假的"文件系统 + 索引"。
+ * 假的"文件系统 + 索引 + 空容器清理"。
  *
  * `undeletable` 模拟"名字在、但删不掉"（被占用、只读挂载）；`vanishedRecords` 模拟
  * "文件已经不在了、记录也没了"（被淘汰或另一次删除带走）。
@@ -48,10 +50,12 @@ function fake(options: {
   const vanished = new Set(options.vanishedRecords ?? [])
   const removed: string[] = []
   const forgotten: number[] = []
+  const pruned: string[] = []
 
   return {
     removed,
     forgotten,
+    pruned,
     removeFile: (storedName) => {
       removed.push(storedName)
       // 不在 undeletable 里的都成功（包括"本来就不在" —— 与 `removeStoredFile()` 的 ENOENT 一致）。
@@ -60,6 +64,9 @@ function fake(options: {
     forget: (id) => {
       forgotten.push(id)
       return !vanished.has(id)
+    },
+    prune: (storedName) => {
+      pruned.push(storedName)
     },
   }
 }
@@ -72,29 +79,65 @@ describe('deleteRecords', () => {
       record(2, '乙.pdf', 'acc/m/files/乙.pdf'),
     ]
 
-    const summary = deleteRecords(records, disk.removeFile, disk.forget)
+    const summary = deleteRecords(records, disk.removeFile, disk.forget, disk.prune)
 
     expect(summary).toEqual({ deleted: 2, failed: [] })
     expect(disk.removed).toEqual(['acc/m/files/甲.pdf', 'acc/m/files/乙.pdf'])
     expect(disk.forgotten).toEqual([1, 2])
   })
 
-  it('文件删不掉时**不动**索引记录，并逐条报出来', () => {
+  it('顺序是"删文件 → 清空容器 → 删记录"（[ADR-0054]）', () => {
+    // 三步的失败含义各不相同，顺序错一步就会留下不一致的状态，因此把调用顺序钉住。
+    const trace: string[] = []
+    const records = [
+      record(1, '甲.pdf', 'acc/m/files/甲.pdf'),
+      record(2, '占用.pdf', 'acc/m/files/占用.pdf'),
+    ]
+
+    const summary = deleteRecords(
+      records,
+      (storedName) => {
+        trace.push(`remove:${storedName}`)
+        return !storedName.endsWith('占用.pdf')
+      },
+      (id) => {
+        trace.push(`forget:${String(id)}`)
+        return true
+      },
+      (storedName) => {
+        trace.push(`prune:${storedName}`)
+      },
+    )
+
+    expect(summary.deleted).toBe(1)
+    expect(trace).toEqual([
+      'remove:acc/m/files/甲.pdf',
+      // 文件没了、容器可能空了 ⇒ 收在删记录**之前**，且不看记录删得成不成功。
+      'prune:acc/m/files/甲.pdf',
+      'forget:1',
+      // 删不掉的那条到此为止：磁盘上那份还在，容器不空，索引也不该动。
+      'remove:acc/m/files/占用.pdf',
+    ])
+  })
+
+  it('文件删不掉时**不动**索引记录，也不去清空容器', () => {
     const disk = fake({ undeletable: ['acc/m/files/占用.pdf'] })
     const records = [record(1, '占用.pdf', 'acc/m/files/占用.pdf')]
 
-    const summary = deleteRecords(records, disk.removeFile, disk.forget)
+    const summary = deleteRecords(records, disk.removeFile, disk.forget, disk.prune)
 
     expect(summary).toEqual({ deleted: 0, failed: [{ name: '占用.pdf', reason: 'remove-failed' }] })
     // 关键：记录必须留着。删掉它就成了"搜得到但打不开"，而磁盘上那份还活着。
     expect(disk.forgotten).toEqual([])
+    // 同理：那一份还在目录里，那一层就不空 —— 去清它等于动用户没选的东西。
+    expect(disk.pruned).toEqual([])
   })
 
   it('文件已经不在了但记录也没删掉时同样报失败（那是"别人干的"，不能记成我们删的）', () => {
     const disk = fake({ vanishedRecords: [1] })
     const records = [record(1, '甲.pdf', 'acc/m/files/甲.pdf')]
 
-    const summary = deleteRecords(records, disk.removeFile, disk.forget)
+    const summary = deleteRecords(records, disk.removeFile, disk.forget, disk.prune)
 
     expect(summary.deleted).toBe(0)
     expect(summary.failed).toEqual([{ name: '甲.pdf', reason: 'remove-failed' }])
@@ -108,7 +151,7 @@ describe('deleteRecords', () => {
       record(3, '乙.pdf', '乙.pdf'),
     ]
 
-    const summary = deleteRecords(records, disk.removeFile, disk.forget)
+    const summary = deleteRecords(records, disk.removeFile, disk.forget, disk.prune)
 
     expect(summary.deleted).toBe(2)
     expect(summary.failed).toEqual([{ name: '占用.pdf', reason: 'remove-failed' }])
@@ -120,19 +163,25 @@ describe('deleteRecords', () => {
     const disk = fake({})
     const first = record(1, '合同.pdf', 'acc/msg-a/files/合同.pdf')
 
-    const summary = deleteRecords([first], disk.removeFile, disk.forget)
+    const summary = deleteRecords([first], disk.removeFile, disk.forget, disk.prune)
 
     expect(summary.deleted).toBe(1)
     // 第二个名字一次都没被碰过 —— "顺手多删"就是删用户没选的数据。
     expect(disk.removed).toEqual(['acc/msg-a/files/合同.pdf'])
     expect(disk.removed).not.toContain('acc/msg-b/files/合同.pdf')
+    // 清理也只看这一条的名字：`msg-b` 那一层是别人的，轮不到我们判断它空不空。
+    expect(disk.pruned).toEqual(['acc/msg-a/files/合同.pdf'])
   })
 
   it('空清单什么都不做', () => {
     const disk = fake({})
 
-    expect(deleteRecords([], disk.removeFile, disk.forget)).toEqual({ deleted: 0, failed: [] })
+    expect(deleteRecords([], disk.removeFile, disk.forget, disk.prune)).toEqual({
+      deleted: 0,
+      failed: [],
+    })
     expect(disk.removed).toEqual([])
+    expect(disk.pruned).toEqual([])
   })
 
   it('单次上限是防御性数字，不是对正常使用的限制', () => {

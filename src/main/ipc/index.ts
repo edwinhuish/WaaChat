@@ -46,7 +46,7 @@ import type {
   CacheSwitchResult,
   Settings,
 } from '../../shared/types'
-import { removeStoredFile } from '../archive/blobs'
+import { pruneEmptyFolders, removeStoredFile } from '../archive/blobs'
 import { DELETE_MAX_ITEMS, deleteRecords } from '../archive/delete'
 import { EXPORT_MAX_ITEMS, exportRecords, isInsideArchive } from '../archive/export'
 import { planMigration } from '../archive/migrate'
@@ -512,7 +512,8 @@ export function registerIpcHandlers(): void {
   /**
    * 批量删除（[ADR-0053]）。
    *
-   * 流程：解析记录 → **确认** → 逐条"先删文件、成功了才删索引记录"。
+   * 流程：解析记录 → **确认** → 逐条"先删文件、成功了才删索引记录"，并把空掉的容器目录收掉
+   * （[ADR-0054]）。
    *
    * 确认框不是装饰：这一步**不可逆**（磁盘上的明文也一起删掉）。因此默认按钮落在"取消"上，
    * 与迁移确认框同一条理由 —— 一次回车不该毁掉用户选中的东西。
@@ -554,7 +555,13 @@ export function registerIpcHandlers(): void {
     if (confirmed.response !== 0) return null
 
     const store = archiveStore()
-    const summary = deleteRecords(found, removeStoredFile, (id) => store.deleteById(id))
+    const summary = deleteRecords(
+      found,
+      removeStoredFile,
+      (id) => store.deleteById(id),
+      // 删掉某条消息的最后一份正文后，那几层空掉的消息目录一并收掉（[ADR-0054]）。
+      pruneEmptyFolders,
+    )
 
     return { ok: true, deleted: summary.deleted, failed: [...missing, ...summary.failed] }
   })

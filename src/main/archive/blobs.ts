@@ -45,6 +45,7 @@ import {
   mkdirSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -223,6 +224,68 @@ export function removeStoredFile(storedName: string): boolean {
   }
 }
 
+/**
+ * 删掉一条正文之后，把它**因为空掉而失去意义**的那几层容器一并收掉（[ADR-0054]）。
+ *
+ * 归档按 `<账号>/<消息ID>/files/` 分层（[ADR-0052]），而消息粒度很细：用户删掉某条消息的
+ * 最后一份正文后，那一串目录会变成空壳 —— 在文件管理器里既解释不了也点不开，还会随着使用
+ * 越积越多。这里把它们收掉。**本函数只由删除路径调用**（`archive/delete.ts` 注入）：
+ * `removeStoredFile()` 的职责仍旧只有"删掉那一个名字"，淘汰（`evictToFit()`）也不走这条路。
+ *
+ * ── 为什么是 `rmdir`，不是 `readdir` + 递归删 ──
+ *
+ * `rmdirSync` 本身就以"目录为空"为前置条件：要么成功，要么以 `ENOTEMPTY` 失败。于是"是不是
+ * 空"由内核判定，不存在"查完再删"的窗口 —— 而**那一瞬**恰好可能有另一次落盘
+ * （`commitFromTemp()`）刚往同一层写进一份新正文；递归删除会连带删掉别人刚写下的东西。
+ *
+ * ── 停在哪一层 ──
+ *
+ * 由深到浅逐层尝试，**第一次失败就停**：更外层必然也非空（里面至少还有刚失败的那一层）。
+ * 最浅只到归档根之下的第一段 —— **归档根本身永远不碰**（它是用户可见的落点，
+ * `ensureArchiveDir()` 会保证它在）。
+ *
+ * ── 三种东西不许碰 ──
+ *
+ *   - **符号链接**：先 `lstat` 再判 `isDirectory()`（INVARIANTS G-4），指向别处的链接一律跳过；
+ *   - **索引没给出的路径**：只沿 `stored_name` 那一串走（`..` 已在 `normalizeStoredPath()`
+ *     里被剥掉），不扫描目录、不猜 —— 用户自己放进归档目录的东西一个都不动；
+ *   - **非空目录**：见上，由 `rmdir` 保证。
+ *
+ * 失败一律只留日志、不抛错也不回报：这是一次**善后**，失败的最坏结果是"目录还在"
+ * （与 [ADR-0054] 之前的行为一致），没有任何理由让它影响一次已经成功的删除。
+ */
+export function pruneEmptyFolders(storedName: string): void {
+  const segments = normalizeStoredPath(storedName)
+    .split('/')
+    .filter((segment) => segment !== '')
+
+  // 最后一段是文件名本身，因此 depth 从"倒数第二段"开始；裸文件名（平面布局）没有容器可清。
+  for (let depth = segments.length - 1; depth >= 1; depth -= 1) {
+    const dir = archiveFilePath(segments.slice(0, depth).join('/'))
+
+    try {
+      // lstat 而不是 stat：归档目录内不跟随符号链接（INVARIANTS G-4）。
+      if (!lstatSync(dir).isDirectory()) return
+
+      rmdirSync(dir)
+    } catch (error) {
+      /**
+       * `ENOTEMPTY` / `EEXIST`（里面还有东西）、`ENOENT`（本来就没了）、`ENOTDIR`（那一段是
+       * 个文件）都是**正常**的停止点，不值得留痕；其余（权限之类）记一条，好知道目录为什么
+       * 清不掉。
+       */
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT' && code !== 'ENOTDIR') {
+        logger.warn('archive: could not prune a folder left empty', {
+          reason: (error as Error).name,
+        })
+      }
+
+      return
+    }
+  }
+}
+
 /** 生成一个位于归档目录内的随机临时路径。 */
 export function tempPath(): string {
   const random = Math.random().toString(36).slice(2, 10)
@@ -328,10 +391,6 @@ export async function commitFromTemp(
   const requested = options.messageId ?? (await options.resolveMessageId?.(hash))
   const messageId = normalizeMessageId(requested) ?? MESSAGE_FALLBACK
 
-  // 容器链一次建齐：`<账号>/<消息ID>/files`（[ADR-0052]）。`rename` 不会建目录，
-  // 因此这一步必须在落盘之前 —— 权限同样是 0700（见 ensureDir 里那段说明）。
-  ensureArchiveFolder(`${account}/${messageId}/${FILES_SEGMENT}`)
-
   // 同一份内容可能已经在归档里（可能叫别的名字、可能在别的消息目录、也可能在别的账号目录下）
   // —— 那就只多挂一个名字，不再写一份字节。
   const existing = findExisting(hash, bytes, options)
@@ -349,6 +408,21 @@ export async function commitFromTemp(
 
       continue
     }
+
+    /**
+     * 建容器：`<账号>/<消息ID>/files`（[ADR-0052]），权限 0700（见 `ensureDir()` 那段说明）。
+     *
+     * 位置是刻意的 —— **紧挨着下面那次写入**，因为这两步必须落在同一个同步块里：
+     *
+     *   1. **上面那个 `await`（`sameContent`）是一个可以让出事件循环的间隙**，而删除路径
+     *      （[ADR-0054]）会把这个间隙里"空掉的容器"收掉 —— 若目录在这里之前就建好，
+     *      下面的写入会以 `ENOENT` 失败，用户看到的是"这次归档失败"，而原因是一次清空目录；
+     *   2. 去重命中（上面那两条 `return`）**一条字节都不写**，因此也不该留下一个有目录没文件的
+     *      空壳 —— [ADR-0054] 的清理只针对"用户删掉的东西"，落盘自己制造的空目录只能靠这里。
+     *
+     * `rename` 不会建目录，因此这一步仍然必须在写入之前，而不是可以省掉。
+     */
+    ensureArchiveFolder(`${account}/${messageId}/${FILES_SEGMENT}`)
 
     if (existing !== null) {
       // 内容在归档里、只是叫别的名字：挂一个硬链接。多一个名字，不多占字节。

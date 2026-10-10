@@ -22,6 +22,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -35,6 +36,7 @@ import {
   commitFromTemp,
   ensureArchiveDir,
   evictToFit,
+  pruneEmptyFolders,
   removeStoredFile,
   sweepTempFiles,
   tempPath,
@@ -560,5 +562,117 @@ describe('evictToFit', () => {
     expect(evictToFit(Number.NaN, [candidate(kept, 1)])).toEqual([])
     expect(evictToFit(usage().bytes, [candidate(kept, 1)])).toEqual([])
     expect(existsSync(archiveFilePath(kept.storedName))).toBe(true)
+  })
+})
+
+/**
+ * 删除路径上的善后（[ADR-0054]）：删掉一条消息的最后一份正文后，那几层空目录应当一起消失，
+ * 而不是在用户的归档目录里留一串既解释不了也点不开的空壳。
+ *
+ * 每个用例都用**自己的**归档目录：这一组要断言的恰恰是"删到最后连账号那一层也没了"，
+ * 而上面那些 describe 的用例都在共享目录里留下了正文 —— 混在一起时账号那一层永远非空，
+ * 断言就变成了假的。
+ */
+describe('pruneEmptyFolders', () => {
+  /** 换到一个干净的归档目录（`setArchiveDir()` 改的是模块级状态，因此必须在结束时复位）。 */
+  function freshArchive(name: string): string {
+    const dir = join(root, `prune-${name}`)
+    setArchiveDir(dir)
+    ensureArchiveDir()
+
+    return dir
+  }
+
+  afterAll(() => {
+    setArchiveDir(archive)
+  })
+
+  it('删掉一条消息的最后一份正文后，消息目录与账号那一层一起消失，归档根留着', async () => {
+    const own = freshArchive('last')
+    const message = '3EB0PRUNE000000000001'
+    const result = await commitFromTemp(staged('prune-last'), 'p.pdf', {
+      messageId: message,
+      openedAt: AT,
+    })
+    const dir = join(own, ACCOUNT, message)
+
+    expect(existsSync(join(dir, 'files', 'p.pdf'))).toBe(true)
+    expect(removeStoredFile(result.storedName)).toBe(true)
+
+    pruneEmptyFolders(result.storedName)
+
+    expect(existsSync(dir)).toBe(false)
+    expect(existsSync(join(own, ACCOUNT))).toBe(false)
+    // 归档根本身不碰：它是用户可见的落点，由 `ensureArchiveDir()` 保证存在。
+    expect(existsSync(own)).toBe(true)
+  })
+
+  it('同一条消息里还有别的正文时停在那一层（绝不删非空目录）', async () => {
+    const own = freshArchive('keep')
+    const message = '3EB0PRUNE000000000002'
+    const kept = await commitFromTemp(staged('prune-keep-a'), '留.pdf', {
+      messageId: message,
+      openedAt: AT,
+    })
+    const gone = await commitFromTemp(staged('prune-keep-b'), '删.pdf', {
+      messageId: message,
+      openedAt: AT,
+    })
+
+    expect(removeStoredFile(gone.storedName)).toBe(true)
+    pruneEmptyFolders(gone.storedName)
+
+    expect(existsSync(archiveFilePath(kept.storedName))).toBe(true)
+    expect(existsSync(join(own, ACCOUNT, message, 'files'))).toBe(true)
+  })
+
+  it('容器是符号链接时跳过它（INVARIANTS G-4）', () => {
+    const own = freshArchive('symlink')
+    const message = '3EB0PRUNE000000000003'
+    const container = join(own, ACCOUNT, message)
+    const outside = join(root, 'outside-empty')
+    mkdirSync(container, { recursive: true })
+    mkdirSync(outside, { recursive: true })
+    symlinkSync(outside, join(container, 'files'))
+
+    pruneEmptyFolders(`${ACCOUNT}/${message}/files/正文.pdf`)
+
+    // 归档目录内不跟随符号链接 —— 跳过它，也就不会顺着它清掉归档**外面**的目录。
+    expect(existsSync(join(container, 'files'))).toBe(true)
+    expect(existsSync(outside)).toBe(true)
+  })
+
+  it('旧布局的空年月目录同样收掉（[ADR-0037] / [ADR-0039]）', () => {
+    const own = freshArchive('legacy')
+    const month = join(own, ACCOUNT, 'files', '2026-10')
+    mkdirSync(month, { recursive: true })
+
+    pruneEmptyFolders(`${ACCOUNT}/files/2026-10/旧.pdf`)
+
+    expect(existsSync(month)).toBe(false)
+    expect(existsSync(join(own, ACCOUNT))).toBe(false)
+  })
+
+  it('平面布局的裸文件名没有容器可清（也不会去动归档根）', () => {
+    const own = freshArchive('flat')
+
+    pruneEmptyFolders('旧文件.pdf')
+
+    expect(existsSync(own)).toBe(true)
+  })
+
+  it('单删一个名字不负责清容器 —— 清理是删除路径的职责（[ADR-0054]）', async () => {
+    const own = freshArchive('scope')
+    const message = '3EB0PRUNE000000000009'
+    const result = await commitFromTemp(staged('prune-scope'), 'x.pdf', {
+      messageId: message,
+      openedAt: AT,
+    })
+
+    expect(removeStoredFile(result.storedName)).toBe(true)
+
+    // `removeStoredFile()` 与淘汰（`evictToFit()`）是两套语义，因此清理只能由调用方显式要求：
+    // 把清理塞进 `removeStoredFile()` 会让淘汰也悄悄开始删目录。
+    expect(existsSync(join(own, ACCOUNT, message, 'files'))).toBe(true)
   })
 })
