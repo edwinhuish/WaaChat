@@ -67,7 +67,7 @@ sudo apt install gnome-shell-extension-appindicator
 
 | 窗口 | 打开方式 | 里面有什么 |
 |---|---|---|
-| 聊天 | 托盘 → 「显示聊天」（再次启动应用也是这个） | 官方网页版界面本身（承载方式正在迁移，见 [`ADR-0043`](decisions.md#adr-0043)） |
+| 聊天 | 托盘 → 「显示聊天」（再次启动应用也是这个） | 官方网页版界面本身（由 Electron 承载，见 [`architecture.md`](architecture.md)） |
 | 文件列表 | 托盘 → 「文件列表」 | 你打开过的文件：按文件名搜索、直接打开、在文件夹中显示、批量导出、批量删除 |
 | 设置 | 托盘 → 「设置」 | 偏好设置（第 5 节）。接管**失效**时你会收到一条系统通知（"接管失效"），平时的状态不再占用界面 —— 见 [ADR-0042](decisions.md#adr-0042) |
 
@@ -457,6 +457,6 @@ rm -f ~/.local/share/applications/io.github.edwinhuish.waachat.desktop
 
 ## 7. 安全与风险提示
 
-使用非官方客户端可能违反服务条款，存在账号被限制的风险。本应用通过"不重实现协议、不经手加密、不额外加入批量或群发自动化"把风险压在较低水平，但**不再是"最低"** —— 按 [`ADR-0043`](decisions.md#adr-0043)，承载方式已改为通过调试协议驱动页面的自动化客户端库。完整说明见 [`DISCLAIMER.md`](../DISCLAIMER.md) 第 2 节。
+使用非官方客户端可能违反服务条款，存在账号被限制的风险。本应用通过"不重实现协议、不经手加密、不额外加入批量或群发自动化"把风险压在较低水平：承载方式保持"Electron 加载官方网页版 + 内核层接管"，只对页面做极窄的**只读元数据求值**（[`ADR-0057`](decisions.md#adr-0057)）。完整说明见 [`DISCLAIMER.md`](../DISCLAIMER.md) 第 2 节。
 
 **开始使用前请读 [`DISCLAIMER.md`](../DISCLAIMER.md)。**

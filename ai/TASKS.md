@@ -199,8 +199,8 @@
    > [ADR-0051](../docs/decisions.md#adr-0051) **整体移除**，上游的预览页照常加载
    > （`shared/upstream.ts` 的 `isUpstreamPage()` 认它）。要重新引入任何**改写响应或拦请求**
    > 的做法，先追加一条 ADR —— 这条边界是 [ADR-0001](../docs/decisions.md#adr-0001) /
-   > [ADR-0002](../docs/decisions.md#adr-0002) 留下的，撤销它们的是 [ADR-0043](../docs/decisions.md#adr-0043)，
-   > 但"能注入"不等于"该注入"。
+   > [ADR-0002](../docs/decisions.md#adr-0002) 留下的（后者经 [ADR-0057](../docs/decisions.md#adr-0057)
+   > 恢复），但"能注入"不等于"该注入"。
 4. 补单测（纯逻辑部分必须能在无 Electron 环境下测试）。
 5. 手动验证：
    - 首次点击一个文件 → 直接打开，`~/Downloads` 无残留，正文出现在 `<账号>/<会话ID>/files/` 下

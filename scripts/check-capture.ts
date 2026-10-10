@@ -990,7 +990,8 @@ check(
 )
 
 // 依赖纪律：这些库在 **Node 侧**自己做解密，会直接让"解密只由官方页面代码完成"不成立。
-// ADR-0043 撤销了 INV-2 的 lint 守卫，因此这条只能靠 ADR + 本断言兜住，而不是 lint。
+// INV-2 的 lint 守卫（eslint.config.mjs 的 projectGuards）在源码层拦协议库，这里再加一道
+// 对 **运行时依赖** 的断言 —— 两道互补：lint 拦"写法"，自检拦"结果 + 依赖"。
 const packageJson = JSON.parse(
   readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
 ) as { dependencies?: Record<string, string> }

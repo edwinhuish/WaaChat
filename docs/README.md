@@ -35,8 +35,8 @@
 | [`packaging.md`](packaging.md) | deb / AppImage 构建细节、桌面集成、已知的坑 | 改 `electron-builder.yml` / `build/` / `.github/workflows/` 之前 |
 | [`decisions.md`](decisions.md) | 决策记录（ADR），含被否决的方案与理由 | 想推翻某个设计之前（**先读，再提**） |
 | [`roadmap.md`](roadmap.md) | 里程碑、验收标准、当前进度 | 想知道先做什么 |
-| [`research/inv3-assessment.md`](research/inv3-assessment.md) | INV-3 的抽样审计：接入 `whatsapp-web.js` 会不会让我们经手密钥与加密 | 决定 INV-3 的去留之前（ADR-0043 的未决项 1） |
-| [`research/browser-runtime-assessment.md`](research/browser-runtime-assessment.md) | 为什么会有第二个 Chromium、能不能换成 Playwright 或复用已有浏览器 | 决定浏览器从哪来之前（ADR-0044 的未实测项） |
+| [`research/inv3-assessment.md`](research/inv3-assessment.md) | INV-3 的抽样审计：任何承载方式下，解密都不在我们手里 | 评估承载方式（驱动型客户端库）时 |
+| [`research/browser-runtime-assessment.md`](research/browser-runtime-assessment.md) | 承载/浏览器从哪来：能不能换成 Playwright、或复用已有浏览器 | 评估承载方式时 |
 | [`research/early-file-identity.md`](research/early-file-identity.md) | 从"点击"到"Blob"的完整流程；能否在下载前拿到内容身份以跳过下载与哈希 | 评估"自建客户端 + 早期去重"之前 |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 开发流程、分支与提交规范、PR 清单 | 提 PR 之前 |
 

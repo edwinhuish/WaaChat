@@ -5,9 +5,10 @@
  * **编译之后真正要分发的那三个 bundle** —— 入口是否齐全、桥是否收敛、CSP 是否在位，
  * 这些只有对产物断言才看得见。
  *
- * 注：这里曾有一条"主进程产物里没有 `executeJavaScript` / `insertCSS`"的断言（INV-1 的
- * 产物级检查）。它随 [ADR-0043](../../docs/decisions.md#adr-0043) 撤销 INV-1 而删除 ——
- * 现行路线以 `whatsapp-web.js` 承载，注入能力是允许的。
+ * 注：这里曾有一条"主进程产物里没有 `executeJavaScript` / `insertCSS`"的断言（INV-1 的产物级检查）。
+ * 它随承载路线的变更被删除。INV-1 现由 [ADR-0057](../../docs/decisions.md#adr-0057) 确认为**现行有效**
+ * （只放行**只读元数据求值**这一条窄例外，且每个调用点都在源码里用行内 `eslint-disable` 声明），
+ * 因此产物里出现 `executeJavaScript` 是预期内的 —— 旧的产物级断言不能原样恢复。
  *
  * ⚠️ 依赖 `out/` 存在。因此它只在 `pnpm run build` 之后才有意义；PR 流程里先跑
  * `pnpm run check`（此时 `out/` 还没生成），因此这里**跳过而不失败**。
