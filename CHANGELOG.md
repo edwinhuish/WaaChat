@@ -46,6 +46,14 @@
 
 ### 修复
 
+- **启动时那行 `'--ozone-platform=wayland' is not compatible with Vulkan` 现在真的不见了**：
+  上一版以为关掉几个 Vulkan feature 就够了，实际上这行来自 Chromium **默认开启**的另一条路 ——
+  「WebGPU 跑在原生 Vulkan 上、再经 GL 互操作上屏」—— 而它不是能用 `--disable-features` 关掉的
+  feature（实测：我们追加的那三个 feature 确实进了 GPU 进程的命令行，那行照旧）。现在在 Wayland
+  上另外指定 `--use-webgpu-adapter=opengles` 把它挪开。**代价**：Wayland 上 WebGPU 改走 ANGLE/GL
+  后端（仍是 GPU 加速，只是不走原生 Vulkan）；想换回来就自己传 `--use-webgpu-adapter=vulkan`，
+  那行 ERROR 会跟着回来。X11 上一个开关都不动。理由、被否决的方案与实测记录见
+  [ADR-0038](docs/decisions.md#adr-0038)。
 - **「更改…」换保存位置必然失败**：迁移计划里的索引清单是在索引连接还开着时算出来的，而执行
   的第一步正是关掉它 —— 一次干净的关闭会顺带删掉 `.index.sqlite-wal` / `-shm`，迁移于是去搬一个
   已经不存在的文件，报「写入新位置时失败（Error）。磁盘可能已满，或该位置不可写」，而磁盘既没满、

@@ -43,8 +43,9 @@
 | [0033](#adr-0033) | 拦截来的请求**发回它所属的分区会话**（不再用默认会话），并对**我们自己发起**的请求做有限重试（幂等 + 连接层错误 + 有上限） | 已生效 |
 | [0034](#adr-0034) | GLib 的 `has no handler with id` 是外部 GTK 模块的噪音：不追、不静默日志；**不**用"重建托盘"刷新图标；"没有托盘"**不可检测**（无指示器宿主时 `new Tray()` 依然成功） | 已生效 |
 | [0035](#adr-0035) | 权限白名单加入 `persistent-storage`（**仅上游源**）：它不授予任何能力，只影响本分区数据的淘汰策略；拒绝它的代价可能是"消息重新同步"甚至"重新扫码" | 已生效 |
-| [0036](#adr-0036) | 走 Wayland 的 Ozone 路径时**不请求 Vulkan**（Chromium 自己说这个组合不支持）：与用户已有的 `--disable-features` 合并，X11 与用户的显式选择一律不碰 | 已生效 |
+| [0036](#adr-0036) | 走 Wayland 的 Ozone 路径时**不请求 Vulkan**（Chromium 自己说这个组合不支持）：与用户已有的 `--disable-features` 合并，X11 与用户的显式选择一律不碰 | 已生效（**机制**由 [ADR-0038](#adr-0038) 修正：那行实际来自 WebGPU 的「原生 Vulkan + GL 互操作」路） |
 | [0037](#adr-0037) | 归档正文落在 `<年>/<月>/`（按归档时刻的本地时间）：`stored_name` 升为相对路径，旧的平面布局照旧可读，不搬动旧文件、不改 schema | 已生效（取代 [ADR-0003](#adr-0003) 被否决方案里"按日期分层不可行"的那一半判断） |
+| [0038](#adr-0038) | Wayland 上还要把 WebGPU 从「原生 Vulkan + GL 互操作」挪开（`--use-webgpu-adapter=opengles`）：那行 `not compatible with Vulkan` 的真正来源是这条路，而它**不是** feature 开关能关的 | 已生效（修正 [ADR-0036](#adr-0036) 的机制） |
 
 ---
 
@@ -1473,7 +1474,7 @@ WARN permission denied {"permission":"persistent-storage","fromUpstream":true}
 - 用户**显式**要求 Vulkan（`--enable-features` 里含 `Vulkan`）时**完全不动** —— 显式选择优先；
 - 不强制 `--ozone-platform=x11`。
 
-**状态**：已生效
+**状态**：已生效（**机制**与"零损失"那句判断由 [ADR-0038](#adr-0038) 修正；三条边界与取舍本身不变）
 
 **背景**：用户启动时看到
 
@@ -1580,5 +1581,56 @@ ERROR:ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc:249]
 - **同一份内容跨月打开会多一个名字**（硬链接）：磁盘占用不变，但用户可能在两个月份目录里都看到它。这是"目录按时间分区"与"内容只存一份"同时成立的必然结果。
 - **在文件管理器里手工移动归档文件会让索引失配**（症状是"搜得到但打不开"）。这一条从 [ADR-0031](#adr-0031) 起就存在；分层之后移动的动机变大了（例如想把某个月的目录合并），因此这里明确写出：归档目录不是给用户整理的，需要整理时应当走界面里的迁移/清理功能。
 - **实测范围**：本机验证覆盖单测、`pnpm run build` 的产物断言与 `pnpm run check` 的离线自检；"真实点击一个文件 → 落在当月目录 → 再次打开直接命中"需要真机手工确认一次（自检不能替代一次真实点击）。
+
+---
+
+## ADR-0038
+
+**决定**：Wayland 的臭氧路径上，除了 [ADR-0036](#adr-0036) 关掉的那三个 feature，还要把 **WebGPU 从「原生 Vulkan + GL 互操作」这条路上挪开**：
+
+```ts
+app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己指定过时不动
+```
+
+那行 `wayland_surface_factory.cc … not compatible with Vulkan` 的真正来源**正是这条路**，而 `Vulkan` / `DefaultANGLEVulkan` / `VulkanFromANGLE` 这三个 feature 与它无关。
+
+**状态**：已生效（**修正 [ADR-0036](#adr-0036) 的机制**与那句"功能上零损失"；那条 ADR 的判据、边界与取舍本身保持不变）
+
+**背景**：[ADR-0036](#adr-0036) 的预期是"在 Wayland 上不请求 Vulkan，那行就该消失"，并且把它明确列进"已知限制"——**"没有在真实 Wayland + GPU 的机器上验证过"**。真机验证的结果是：**那行照旧出现**（v1.0.3，Wayland/GNOME，Chromium 152）。三层原因，逐条都有实测支撑：
+
+1. **这行不是 feature 能关掉的。** `WaylandSurfaceFactory::CreateVulkanImplementation()` 对**任何非 SwiftShader 的**原生 Vulkan 实现都无条件打这一行（`LOG_IF(ERROR, !use_swiftshader)`）。而**要**一个原生 Vulkan 实现的，是 Chromium 的「WebGPU 在原生 Vulkan 上 + 经 GL 互操作上屏」那条路：`gpu/config/gpu_util.cc` 的 `GetWebGPUOnVulkanViaGLInterop()` 在带 `USE_WEBGPU_ON_VULKAN_VIA_GL_INTEROP` 的构建里，只要 `gr_context_type == kGL` 且 `use_webgpu_adapter != opengles` 就返回 *enabled*，于是 `gpu/ipc/service/gpu_init.cc` 把 `use_vulkan` 置成 `kNative` 并调用 `InitializeVulkan()`。**这条判据里没有 `Vulkan` 这个 feature。**
+2. **我们关的那三个 feature 真的生效了，只是没用。** 在那台机器上按日志里的 PID 找到打这行日志的 GPU 进程，它的命令行里**确实**带着我们运行期追加的 `disable-features=…,Vulkan,VulkanFromANGLE`（追加发生在 GPU 进程启动前 ~100 ms），而那行照旧出现。
+3. **能关掉它的只有一个取值。** 同一个开关：不传 → 1 行；传 `--use-webgpu-adapter=default` → 1 行（对照组）；传 `--use-webgpu-adapter=opengles` → **0 行**，且其它子进程开关一字未变。
+
+顺带纠正 ADR-0036 里一句不准确的判断：它写着"那条路径上本来就没有 Vulkan 可用，**功能上零损失**"。Wayland 的实现缺的只是 **surface**（`CreateViewSurface()` → `NOTIMPLEMENTED()`、`GetPhysicalDevicePresentationSupport()` → `false`），device 那一侧（dma-buf 外部内存/信号量互操作）是实现了的 —— 而 WebGPU 的互操作路只要 device、不要 surface。也就是说：这行对**它**是**虚警**，而关掉它**不是**零成本（见"已知限制"）。
+
+**理由**：
+
+1. **命令行上只有这一个开关能关掉它。** 源码里那三条出路（`--use-webgpu-adapter=opengles`、GPU 黑名单、非 `kGL` 的 `GrContextType`）：黑名单要改 `gpu/config/software_rendering_list.json`（我们够不着），换 GrContextType 等于换掉整套渲染路径（例如开 Skia Graphite）—— 那是拿更大的东西换同样的效果。
+2. **代价可控，而且记账在明处。** WebGPU 在 Wayland 上改用 ANGLE（GL）后端，**仍然是 GPU 加速**，只是不再走"原生 Vulkan device + dma-buf 互操作"。对承载的页面（WhatsApp Web）来说这个能力今天根本没被用到。
+3. **逃生通道与 ADR-0036 的"显式选择优先"是同一条。** 用户自己指定了 `--use-webgpu-adapter=<任何值>` 时我们**一个字都不改** —— 那行 ERROR 会回来，因为那是他要的（原生 Vulkan 上的 WebGPU）。
+4. **判据与 X11 的边界不变。** 只在 `usesWaylandOzone()` 为真时动；X11 上一个开关都不碰（那边 Vulkan 可能真的可用，WebGPU 走原生 Vulkan 是对的）。
+5. **不为一行日志去动更大的东西。** ADR-0036 已经否决过 `--disable-gpu` 与强制 SwiftShader；这里同样不为了这行去关掉 WebGPU 或换渲染路径 —— 只是把它从一条**在 Wayland 上没有 surface 支持**的路上挪开。
+
+**被否决的替代方案**：
+
+- **只保留 ADR-0036 的 feature 列表，把这一行当"无害噪音"写进文档**：它已经被验证是**关得掉**的（同一台机器上有对照组），而"每次启动一行 ERROR"会把用户训练成忽略错误日志 —— `docs/architecture.md` 第 5 节刚说过"允许失效，不允许静默失效"，虚警是同一枚硬币的另一面。
+- **`--use-vulkan=swiftshader`**：它也能让这行消失（`LOG_IF` 的判据正是 `use_swiftshader`），但代价是 WebGPU 落到 **CPU**（SwiftShader）—— 与 ADR-0036 否决"强制软件渲染"同一条理由。
+- **`--disable-gpu` / `--use-gl=swiftshader`**：因噎废食，ADR-0036 已否决。
+- **在启动最早期 `app.relaunch()` 自己重启一次，把开关塞进 argv**：实测不需要。我们运行期追加的开关**确实**进了那个 GPU 进程的命令行（见背景 2），所以"追加得太晚、GPU 进程看不到"这个病因不成立；为了一个不成立的理由引入"每次启动跑两个进程"，不值得。
+- **把它做成设置项**：理由同 ADR-0036 —— 用户没有"我想在 Wayland 上用原生 Vulkan 跑 WebGPU"这个需求，而且命令行逃生通道已经有了。
+
+**影响**：
+
+- `src/main/linux-gpu.ts`：`applyLinuxGpuSwitches()` 在 Wayland 上多追加 `--use-webgpu-adapter=opengles`（用户已指定则跳过）；模块头的说明重写成"两层开关各管什么"。
+- `src/main/index.ts`：那条 `info` 日志的措辞（`… has no Vulkan surfaces`）。
+- 测试：`test/unit/linux-gpu.test.ts` 补"两个开关都落下"与"用户指定过就不动"两个用例；`scripts/check-capture.ts` 的 GPU 一节补两条断言，并把"X11 上不碰命令行"扩展到新开关。
+- 文档：`docs/usage.md` 的 FAQ（这行是什么、现在为什么不再出现、怎么让它回来）、`ai/TASKS.md`（多一条边界）。
+
+**已知限制**：
+
+- **WebGPU 在 Wayland 上不再走原生 Vulkan**（改走 ANGLE/GL 后端）。这是本次改动的真实代价：如果将来页面真的用上 WebGPU、或上游让 Wayland 支持了 Vulkan surface，正确的动作是**删掉这个开关**，而不是再叠一层绕它。
+- **用户手写 `--use-webgpu-adapter=default` 会被当成"他自己定过后端"**，我们因此不追加，那行 ERROR 照旧出现。这是"显式选择优先"的代价，已写进 `docs/usage.md`。
+- **判据锁在上游行为上，而自检锁不住上游。** `scripts/check-capture.ts` 断言的是"我们在 Wayland 上追加了这个开关"，不是"这行会消失" —— 上游改了 `GetWebGPUOnVulkanViaGLInterop()` 的判据（或换掉这批 feature/开关）时，自检会全绿而那行会回来。因此真机上 `waachat 2>&1 | grep -i vulkan` 再确认一次仍然值得做。
 
 

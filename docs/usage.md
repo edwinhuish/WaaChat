@@ -328,17 +328,24 @@ ERROR:ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc:249]
   Consider switching to '--ozone-platform=x11' or disabling Vulkan
 ```
 
-这是 Chromium 在说：**Wayland 的渲染路径不支持 Vulkan**。它默认会去试一次，拿不到 surface 就回退到 GL —— 也就是说这行描述的是一次**注定失败**的尝试，而不是"你的显卡有问题"。
+这是 Chromium 的 **GPU 进程**在说话，而且它说的是一件具体的事：**Wayland 上没实现 Vulkan 的 surface**（`CreateViewSurface()` 是 `NOTIMPLEMENTED()`）。它每次启动都会出现，是因为 Chromium 里有一条**默认开启**的路 —— 「WebGPU 跑在原生 Vulkan 上、再经 GL 互操作上屏」—— 会去要一个原生 Vulkan 实现。所以它既不是"你的显卡有问题"，也不是 Vulkan 初始化失败。
 
-本应用现在**走 Wayland 时不再请求 Vulkan**（[ADR-0036](decisions.md#adr-0036)），所以默认情况你不会再看到它。三条边界：X11 会话下**一个开关都不动**（那边的 Vulkan 可能是好的）；你自己传的 `--disable-features=…` 会被**合并**而不是覆盖；你要是**显式**传了 `--enable-features=Vulkan`，我们就不插手。
+本应用在**走 Wayland 时**把这条路关掉（`--use-webgpu-adapter=opengles`，见 [ADR-0038](decisions.md#adr-0038)），所以默认情况你不会再看到它。四条边界：
+
+- X11 会话下**一个开关都不动**（那边的 Vulkan 可能是好的）；
+- 你自己传的 `--disable-features=…` 会被**合并**而不是覆盖；
+- 你要是**显式**传了 `--enable-features=Vulkan`，我们就不插手；
+- 你要是**自己指定了 WebGPU 后端**（`--use-webgpu-adapter=…`，例如 `vulkan`），我们同样不动它 —— **那行 ERROR 会回来**，代价就是你要的"原生 Vulkan 上的 WebGPU"。
 
 ```bash
-waachat 2>&1 | grep -i vulkan   # 应当只看到 linux: not requesting Vulkan (…)
+waachat 2>&1 | grep -i vulkan   # 应当看不到那行 ERROR（我们的开关日志在 stdout 上）
 ```
 
 > 如果同一行出现在**别的**应用里（浏览器、别的 Electron 应用），那与本应用无关 —— 那是它们自己的进程。
 >
 > 想自己验证这不是显卡问题：`waachat --ozone-platform=x11`（Chromium 给的另一条建议）。我们**不**默认这么做 —— 它会把原生 Wayland 一起丢掉（窗口图标靠 `app_id`、缩放、分数缩放）。
+>
+> 为什么代价是"WebGPU 换后端"：Chrome 那行报错的来源那条路，只有 `--use-webgpu-adapter=opengles` 能关掉（它不是可以用 `--disable-features` 关的 feature），而它换来的是 WebGPU 在 Wayland 上改走 ANGLE/GL —— 仍是 GPU 加速，只是不走原生 Vulkan。
 
 ### 「浏览器不受支持」
 
