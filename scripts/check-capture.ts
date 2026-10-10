@@ -1162,6 +1162,30 @@ check(
 )
 
 // ---------------------------------------------------------------------------
+// 18. 「关闭窗口 = 隐藏」不因未打包而例外
+// ---------------------------------------------------------------------------
+//
+// 应用常驻托盘、窗口关掉还能从托盘叫回来 —— 这条契约曾经被 `hideOnClose()` 里一个
+// `if (app.isPackaged === false) return` 绕开（[ADR-0059]）：开发模式下关窗口会真的销毁它，
+// 而托盘菜单与托盘点击持有的是创建时捕获的那份引用 ⇒ 双击托盘 / 「显示聊天」毫无反应，
+// 且不报错。症状属于"改了没人会立刻发现"的那一类，因此把这条钉住。
+//
+// `window.ts` 导入 electron，按 ai/CONVENTIONS.md 第 8 节不能进单测 —— 只能做文本断言。
+
+section('关闭窗口 = 隐藏')
+
+const windowSource = source('../src/main/window.ts')
+const hideOnCloseBody = /function hideOnClose[\s\S]*?\n}/.exec(windowSource)?.[0] ?? ''
+check(
+  '关闭窗口一律隐藏，不因未打包而例外（否则开发模式下关掉窗口就叫不回来）',
+  hideOnCloseBody.includes("window.on('close'") &&
+    hideOnCloseBody.includes('event.preventDefault()') &&
+    hideOnCloseBody.includes('window.hide()') &&
+    !hideOnCloseBody.includes('isPackaged'),
+  hideOnCloseBody === '' ? 'window.ts 里找不到 hideOnClose()' : '它里面出现了 isPackaged 分支',
+)
+
+// ---------------------------------------------------------------------------
 
 section('结论')
 if (failures === 0) {

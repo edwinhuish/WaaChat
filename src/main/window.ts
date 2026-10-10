@@ -66,11 +66,19 @@ export function isQuitting(): boolean {
   return quitting
 }
 
-/** 关闭窗口时隐藏而非销毁 —— 见 index.ts 的 window-all-closed 说明。 */
+/**
+ * 关闭窗口时隐藏而非销毁 —— 见 index.ts 的 window-all-closed 说明。
+ *
+ * ⚠️ **不要**给这里加"未打包时不隐藏"的例外（[ADR-0059]）。曾经有过一个
+ * `if (app.isPackaged === false) return`，症状很安静：开发模式下关掉承载聊天的窗口会真的
+ * 销毁它，而托盘菜单与托盘点击持有的是 `createTray()` 时**捕获的那份引用** ——
+ * "双击托盘图标"与「显示聊天」于是全部毫无反应（`presentWindow()` 撞上
+ * `window.isDestroyed()` 就返回），日志里什么都没有。真正退出的入口只有托盘「退出」/
+ * `Ctrl+Q`（`before-quit` → {@link beginQuit}），两者都不需要这个例外。
+ */
 function hideOnClose(window: BrowserWindow): void {
   window.on('close', (event) => {
     if (quitting) return
-    if (app.isPackaged === false) return
     event.preventDefault()
     window.hide()
   })
