@@ -88,6 +88,9 @@ logger.info('archive: stored', { name: fileName, chat: chatName, path: absoluteP
 ## 8. 测试
 
 - 单测放 `test/unit/`，**不得加载 Electron**。要测主进程逻辑，就把逻辑抽成不依赖 Electron 的纯函数。
+- 夹具放 `test/fixtures/`。⚠️ 夹具的**宿主不一定是 Node** —— 例如
+  `probe-media-metadata.js` 是要**粘贴进页面控制台**运行的探针，宿主是浏览器，因此
+  `eslint.config.mjs` 给它的是 browser globals（见 `PAGE_CONTEXT_FIXTURE`）。别顺手把它挪进 `src/`。
 - 必须覆盖的边界：内容寻址的去重与冲突、幂等键对各类 URL 的推导、淘汰策略的边界、FTS 查询。
 - 不追求覆盖率数字。追求"**改坏了会被测出来**"。
 

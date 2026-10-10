@@ -88,6 +88,13 @@
 
 ⚠️ 探针**只读元数据**：只列字段名与长度/类型，**不读 `mediaKey`、不做任何解密、不发请求**。
 
+> **探针本体：[`../../test/fixtures/probe-media-metadata.js`](../../test/fixtures/probe-media-metadata.js)。**
+> 它必须自包含才能粘贴，所以放在 `test/fixtures/` 而不是 `src/`（它的宿主是浏览器）。
+> 用法：`pnpm run dev` → 聊天窗口 `Ctrl+Shift+I` → Console → 粘贴整个文件。
+> 两条关键性质 ——「绝不打印值」与「必须走原型链上的 getter」—— 由
+> [`../../test/unit/probe-media-metadata.test.ts`](../../test/unit/probe-media-metadata.test.ts)
+> 常驻守着。
+
 **P1 — 客户端模型有没有这些字段。** 在一条含媒体的消息上，于页面上下文里枚举媒体对象的键名：
 
 ```js
@@ -142,7 +149,7 @@ Object.keys(msg.mediaData ?? msg.mediaObject ?? {})
 ## 6. 关键步骤（落地顺序）
 
 1. **先立 ADR**（方向变更，见 §8），否则后面全是无授权改动。
-2. 跑 **P1–P4** 探针（一次性脚本，不入库）。
+2. 跑 **P1–P4** 探针（本仓库里就有：`test/fixtures/probe-media-metadata.js`，用法见 §4）。
 3. P1 通过 → 实现方案 B；不通过 → 实现方案 A。
 4. 无论走哪条，**先做回退路径**：确认"键缺失时行为与今天完全一致"。
 5. 更新 `docs/usage.md`（行为变更：命中时不再产生新归档条目、不再更新归档时间）。

@@ -59,6 +59,19 @@ const cryptoGuards = {
 const PROJECT_CODE = ['src/**/*.ts']
 
 /**
+ * `test/fixtures/**` 下的脚本，宿主是**浏览器**而不是 Node。
+ *
+ * 典型的是 `probe-media-metadata.js`：一段**粘贴进页面控制台**运行的探针，它引用
+ * `window` / `console`，还依赖 `Uint8Array` 的跨realm 行为（见 `test/unit` 里那份单测）。
+ * 缺了这段，它会落到"没有任何 globals"的裸配置上被判 `no-undef` —— 和
+ * `scripts/*.mjs` 当年踩的是同一个坑（见上面 NODE_SIDE 的注释）。
+ *
+ * ⚠️ 这**不是**网开一面：给的是**正确**的 globals，因此把 `window` 拼错成 `windw`
+ * 照样会被 `no-undef` 抓到；改成在文件头禁用 `no-undef` 才会丢掉这层保护。
+ */
+const PAGE_CONTEXT_FIXTURE = ['test/fixtures/**/*.js']
+
+/**
  * INV-1 与 INV-2 的守卫曾落在这里（`no-restricted-syntax` 拦 `executeJavaScript` /
  * `insertCSS`，`no-restricted-imports` 拦 puppeteer 家族 / `whatsapp-web.js` / 协议库）。
  *
@@ -103,6 +116,11 @@ export default new FlatConfigComposer()
   .append({
     files: NODE_SIDE,
     languageOptions: { globals: { ...globals.node } },
+  })
+  // 页面上下文的夹具：宿主是浏览器，见 PAGE_CONTEXT_FIXTURE 的说明。
+  .append({
+    files: PAGE_CONTEXT_FIXTURE,
+    languageOptions: { globals: { ...globals.browser } },
   })
   // INV-3：我们自己的代码不经手密钥与加密（解密由上游页面代码完成）。
   .append({
@@ -170,9 +188,12 @@ export default new FlatConfigComposer()
     },
   })
   // 构建期脚本是命令行工具，它的输出**就是** console.log。
-  // 应用代码里禁止 console 是为了不绕过 logger（脱敏约定），那条理由在这里不成立。
+  // 页面上下文的夹具同理：探针的全部产出就是给人看的控制台输出。
+  // 应用代码里禁止 console 是为了不绕过 logger（脱敏约定），那条理由在这里都不成立。
+  //
+  // ⚠️ 必须放在**通配所有文件**的那个块之后 —— 反了会被它重新打开（踩过一次）。
   .append({
-    files: ['scripts/**/*.{ts,mjs}'],
+    files: ['scripts/**/*.{ts,mjs}', ...PAGE_CONTEXT_FIXTURE],
     rules: { 'no-console': 'off' },
   })
   .append(prettier)
