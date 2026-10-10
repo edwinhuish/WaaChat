@@ -55,6 +55,11 @@ import {
 } from './cache-files'
 import { deriveCacheKey } from './cachekey'
 import { carriedHeaders } from './headers'
+import {
+  applyRequestContext,
+  clearRequestContexts,
+  rememberRequestContext,
+} from './request-context'
 import { fetchWithRetry, type RetryAttempt } from './retry'
 import { failureReason } from '../errors'
 import { hostOf, logger } from '../logger'
@@ -82,6 +87,21 @@ export function attachCiphertextCache(ses: Session, getSettings: () => Settings)
   // 月份目录在**写入时**按需创建（读取时可能一个都没有 —— 那就是没缓存过）。
   const dir = ciphertextAccountDir()
   mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE })
+
+  /**
+   * 记下每个请求的**角色**（[ADR-0058]）。
+   *
+   * `protocol.handle` 拿到的 `Request` 上已经没有 fetch 元数据了（`Sec-Fetch-*` / `Referer`
+   * 都不在 `request.headers` 里），而直通只能用 `ses.fetch` 重发 —— 重发出去的那一份会被
+   * 内核当成"主进程发起的无上下文请求"。要还原，只能在这里（请求还没进处理器之前）先把
+   * 角色抄下来。**只读**：`callback({})` 放行，不改一个字节。
+   *
+   * 生命周期与密文层相同：摘掉时要一起撤销（见 detach）。
+   */
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    rememberRequestContext(details)
+    callback({})
+  })
 
   ses.protocol.handle('https', async (request) => {
     const key = deriveCacheKey(request.url)
@@ -153,6 +173,11 @@ export function detachCiphertextCache(ses: Session): void {
       })
     }
 
+    // 观察者与队列同生命周期（[ADR-0058]）：层摘掉之后不再有请求经我们重发，
+    // 留着它只会积累用不到的角色。
+    ses.webRequest.onBeforeRequest(null)
+    clearRequestContexts()
+
     attached = false
   }
 
@@ -178,8 +203,16 @@ export function isCiphertextCacheAttached(): boolean {
  * 连接层失败按 [ADR-0033] 做有限重试：网络抖动时一次握手被重置本可以靠重试救回来，而
  * Chromium 不替调用方重试。重试与放弃各记一条日志，**只带 host 与错误码**（G-1 / G-3）——
  * Chromium 自己那行 `handshake failed` 不带主机名，用户拿到的信息只够猜。
+ *
+ * 重发**必须**先把原请求的 fetch 元数据补回去（[ADR-0058]，判据在 `request-context.ts`）：
+ * `ses.fetch` 发出去的那一份会被内核当成"主进程发起的无上下文请求"（`Sec-Fetch-Site: none`
+ * / `Mode: no-cors` / `Dest: empty`，且 `Referer` 丢失），而**上游按这些头回不同的变体** ——
+ * 文档预览页因此拿到一份没有 `cross-origin-resource-policy` 的响应，在
+ * `web.whatsapp.com`（COEP: require-corp）里被判"不可嵌入"，报 `ERR_BLOCKED_BY_RESPONSE`。
  */
 async function passthrough(request: Request, ses: Session): Promise<Response> {
+  applyRequestContext(request)
+
   const logContext = (info: RetryAttempt): Record<string, unknown> => ({
     host: hostOf(request.url),
     attempt: info.attempt,

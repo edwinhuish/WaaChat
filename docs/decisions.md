@@ -64,6 +64,7 @@
 | [0054](#adr-0054) | 删掉一条正文之后，把它**空掉的那几层容器目录**由深到浅 `rmdir` 掉（第一次失败即停、跳过符号链接与非空目录、永不碰归档根）；落盘的建目录挪到**写入之前**，因此去重命中不再留下只有目录没有文件的空壳 | 已生效（**补充** [ADR-0053](#adr-0053) 的删除路径与 [ADR-0052](#adr-0052) 的分区；不改变任何一条既有不变量） |
 | [0055](#adr-0055) | 归档正文的第二级从**消息ID** 改为**会话ID**：`<账号>/<会话ID>/files/<文件名>`，会话ID 取页面上的会话 JID（`msg.id.remote`，回落 `msg.from`，**绝不**用 `msg.id._serialized`）；净化白名单加回 `@`；回落名 `unknown-chat`；迁移判据同时覆盖两代形状 | 已生效（**取代** [ADR-0052](#adr-0052) 决定 1 的第二级与决定 3 的回落名；旧消息目录继续可读、可迁移） |
 | [0056](#adr-0056) | 托盘菜单用分隔线分成**三组**（显示聊天｜文件列表、设置｜退出）；设置窗口末尾加一个只读的「关于」区域显示应用名与版本，版本经新通道 `app:version`（`app.getVersion()`）取；非设置行改由显式的 `EXTRA_SETTINGS_ROWS` 列出 | 已生效（补充 [ADR-0025](#adr-0025) 的两扇本地界面与 [ADR-0042](#adr-0042) 去掉顶栏之后的界面形态） |
+| [0058](#adr-0058) | 直通重发（`ses.fetch`）前把原请求的 fetch 元数据补回去：只读的 `webRequest.onBeforeRequest` 观察者按 `method + url` 记下 `resourceType` 与原 `referrer`，重发时换算回 `Sec-Fetch-Mode` / `Dest` / `User` 并补上 `Referer`（`Sec-Fetch-Site` 补不了，不写）；修的是"协议层挂着时文档预览 `ERR_BLOCKED_BY_RESPONSE`" | 已生效（补充 [ADR-0033](#adr-0033) 的直通路径与 [ADR-0016](#adr-0016)「漏一个头就静默坏掉页面一部分」） |
 
 ---
 
@@ -3297,3 +3298,85 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
 - **例外仍然是注入面。** 它由 `executeJavaScript` 完成，因此 `ai/INVARIANTS.md` 的 T1（远程内容触达本地
   能力）判断在这里依然适用：取到的值只留在主进程侧使用，不得回传页面。
 - **守卫只作用于 `src/**`。** `scripts/` 与 `test/` 里出现这些词是自检文本扫描与探针夹具的需要。
+
+---
+
+## ADR-0058
+
+**决定**：会话级协议层（接管点 B）挂上一个**只读的** `webRequest.onBeforeRequest` 观察者，把每个请求的
+`resourceType` 与原 `referrer` 按 `method + url` 记进一个短命队列（`src/main/capture/request-context.ts`）；
+直通重发（`ses.fetch`）之前按队列取出，换算回该请求在真浏览器里会带的 `Sec-Fetch-Mode` /
+`Sec-Fetch-Dest` / `Sec-Fetch-User` 并补上 `Referer`。观察者不改写、不取消请求（`callback({})`），且与密文层
+**同生命周期**（`detach` 时一并撤销）。
+
+**状态**：已生效
+
+**背景**：接管点 B 用会话级 `protocol.handle('https')` 接住整个分区里的 https 请求，非媒体的一律靠
+`ses.fetch` 重发（[ADR-0033](#adr-0033) 要求用会话自己的 fetch）。但 `net.fetch` 重发时，Chromium 把它当成
+**主进程发起的、没有上下文的请求**，原请求上的 fetch 元数据全部退化（Electron 44.7 实测）：
+
+```
+原生（渲染进程发起的 iframe 导航）
+  sec-fetch-site: same-origin   sec-fetch-mode: navigate   sec-fetch-dest: iframe
+  referer: https://…/parent
+直通重发（我们的 ses.fetch）
+  sec-fetch-site: none          sec-fetch-mode: no-cors    sec-fetch-dest: empty
+  （没有 referer）
+```
+
+这不是"少几个头"那么轻：上游 `webtp.whatsapp.net/pdf-viewer/` 的响应带
+`vary: Sec-Fetch-Site, Sec-Fetch-Mode`，**按这些头决定回哪一份变体**。实测（用 curl 构造两种请求）：
+
+| 请求 | 上游响应 |
+|---|---|
+| 像真浏览器导航（`Mode: navigate` / `Dest: iframe`） | 200，**带** `cross-origin-resource-policy: cross-origin` 与 `content-security-policy: frame-ancestors https://*.whatsapp.com` |
+| 无上下文（`Mode: no-cors` / `Dest: empty`，无 `Referer`） | 200，**没有** CORP，也没有 `frame-ancestors` |
+
+那个预览页是被 `web.whatsapp.com`（带 `cross-origin-embedder-policy: require-corp`）用 iframe 嵌进去的。
+父文档启用 COEP 时，被嵌子文档也**必须**带 COEP/CORP，否则按"未启用、不可嵌入"拦截 —— 症状是
+`ERR_BLOCKED_BY_RESPONSE`、预览面板一直转圈，且**只在协议层挂着时出现**（关掉开关走原生路径时一切正常），
+报错内容指向不到这一层。这与 [ADR-0016](#adr-0016) 是同一类失手：漏一个头，页面**局部**坏掉而不报错。
+
+**理由**：
+
+1. **只补元数据，不动协议。** `onBeforeRequest` 只读、`callback({})` 放行：不取消、不重定向、不改写正文，
+   落在 `media-capture.md` 第 6 节"改写响应需先追加 ADR"的边界之内 —— 这里连"拦"都只是**观察**。
+2. **`resourceType` 是内核给的既成事实，不是我们要猜的。** 判据全部来自 Chromium 自己（导航 / 子框架 /
+   脚本 / 样式表 / 图片 / XHR …），换算表是常量，不依赖任何上游内部结构（[INV-1](#adr-0002) 的自律不变）。
+3. **必须在 `onBeforeRequest` 里抄。** `protocol.handle` 拿到的 `Request` 上已经**没有**这些头
+   （`request.headers` 里只有 `accept` / `sec-ch-ua*` / `user-agent` / `upgrade-insecure-requests`），
+   `Request.referrer` 也退化成哨兵值。要还原，只能在请求进入处理器**之前**留下痕迹。
+4. **队列不会自己喂自己。** 我们重发出去的那一份 `resourceType` 恒为 `other`，而 `other` 刻意不收录，
+   因此记下的永远是页面发起的那些请求。队列按 `method + url` 配对、取出即删，正常情况下恒为空。
+5. **补不回去的那一个就不补。** `Sec-Fetch-Site` 由内核按 initiator 现算，主进程发起的请求恒为 `none`，
+   显式写也会被覆盖（实测）—— 因此不写它，只补 `Mode` / `Dest` / `User` 与 `Referer`。
+
+**被否决的替代方案**：
+
+- **在 `protocol.handle` 里直接照搬上游的头**：拿不到（见理由 3）。
+- **自己拼一个 `Sec-Fetch-Site`**：写了也会被内核覆盖（实测），只会让代码看起来做了它没做的事。
+- **用 `onBeforeRequest` 改写或重发请求**：那才是"拦请求"，超出只读例外；我们只需要观察，重发仍交给
+  `ses.fetch` + [ADR-0033](#adr-0033) 的重试。
+- **收录 `other`**：会让重发出去的那一份重新进队列，队列自我增殖、角色错位。
+- **收录 `media`（video / audio）**：`resourceType` 分不出两种 dest，补错比不补更糟。
+- **关掉协议层**（去掉接管点 B）：能绕开这个问题，代价是"第二次打开仍要联网"，与 [ADR-0028](#adr-0028) 冲突。
+
+**影响**：
+
+- `src/main/capture/request-context.ts`：新增（纯逻辑，不导入 electron，因此单测与离线自检都能断言）。
+- `src/main/capture/protocol.ts`：`attach` 时挂观察者、`passthrough()` 开头 `applyRequestContext(request)`；
+  `detach` 时 `onBeforeRequest(null)` + `clearRequestContexts()`。
+- `scripts/check-capture.ts`：新增第 17 节（角色换算表 + 几条"绝不能有" + 队列纪律）。
+- `test/unit/request-context.test.ts`：新增。
+- `docs/media-capture.md`：直通一节补上这条依据。
+- `docs/decisions.md`：本 ADR。
+
+**已知限制**：
+
+- **观察者对分区里每个请求都对过一次表。** 它是阻塞式监听器（`callback` 形式），给每个请求加了一次极短的
+  JS 回调；换来的是预览可用。若将来这成为可见开销，应先测量再决定，而不是先去掉。
+- **上游若改判据，这一层就白补。** 它不会报错，只是回到"无上下文变体"。这条只保证"我们补的与真浏览器
+  一致"，不保证上游仍在意这些头。
+- **`Sec-Fetch-Site` 永远是 `none`。** 上游今天容忍（只要 `Mode` 对）。若将来它对 `Site` 也分变体，就得
+  重新设计 —— 可能要让请求留在渲染进程侧，而不是主进程重发。
+- **只覆盖 `https`。** 与协议层一致：`webSocket` 等不经 `protocol.handle('https')` 的请求与它无关。

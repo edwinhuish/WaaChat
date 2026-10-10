@@ -51,6 +51,8 @@
 
 **连接层失败会有限重试**（同一个 ADR）：网络抖动时一次 TLS 握手被重置（`net_error -101`）本来可以靠重试救回来，而 Chromium 不替调用方重试。策略写死在 `capture/retry.ts`：只重试 `GET`/`HEAD`、只重试连接层错误（白名单）、最多 3 次尝试、间隔约 0.3 / 0.9 秒带抖动。重试与放弃各记一条日志（`capture: retrying…` / `capture: gave up on a flaky connection`，带 `host` 与 `net::ERR_…`）。**网络被整段阻断时重试必然也失败** —— 那不是这一层能解决的问题，判断方法见 [`usage.md`](usage.md) 的常见问题。
 
+**重发前要把原请求的 fetch 元数据补回去**（[ADR-0058](decisions.md#adr-0058)）：`ses.fetch` 发出去的那一份会被内核当成"主进程发起的、没有上下文的请求"（`Sec-Fetch-Mode` 从 `navigate` 退化成 `no-cors`、`Referer` 丢失），而上游文档预览页按 `Sec-Fetch-Site` / `Sec-Fetch-Mode` 决定回哪一份变体 —— 拿到无上下文的那一份就**没有** `cross-origin-resource-policy`，在 COEP 父文档里被判"不可嵌入"，报 `ERR_BLOCKED_BY_RESPONSE`（症状是预览面板一直转圈）。因此挂一个**只读的** `webRequest.onBeforeRequest` 观察者（`capture/request-context.ts`）按 `method + url` 记下 `resourceType` 与原 `referrer`，重发时换算回 `Sec-Fetch-*` 并补上 `Referer`；它不取消、不改写请求，`Sec-Fetch-Site` 补不了（内核现算）也就不写。
+
 因此实现顺序是 A → B（见 [`roadmap.md`](roadmap.md)），A 是必须的，B 是质量提升，且 B 可以随时关闭而不影响正确性。它**默认开启**（[ADR-0028](decisions.md#adr-0028)）：缓存里存的是上游已经加密好的那份密文，本应用不参与加解密，因此没有理由把"第二次打开还要联网"留给用户。开关本身是一次**静默的事务式转换**：切协议层 → 转换 → 提交，全部成功才切换，失败或中断回退；提交即生效，**不需要重启**，也没有确认框与进度屏（[ADR-0027](decisions.md#adr-0027) / [ADR-0028](decisions.md#adr-0028)）。关闭时 `cache/` 里不留东西，开启则保留可命中的条目（`capture/cache-files.ts` / `capture/cache-switch.ts`）。
 
 > **刻意不做的第三件事**：在明文层再做一次缓存。B 已经在密文层解决了同一个问题，且完全不碰加密；而重做一次要拿到解密后的缓冲，那会碰到加密边界（INV-3 仍生效）。

@@ -46,6 +46,12 @@ import {
 import { deriveCacheKey, isMediaRequest } from '../src/main/capture/cachekey'
 import { CARRIED_HEADERS, carriedHeaders } from '../src/main/capture/headers'
 import {
+  FETCH_METADATA_BY_RESOURCE_TYPE,
+  applyRequestContext,
+  clearRequestContexts,
+  rememberRequestContext,
+} from '../src/main/capture/request-context'
+import {
   MAX_ATTEMPTS,
   describeNetworkError,
   isTransientNetworkError,
@@ -1030,6 +1036,97 @@ check(
   '「后台预取文档」确实还没有任何读者（界面上因此必须禁用并写明未实现）',
   prefetchReaders.length === 0,
   prefetchReaders.map((file) => basename(file)).join(', '),
+)
+
+// ---------------------------------------------------------------------------
+// 17. 直通重发补回的 fetch 元数据
+// ---------------------------------------------------------------------------
+//
+// 会话级协议层把所有 https 请求都接住之后，非媒体的那些只能靠 `ses.fetch` 重发 —— 而重发出去的
+// 那一份会被内核当成"主进程发起的、没有上下文的请求"（`Sec-Fetch-*` 退化、`Referer` 丢失）。
+// 上游文档预览页按 `Sec-Fetch-Site` / `Sec-Fetch-Mode` 决定回哪一份变体，拿到无上下文的那一份
+// 就**没有** `cross-origin-resource-policy`，在 COEP 父文档里被判"不可嵌入" ⇒
+// `ERR_BLOCKED_BY_RESPONSE` ⇒ 预览面板一直转圈（见 [ADR-0058]）。
+//
+// 症状同样属于"页面局部坏掉、不报错"，而且只在协议层挂着、且真的要回源时才出现。因此把角色
+// 换算与几条"绝不能有"固化成断言 —— 与第 5 节的响应头是同一类问题（改了没人会立刻发现）。
+
+section('直通重发补回的 fetch 元数据')
+
+check(
+  '子框架导航补成 navigate / iframe（文档预览缺的就是这一条）',
+  FETCH_METADATA_BY_RESOURCE_TYPE.subFrame.mode === 'navigate' &&
+    FETCH_METADATA_BY_RESOURCE_TYPE.subFrame.dest === 'iframe',
+)
+check(
+  '顶层导航补成 navigate / document，且只有它带 Sec-Fetch-User',
+  FETCH_METADATA_BY_RESOURCE_TYPE.mainFrame.dest === 'document' &&
+    FETCH_METADATA_BY_RESOURCE_TYPE.mainFrame.user === '?1' &&
+    FETCH_METADATA_BY_RESOURCE_TYPE.subFrame.user === undefined,
+)
+
+// 这两条是"绝不能有"：`other` 正是我们自己重发出去的那一份，收录它等于队列自己喂自己；
+// `media` 的 dest 在 video / audio 之间分不出来 —— 宁可少补，也不补一个错的。
+check('不收录 other（否则重发的那一份会重新进队列）', !('other' in FETCH_METADATA_BY_RESOURCE_TYPE))
+check(
+  '不收录 media（dest 分不出来，宁可维持内核默认）',
+  !('media' in FETCH_METADATA_BY_RESOURCE_TYPE),
+)
+
+const previewUrl = 'https://webtp.whatsapp.net/pdf-viewer/?locale=zh_CN'
+
+clearRequestContexts()
+rememberRequestContext({
+  method: 'GET',
+  url: previewUrl,
+  resourceType: 'subFrame',
+  referrer: 'https://web.whatsapp.com/',
+})
+
+const previewRequest = new Request(previewUrl)
+applyRequestContext(previewRequest)
+check(
+  '按角色补回 Sec-Fetch-* 与 Referer，且不碰 Sec-Fetch-Site（内核现算，写了也会被覆盖）',
+  previewRequest.headers.get('Sec-Fetch-Mode') === 'navigate' &&
+    previewRequest.headers.get('Sec-Fetch-Dest') === 'iframe' &&
+    previewRequest.headers.get('Referer') === 'https://web.whatsapp.com/' &&
+    previewRequest.headers.get('Sec-Fetch-Site') === null,
+)
+
+// 取不到记录时不许把请求写坏：`new Request(url)` 的默认 `referrer` 是哨兵值 `about:client`，
+// 它不是一个地址 —— 写进 `Referer` 会造出一份畸形请求。
+clearRequestContexts()
+const bareRequest = new Request('https://example.com/x')
+applyRequestContext(bareRequest)
+check(
+  '取不到记录时不写坏请求（不把 about:client 写成 Referer，也不编 Sec-Fetch-*）',
+  bareRequest.referrer === 'about:client' &&
+    bareRequest.headers.get('Referer') === null &&
+    bareRequest.headers.get('Sec-Fetch-Mode') === null,
+)
+
+// 角色与请求一一对应、取走即消失：否则同一 URL 的下一次重发会拿到上一次的角色（串味），
+// 而"同一个 URL 并发若干请求"在加载图片时很常见。
+rememberRequestContext({ method: 'GET', url: previewUrl, resourceType: 'xhr', referrer: '' })
+const xhrRequest = new Request(previewUrl)
+applyRequestContext(xhrRequest)
+const reusedRequest = new Request(previewUrl)
+applyRequestContext(reusedRequest)
+check(
+  '角色按 method + url 配对、取出即消失（不会串到下一条请求上）',
+  xhrRequest.headers.get('Sec-Fetch-Mode') === 'cors' &&
+    xhrRequest.headers.get('Sec-Fetch-Dest') === 'empty' &&
+    reusedRequest.headers.get('Sec-Fetch-Mode') === null,
+)
+
+// 摘掉协议层时要清空：切换会在两个方向上来回走，留着只会让下一轮的请求拿到上一轮的角色。
+rememberRequestContext({ method: 'GET', url: previewUrl, resourceType: 'subFrame', referrer: '' })
+clearRequestContexts()
+const afterClear = new Request(previewUrl)
+applyRequestContext(afterClear)
+check(
+  '摘掉协议层时清空队列（切换来回走，留着只会串味）',
+  afterClear.headers.get('Sec-Fetch-Mode') === null,
 )
 
 // ---------------------------------------------------------------------------
