@@ -51,6 +51,7 @@
 | [0041](#adr-0041) | 开启「禁用 PDF 预览」后，上游那个预览面板**仍会出现**（页面自己的界面，改不了）：承认它、把承诺改成与实测一致，并在挡下预览时弹一条节流提示告诉用户改走消息上的「下载」 | 已生效（修正 [ADR-0029](#adr-0029) 的前提与"可观察结果"、[ADR-0030](#adr-0030) 对开启后表现的描述） |
 | [0042](#adr-0042) | 去掉设置窗口的顶栏（含「尚无接管记录」那几颗标签）：常态不再显示接管状态，**失效改由系统通知告知**（每种原因一次，恢复正常后重新武装）；随之删掉 `capture:health*` 通道与两个桥方法 | 已生效（**取代** [ADR-0025](#adr-0025) 的"健康标签只挂设置窗口"与理由 5） |
 | [0043](#adr-0043) | **撤销 INV-1 与 INV-2**：改用 `whatsapp-web.js` 承载会话与媒体，允许 CDP 驱动页面与协议驱动型客户端库；**INV-3 本次不撤销**（列为集成的阻塞项） | 已生效（**取代** [ADR-0001](#adr-0001)、[ADR-0002](#adr-0002)） |
+| [0044](#adr-0044) | 承载架构定为**由 `whatsapp-web.js` 自己启动独立 Chromium**；Electron 降级为归档层与本地界面 | 已生效（承接 [ADR-0043](#adr-0043) 的未决项 2） |
 
 ---
 
@@ -2073,14 +2074,15 @@ app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己�
 
 **未决事项（阻塞集成，需后续 ADR）**：
 
-1. **INV-3**。`whatsapp-web.js` 的媒体路径内部会解析 `mediaKey` 并解密
-   （`downloadMedia` / `Message.downloadMedia()`）。因此：归档层若要继续拿到明文，就必须**一并撤销
-   INV-3**；或改为不使用该库的媒体下载能力 —— 那样"消息时间 / 消息 ID"的收益也随之失去。
-   在这一点定下之前，集成无法落地。
+1. **INV-3**。写下本 ADR 时的前提是"该库的媒体路径内部会解析 `mediaKey` 并解密"。**这条前提已被
+   [`research/inv3-assessment.md`](research/inv3-assessment.md) 的抽样审计修正**：解密由**上游页面
+   代码**完成（`msg.downloadMedia()`），库自身不含对称解密实现；被触碰的只有"不解析 mediaKey"这一条，
+   且发生在库内部。因此"是否必须撤销 INV-3"**尚无定论** —— 评估给出的建议是**保持 INV-3 并在我们
+   这一侧加固**（禁止 `src/` 出现解密原语与 `mediaKey`），由所有者决定后写入新的 ADR。
 2. **承载架构**：该库自带 puppeteer，会启动它自己的 Chromium；在 Electron 内跑通常走
-   `wwebjs-electron`，把 Electron 的窗口交给它驱动。两条路线（独立 Chromium vs Electron 承载）对
-   deb / AppImage 打包、单实例、托盘、`app.setDesktopName` / AppArmor（ADR-0022、`docs/packaging.md`）
-   的影响完全不同，需要单独一条 ADR。
+   `wwebjs-electron`，把 Electron 的窗口交给它驱动。两条路线对 deb / AppImage 打包、单实例、托盘、
+   `app.setDesktopName` / AppArmor（ADR-0022、`docs/packaging.md`）的影响完全不同。
+   **已定**：见 [ADR-0044](#adr-0044)（独立 Chromium）。
 3. **归档层存续**：内容哈希 + SQLite + FTS5 + `<账号>/files/<年-月>/` 分区（ADR-0003 / 0031 /
    0037 / 0039）与承载方式无关，**建议整体保留**；是否引入 `content_date`（文件日期列）由集成 PR
    决定。
@@ -2093,3 +2095,61 @@ app.commandLine.appendSwitch('use-webgpu-adapter', 'opengles') // 用户自己�
   的取舍正好相反（原路线的收益正是"迭代由上游负责"）。
 - **本次未撤销 INV-3**：因此当前代码库仍保留"不经手密钥"的纪律，而集成所需的媒体能力与之冲突
   —— 这条矛盾被显式留在这里，而不是靠约定俗成绕过。
+
+---
+
+## ADR-0044
+
+**决定**：`whatsapp-web.js` 的承载方式定为**由该库自己启动独立 Chromium**（puppeteer 驱动的独立浏览器
+进程），本仓库的 Electron 进程**不再承载网页版**：
+
+1. 会话、页面与登录态由该库的独立 Chromium 进程承担（登录态用该库的持久化认证机制落盘）。
+2. Electron 进程降级为**归档层与本地界面**：文件列表、设置窗口、托盘、归档与索引继续由它负责；
+   它不再加载 `web.whatsapp.com`，也不再挂 `session.protocol.handle('https')` 与 `will-download`。
+   `src/main/capture/**` 的密文缓存与协议层随之**失去意义**。
+3. 承载窗口（`src/main/window.ts`）改造为**本地界面窗口**；UA 改写（`src/shared/user-agent.ts`）在
+   该进程里不再需要。
+
+**状态**：已生效（承接 [ADR-0043](#adr-0043) 的"未决事项 2"；与 INV-3 的处理**相互独立**）
+
+**背景**：[ADR-0043](#adr-0043) 撤销 INV-1 / INV-2 之后，需要决定该库怎么跑。两条候选：把 Electron
+的窗口交给 `wwebjs-electron` 驱动，或让库自己启动 Chromium。项目所有者选择后者。
+
+**理由**：
+
+1. **偏离上游最少。** 该库的文档与测试都以"它自己启动 Chromium"为前提，这条路未知最少、失效面最小。
+2. **进程隔离换来更清晰的信任边界。** 登录态、页面注入与 CDP 全部发生在 puppeteer 管的那个进程里，
+   我们的 Electron 进程不再持有远程内容 —— `docs/security.md` 第 1 节的边界要按新的形态重画，但画
+   出来会更简单，而不是更复杂。
+3. **避免两套浏览器生命周期耦合。** `wwebjs-electron` 让 puppeteer 驱动 Electron 的窗口，等于把版本、
+   DevTools、沙箱、单实例四件事绑在一起 —— 出问题时最难归因。
+4. **归档层与本地界面与承载方式无关。** 降级之后可以原样保留，改动面最小。
+
+**被否决的替代方案**：
+
+- **`wwebjs-electron`（在 Electron 窗口里承载）**：复用现有窗口与打包链，改动最小；但两套浏览器生命
+  周期耦合，且该库对 Electron 属边缘用法。
+- **不承载页面、只用库的事件做归档**（无窗口）：不可行 —— 网页版需要一个可见的会话环境完成扫码登录。
+
+**影响**（随集成 PR 落地，本节即清单）：
+
+- **依赖与打包**：新增 `whatsapp-web.js`（及其 `puppeteer`）。⚠️ **最大的未实测项**：puppeteer 默认把
+  Chromium 下到 `~/.cache/puppeteer`，deb / AppImage 不能假设那个目录存在。打包方案（内置、复用系统、
+  还是首次运行下载）必须先实测再定，见 `docs/packaging.md`。
+- `src/main/index.ts` / `window.ts` / `session.ts`：承载窗口与分区会话改造。`app.setDesktopName` 与
+  `StartupWMClass` 的同源要求（ADR-0022）对**本地界面窗口**仍然成立。
+- `src/main/capture/**`：`protocol.ts` / `cache-files.ts` / `cache-switch.ts` / `cachekey.ts` /
+  `headers.ts` / `retry.ts` 失去作用；`pdf.ts` 的 PDF 降级规则不再需要；`download.ts` 的下载接管改为
+  消费库的媒体事件。
+- `scripts/check-capture.ts`：缓存键推导那一节整体删除；UA 一节重审。
+- 单实例、托盘与通知（ADR-0025 / ADR-0042）继续有效。
+- `docs/security.md` 资产表：新增"独立 Chromium 的 profile 目录"一行（登录态所在位置）。
+
+**已知限制**：
+
+- **我们不再控制浏览器的启动参数。** `--disable-features` / WebGPU / Vulkan 那一批（ADR-0036 /
+  ADR-0038）是给 Electron 的 `app.commandLine` 用的；独立 Chromium 由 puppeteer 拉起，那些参数需要另行
+  注入或放弃。**这是本次决定付出的一处具体代价。**
+- **分发包体积上升**（自带 Chromium）。deb / AppImage 的体积与构建时间都要重新评估。
+- **上述打包与参数细节均未实测**：本 ADR 只定方向，实测结果应补进 `docs/packaging.md`，而不是假装
+  已经验证过。
