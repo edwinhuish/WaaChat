@@ -1519,6 +1519,46 @@ check(
   '有一个设置项只有界面上的一行，没有任何主进程代码读它',
 )
 
+/**
+ * 「`docs/decisions.md` 的索引表」与正文标题必须**一一对应**。
+ *
+ * 为什么值得两条断言：索引表是这份**唯一事实源**的目录，而它三种坏法都是**静默**的 ——
+ *
+ *   - **漏一行索引**（[ADR-0057] 有正文、索引里没有）：那一条从目录里消失，读者以为它不存在；
+ *   - **漏一段正文**（[ADR-0072] 有索引、正文没写）：索引里那个 `#adr-xxxx` 成为**断链**，而
+ *     代码里已经在引用它（`src/main/spellcheck.ts` 的注释就写着 `[ADR-0072]`）；
+ *   - **插新行时插错位置**（0072 曾经排在 0071 之前）：编号顺序被打乱。
+ *
+ * 三者都不报错、应用也一切正常，因此只能在这里挡。刻意**不**检查索引文字与正文是否语义一致
+ * （那需要读语义），只钉住"编号连续、升序、且两侧都存在"。
+ */
+const decisionsDoc = source('../docs/decisions.md')
+const indexedAdrs = [...decisionsDoc.matchAll(/^\| \[(\d{4})\]\(#adr-\d{4}\) \|/gm)].map(
+  (match) => match[1],
+)
+const headedAdrs = [...decisionsDoc.matchAll(/^## ADR-(\d{4})\s*$/gm)].map((match) => match[1])
+const indexedSet = new Set(indexedAdrs)
+const headedSet = new Set(headedAdrs)
+const missingHeading = indexedAdrs.filter((number) => !headedSet.has(number))
+const missingIndex = headedAdrs.filter((number) => !indexedSet.has(number))
+check(
+  'ADR 索引表与正文标题一一对应（漏索引 = 那一节从目录里消失；漏正文 = 索引指向一个断链）',
+  indexedAdrs.length > 0 && missingHeading.length === 0 && missingIndex.length === 0,
+  indexedAdrs.length === 0
+    ? 'docs/decisions.md 里找不到索引行 —— 表头或者行的写法改过了？'
+    : missingHeading.length > 0
+      ? `这些索引行指向不存在的正文：${missingHeading.join(', ')}`
+      : `这些正文没有索引行：${missingIndex.join(', ')}`,
+)
+check(
+  'ADR 编号连续、升序：正文是 0001 起逐号 +1，索引表也保持同样的次序',
+  headedAdrs.map(Number).every((number, offset) => number === offset + 1) &&
+    indexedAdrs
+      .map(Number)
+      .every((number, offset, all) => offset === 0 || number > all[offset - 1]),
+  `索引次序：${indexedAdrs.join(', ')}`,
+)
+
 // ---------------------------------------------------------------------------
 // 20. 实例隔离（多实例）
 // ---------------------------------------------------------------------------
