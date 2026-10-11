@@ -629,9 +629,12 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   /**
    * 界面语言那一行。
    *
-   * 它改的是**会话的 `Accept-Language`**（[ADR-0060]），因此生效方式与别的设置项都不一样：
-   * 主进程在提交之后会**重新加载内嵌页面**。这件事必须写在提示里 —— "切换语言会丢掉还没发
-   * 出去的文字"如果不说，用户只会觉得是自己按错了。
+   * 它是**重启后生效**的（[ADR-0063]）：真正决定「网页版显示哪种语言」的是启动期的 `--lang`
+   * 开关（网页版按 `navigator.language` 挑语言包），而那个开关只能启动前设。徽标因此来自
+   * `RESTART_REQUIRED_SETTINGS`，与别的需要重启的项同一个来源 —— 不在这里写死。
+   *
+   * ⚠️ 提示语必须说清"要重启"。曾经它写的是"切换后会重新加载页面"，而那条路**根本改不动**
+   * `navigator.language` —— 用户照着做只会得到"改了没反应"，然后以为是我们或者上游的 bug。
    *
    * 选中项取设置值；设置值不在表里时（手工改坏的配置文件）**显示默认项**而不是"什么都不选"。
    * 后者会得到一行"界面说 A、实际按 B 跑"，而 `main/settings.ts` 的 `coerce()` 本来就会把这种
@@ -641,6 +644,9 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     const chosen = UI_LANGUAGES.some((entry) => entry.code === current.uiLanguage)
       ? current.uiLanguage
       : DEFAULT_UI_LANGUAGE
+
+    // 与开关那一行同一个口径：徽标来自那个列表，不在这里写死。
+    const needsRestart = RESTART_REQUIRED_SETTINGS.includes('uiLanguage')
 
     const select = h(
       'select',
@@ -666,10 +672,15 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       h(
         'div',
         {},
-        h('div', { class: 'label', text: '界面语言' }),
+        h(
+          'div',
+          { class: 'label' },
+          '界面语言',
+          ...(needsRestart ? [h('span', { class: 'badge', text: '重启后生效' })] : []),
+        ),
         h('div', {
           class: 'hint',
-          text: '内嵌页面的显示语言。切换后会重新加载页面 —— 输入框里还没发出去的文字会丢失。',
+          text: '内嵌页面的显示语言。网页版按浏览器的语言偏好挑自己的语言包，因此改完要重新启动应用才生效（我们一个字都不往页面里写）。',
         }),
       ),
     )

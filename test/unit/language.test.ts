@@ -23,10 +23,14 @@ import {
   uiLanguage,
 } from '../../src/shared/language'
 
-/** 取 `Accept-Language` 里的主语言（第一段、去掉 q 值）。 */
+/**
+ * 取 `acceptLanguages` 里的主语言（第一段）。
+ *
+ * 这里刻意**不**去剥 `;q=`：那已经不是合法写法了（见下面那条关于 q 值的用例），留着剥壳反而
+ * 会让"有人把 q 值写回来"逃过"主语言必须等于语言码"那条断言。
+ */
 function primaryLanguage(acceptLanguages: string): string {
-  const first = acceptLanguages.split(',')[0] ?? ''
-  return first.split(';')[0]?.trim() ?? ''
+  return (acceptLanguages.split(',')[0] ?? '').trim()
 }
 
 describe('UI_LANGUAGES', () => {
@@ -42,13 +46,22 @@ describe('UI_LANGUAGES', () => {
     }
   })
 
-  it('语言码与 Accept-Language 都是纯 ASCII、逗号分隔、没有空格', () => {
+  it('语言码与 acceptLanguages 都是纯 ASCII、逗号分隔、没有空格', () => {
     // 脏字符不会报错，只会让上游认不出这个头（`zh-CN , en` 里的空格就足以让部分实现只取到 " zh"）。
     for (const entry of UI_LANGUAGES) {
       expect(entry.code).toMatch(/^[a-z]{2}(-[A-Za-z]{2,4})?$/)
-      expect(entry.acceptLanguages).toMatch(/^[A-Za-z0-9,;=.q-]+$/)
+      expect(entry.acceptLanguages).toMatch(/^[A-Za-z0-9,-]+$/)
       expect(entry.acceptLanguages).not.toContain(' ')
       expect(entry.acceptLanguages).not.toContain(',,')
+    }
+  })
+
+  it('不自己写 `;q=` 值 —— 内核会把它当成语言标签的一部分（[ADR-0063]）', () => {
+    // 实测 Electron 44.7：`setUserAgent(ua, 'en-US,en;q=0.9')` 发出去的头是
+    // `en-US,en;q=0.9;q=0.9` —— q 值重复，且 `en` 后面拖着一个畸形参数。q 值由内核自己按顺序排：
+    // 给 `'ja-JP,ja,en-US,en'` 得到的是 `ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7`。
+    for (const entry of UI_LANGUAGES) {
+      expect(entry.acceptLanguages).not.toContain(';')
     }
   })
 
@@ -71,7 +84,7 @@ describe('UI_LANGUAGES', () => {
 describe('uiLanguage / acceptLanguagesFor', () => {
   it('认得出的码原样返回', () => {
     expect(uiLanguage('en-US').code).toBe('en-US')
-    expect(acceptLanguagesFor('en-US')).toBe('en-US,en;q=0.9')
+    expect(acceptLanguagesFor('en-US')).toBe('en-US,en')
   })
 
   it('认不出的码回落到默认项，而不是抛错', () => {
@@ -125,9 +138,12 @@ describe('SPELLCHECK_LANGUAGES', () => {
     }
   })
 
-  it('用的是内核的词典命名：区域码只出现在真有区域变体的那几门语言上', () => {
-    // `de-DE` 这种写法看起来更规范，但内核的清单里没有它 —— 勾了之后**不报错也不生效**。
-    // 这条断言把"别把基础语言码补成区域码"钉住。
+  it('统一用基础语言码：区域码只出现在真有区域变体意义的那几门语言上', () => {
+    // ⚠️ 这是**我们的取舍**，不是内核的限制：实测 Electron 44.7 的清单（57 门）里
+    // `de` 与 `de-DE`、`fr` 与 `fr-FR`、`it` 与 `it-IT`、`es` 与 `es-ES` **都在**。
+    // 仍然写基础码，是因为两者等效而基础码更短、界面上的名字也不必被迫写成"德语（德国）"。
+    //
+    // 这条断言把"别把基础语言码顺手补成区域码"钉住 —— 改了它就要连界面上的名字一起想清楚。
     const regionCodes = SPELLCHECK_LANGUAGES.map((entry) => entry.code).filter((code) =>
       code.includes('-'),
     )
@@ -159,9 +175,10 @@ describe('normalizeSpellcheckLanguages', () => {
     expect(normalizeSpellcheckLanguages('en-US,xx-XX,en-US,fr')).toBe('en-US,fr')
   })
 
-  it('也剔掉"内核不认识的那个形状"（区域码补多了就是表外的码）', () => {
-    // 与 SPELLCHECK_LANGUAGES 的命名约定配套：`de-DE` 不在表里，因此它会被收敛掉，
-    // 而不是被一路存到设置文件里、再被内核默默拒掉。
+  it('也剔掉表外的区域码（`de-DE` 内核其实认得，但我们统一用 `de`）', () => {
+    // 与 SPELLCHECK_LANGUAGES 的命名约定配套：`de-DE` 不在**我们的表**里，因此它会被收敛掉，
+    // 而不是被一路存到设置文件里、让界面显示一个表外的值。
+    // （注意别把这条读成"内核不认识 `de-DE`" —— 实测它认得，只是我们不用那个形状。）
     expect(normalizeSpellcheckLanguages('de-DE')).toBe(DEFAULT_SPELLCHECK_LANGUAGES)
   })
 

@@ -54,16 +54,24 @@ export function attachContextMenu(window: BrowserWindow): void {
       /**
        * 可用与否**照抄**内核算好的 `editFlags`，不自己判断：自己判会得到"粘贴项是灰的、而
        * Ctrl+V 明明能粘"这类不一致，用户无法理解为什么两种说法不一样。
+       *
+       * ⚠️ 每一项都显式给了 `label`，**不要**去掉（自检第 19 节断言它们都在）。
+       *
+       * `role` 的默认文案来自 Chromium 自己的 locale，而那个 locale 会被「界面语言」那一项
+       * 一起切走（`main/index.ts` 的 `--lang`，[ADR-0063]）。也就是说：把内嵌页面切成英文的
+       * 用户，右键菜单会变成 Cut / Copy / Paste / Select All —— 而这是我们**自己**的界面，
+       * 它的文案必须是中文（`ai/CONVENTIONS.md` 第 1 节）。给 `role` 项配 `label` 不会改变
+       * 它的行为，只是不让别人替我们决定说什么语言。
        */
       template.push(
-        { role: 'cut', enabled: params.editFlags.canCut },
-        { role: 'copy', enabled: params.editFlags.canCopy },
-        { role: 'paste', enabled: params.editFlags.canPaste },
-        { role: 'selectAll', enabled: params.editFlags.canSelectAll },
+        { role: 'cut', label: '剪切', enabled: params.editFlags.canCut },
+        { role: 'copy', label: '复制', enabled: params.editFlags.canCopy },
+        { role: 'paste', label: '粘贴', enabled: params.editFlags.canPaste },
+        { role: 'selectAll', label: '全选', enabled: params.editFlags.canSelectAll },
       )
     } else if (params.selectionText !== '') {
       // 页面里选中了一段文字（不是输入框）：只给「复制」。别的一律不该由我们提供。
-      template.push({ role: 'copy' })
+      template.push({ role: 'copy', label: '复制' })
     }
 
     // 空白处右键：什么都不弹（模板为空时 `popup()` 会得到一张空菜单）。

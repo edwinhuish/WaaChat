@@ -26,8 +26,11 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
   // 就固定了，运行期改不了 —— 见 shared/types.ts 的 RESTART_REQUIRED_SETTINGS。
   //
-  // 语言与拼写检查**不**属于这一类：它们在设置被改动时会重新写到会话上
-  // （见 ipc/index.ts 的 applySettings），因此这里只是启动时的首次装配。
+  // **拼写检查**在设置被改动时会重新写到会话上（见 ipc/index.ts 的 applySettings），因此这里
+  // 只是启动时的首次装配。
+  //
+  // **界面语言**不在这里定：它真正的杠杆是启动期的 `--lang` 开关，早在 `main/index.ts` 里就
+  // 已经固定（[ADR-0063]）。这里下发的 `Accept-Language` 只是它的另一半 —— 请求头那一半。
   const settings = getSettings()
 
   // --- 权限 -----------------------------------------------------------------

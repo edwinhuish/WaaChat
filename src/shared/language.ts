@@ -7,9 +7,9 @@
  *
  * 两项功能都**不向被承载的页面注入任何东西**（[INV-1]）：
  *
- *   - 「界面语言」改的是会话的 `Accept-Language` 请求头（`session.setUserAgent` 的第二个参数），
- *     页面自己据此挑它自己的语言包。这也意味着**改完要重新加载页面**才生效 —— 不重新加载
- *     就只能去改页面里已经渲染好的文本，那是注入。
+ *   - 「界面语言」落在**两处**，缺一不可（[ADR-0063]）：启动时的 `--lang` 开关决定
+ *     `navigator.language`（网页版真正看的那个），会话的 `Accept-Language` 头负责请求层的有序
+ *     回退。因此它**改完要重启应用**才生效 —— 网页版是纯 JS 应用，要改已经渲染好的文本只剩注入。
  *   - 「拼写检查」用的是内核自带的 Hunspell 检查器，红波浪线由渲染进程自己画，
  *     只是需要告诉内核"要查哪些语言"（`session.setSpellCheckerLanguages`）。
  *
@@ -26,10 +26,18 @@ export interface UiLanguage {
   /** 界面上的名字。按 `ai/CONVENTIONS.md` 第 1 节，面向用户的文案用中文。 */
   readonly label: string
   /**
-   * 交给会话的 `Accept-Language`：**有序、逗号分隔**（Electron 要求的形状）。
+   * 交给会话的 `Accept-Language`：**有序、逗号分隔的纯语言码**（第一项是主语言，其余是回退）。
    *
-   * 第一项是主语言，其余是回退 —— 上游按这个顺序挑它自己的语言包。回退项是必要的：
-   * 上游未必有我们主语言的那一套文案，没有回退就会掉到它的默认语言（通常是英语）。
+   * ⚠️ **不要自己写 `;q=` 值。** q 值由 Chromium 自己按顺序排（实测 Electron 44.7）：
+   * 给 `'ja-JP,ja,en-US,en'` 得到的头就是 `ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7`。手写反而
+   * 会被当成**语言标签的一部分**原样拼进去 —— 给 `'en-US,en;q=0.9'` 得到的是
+   * `en-US,en;q=0.9;q=0.9`（q 值重复、`en` 后面拖着一个畸形参数）。见 [ADR-0063]。
+   *
+   * 回退项是必要的：上游未必有我们主语言的那一套文案，没有回退就会掉到它的默认语言（通常是英语）。
+   *
+   * ⚠️ 这个头**只**影响网络层。它**改不动** `navigator.language`（实测：只设这个头时
+   * `navigator.language` 依旧是系统的 `zh-CN`），而网页版是纯 JS 应用、按 `navigator.language`
+   * 挑语言包 —— 真正决定界面语言的是启动时的 `--lang` 开关，见 [ADR-0063]。两者互不替代。
    */
   readonly acceptLanguages: string
 }
@@ -38,7 +46,7 @@ export interface UiLanguage {
 const ZH_CN: UiLanguage = {
   code: 'zh-CN',
   label: '简体中文',
-  acceptLanguages: 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+  acceptLanguages: 'zh-CN,zh,en-US,en',
 }
 
 /**
@@ -51,23 +59,23 @@ const ZH_CN: UiLanguage = {
  */
 export const UI_LANGUAGES: readonly UiLanguage[] = [
   ZH_CN,
-  { code: 'zh-TW', label: '繁體中文', acceptLanguages: 'zh-TW,zh-Hant;q=0.9,zh;q=0.8,en;q=0.7' },
-  { code: 'en-US', label: '英语（美国）', acceptLanguages: 'en-US,en;q=0.9' },
-  { code: 'en-GB', label: '英语（英国）', acceptLanguages: 'en-GB,en;q=0.9,en-US;q=0.8' },
-  { code: 'ja-JP', label: '日语', acceptLanguages: 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7' },
-  { code: 'ko-KR', label: '韩语', acceptLanguages: 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7' },
-  { code: 'es-ES', label: '西班牙语', acceptLanguages: 'es-ES,es;q=0.9,en;q=0.7' },
-  { code: 'pt-BR', label: '葡萄牙语（巴西）', acceptLanguages: 'pt-BR,pt;q=0.9,en;q=0.7' },
-  { code: 'fr-FR', label: '法语', acceptLanguages: 'fr-FR,fr;q=0.9,en;q=0.7' },
-  { code: 'de-DE', label: '德语', acceptLanguages: 'de-DE,de;q=0.9,en;q=0.7' },
-  { code: 'it-IT', label: '意大利语', acceptLanguages: 'it-IT,it;q=0.9,en;q=0.7' },
-  { code: 'ru-RU', label: '俄语', acceptLanguages: 'ru-RU,ru;q=0.9,en;q=0.7' },
-  { code: 'tr-TR', label: '土耳其语', acceptLanguages: 'tr-TR,tr;q=0.9,en;q=0.7' },
-  { code: 'id-ID', label: '印度尼西亚语', acceptLanguages: 'id-ID,id;q=0.9,en;q=0.7' },
-  { code: 'vi-VN', label: '越南语', acceptLanguages: 'vi-VN,vi;q=0.9,en;q=0.7' },
-  { code: 'th-TH', label: '泰语', acceptLanguages: 'th-TH,th;q=0.9,en;q=0.7' },
-  { code: 'hi-IN', label: '印地语', acceptLanguages: 'hi-IN,hi;q=0.9,en-IN;q=0.8,en;q=0.7' },
-  { code: 'ar', label: '阿拉伯语', acceptLanguages: 'ar,en-US;q=0.8,en;q=0.7' },
+  { code: 'zh-TW', label: '繁體中文', acceptLanguages: 'zh-TW,zh-Hant,zh,en' },
+  { code: 'en-US', label: '英语（美国）', acceptLanguages: 'en-US,en' },
+  { code: 'en-GB', label: '英语（英国）', acceptLanguages: 'en-GB,en,en-US' },
+  { code: 'ja-JP', label: '日语', acceptLanguages: 'ja-JP,ja,en-US,en' },
+  { code: 'ko-KR', label: '韩语', acceptLanguages: 'ko-KR,ko,en-US,en' },
+  { code: 'es-ES', label: '西班牙语', acceptLanguages: 'es-ES,es,en' },
+  { code: 'pt-BR', label: '葡萄牙语（巴西）', acceptLanguages: 'pt-BR,pt,en' },
+  { code: 'fr-FR', label: '法语', acceptLanguages: 'fr-FR,fr,en' },
+  { code: 'de-DE', label: '德语', acceptLanguages: 'de-DE,de,en' },
+  { code: 'it-IT', label: '意大利语', acceptLanguages: 'it-IT,it,en' },
+  { code: 'ru-RU', label: '俄语', acceptLanguages: 'ru-RU,ru,en' },
+  { code: 'tr-TR', label: '土耳其语', acceptLanguages: 'tr-TR,tr,en' },
+  { code: 'id-ID', label: '印度尼西亚语', acceptLanguages: 'id-ID,id,en' },
+  { code: 'vi-VN', label: '越南语', acceptLanguages: 'vi-VN,vi,en' },
+  { code: 'th-TH', label: '泰语', acceptLanguages: 'th-TH,th,en' },
+  { code: 'hi-IN', label: '印地语', acceptLanguages: 'hi-IN,hi,en-IN,en' },
+  { code: 'ar', label: '阿拉伯语', acceptLanguages: 'ar,en-US,en' },
 ]
 
 export const DEFAULT_UI_LANGUAGE: string = ZH_CN.code
@@ -106,10 +114,18 @@ export interface SpellcheckLanguage {
 /**
  * 可选为拼写检查词典的语言。
  *
- * ⚠️ **码的形状是内核的命名，不是我们的偏好**：Hunspell 词典用的是**基础语言码**
- * （`de` / `fr` / `nl` / `ru` …），只有英语、葡萄牙语、西班牙语这类有区域变体的才有
- * `en-US` / `pt-BR` 这种形式。写成 `de-DE` 看起来更"规范"，但内核的清单里没有它 ——
- * 症状是"用户勾了德语、德语词照样被画红线"，而且**没有任何报错**。
+ * ⚠️ **码必须逐字出现在 `session.availableSpellCheckerLanguages` 里**，因为它会被原样交给
+ * `setSpellCheckerLanguages()`：写错一个码的症状是"用户勾了德语、德语词照样被画红线"，而且
+ * **没有任何报错**（判决见 `main/spellcheck.ts`）。
+ *
+ * 我们**统一用基础语言码**（`de` / `fr` / `nl` / `ru` …），只在真有区域变体意义时才带区域
+ * （`en-US` / `en-GB` / `pt-BR`）。这是**我们的取舍**，不是内核的限制：实测 Electron 44.7 的
+ * 清单是 57 门，`de` 与 `de-DE`、`fr` 与 `fr-FR`、`it` 与 `it-IT`、`es` 与 `es-ES` **都在**
+ * 里面。之所以仍然写基础码，是因为两者等效而基础码更短、界面上的名字也不用被迫写成"德语（德国）"。
+ *
+ * ⚠️ 反过来，**中文不在内核清单里**（实测清单里没有任何 `zh*` 条目）—— 列上去就是一个永远
+ * 不生效的选项，因此这里不列。别把"界面语言表里有中文"当成这里的笔误：两张表回答的是两个
+ * 不同的问题。
  *
  * ⚠️ **这份清单仍然只是"候选人"**：真正能装哪些由内核决定，运行时以
  * `session.availableSpellCheckerLanguages` 为准 —— 主进程会把表里内核没有的那些**剔掉并记一条

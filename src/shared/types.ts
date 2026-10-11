@@ -110,11 +110,15 @@ export interface Settings {
   /** 是否随桌面会话自启动。 */
   readonly launchAtLogin: boolean
   /**
-   * 内嵌页面的界面语言（[ADR-0060]）。值取自 `shared/language.ts` 的 `UI_LANGUAGES`。
+   * 内嵌页面的界面语言（[ADR-0063]，取代 [ADR-0060] 的机制）。值取自 `shared/language.ts`
+   * 的 `UI_LANGUAGES`。
    *
-   * 它改的是**会话的 `Accept-Language` 请求头**，上游页面据此挑自己的语言包 ——
-   * 我们一个字都不往页面里写（[INV-1]）。因此它**不跟随我们的界面文案语言**：
-   * 这两件事没有关系（我们的界面只有中文，见 `ai/CONVENTIONS.md` 第 1 节）。
+   * 它落在**两处**：启动时的 `--lang` 开关（决定 `navigator.language` —— 网页版真正看的东西）
+   * 与会话的 `Accept-Language` 头（请求层的回退）。因此它是**重启后生效**的
+   * （见 {@link RESTART_REQUIRED_SETTINGS}）。
+   *
+   * 它**不跟随我们的界面文案语言**：这两件事没有关系（我们的界面只有中文，见
+   * `ai/CONVENTIONS.md` 第 1 节）。
    */
   readonly uiLanguage: string
   /**
@@ -153,14 +157,15 @@ export const DEFAULT_SETTINGS: Settings = {
  *
  * 界面对照这个列表渲染"重启后生效"的徽标，不自己写死。
  *
- * **目前是空的**：唯一在册的 `enableCiphertextCache` 改成了事务式切换（[ADR-0027]）——
- * 提交设置的同时把协议层一起注册/注销，因此它提交即生效。列表与徽标机制**保留**：
- * 它是"某项改不动"这件事唯一的表达方式，将来还可能有别的项进来（例如需要重建分区的设置）。
+ * 目前只有 `uiLanguage` 一项：它落在启动期的 `--lang` 开关上，而那个开关只能**启动前**设
+ * （[ADR-0063]）。这不是保守，是 Electron 唯一的入口 —— 会话级的 `Accept-Language` 改不动
+ * `navigator.language`，而网页版看的正是后者。
  *
  * 历史：这个列表最初只有 `enableCiphertextCache`，理由是 `ses.protocol.handle('https')`
- * 过去只在启动时注册一次、之后不再变。现在那层跟着设置走，理由随之消失。
+ * 过去只在启动时注册一次、之后不再变。密文缓存的切换改成了事务式（[ADR-0027]），它随之出列；
+ * 列表与徽标机制保留下来了 —— 现在轮到了 `uiLanguage`。
  */
-export const RESTART_REQUIRED_SETTINGS: readonly (keyof Settings)[] = []
+export const RESTART_REQUIRED_SETTINGS: readonly (keyof Settings)[] = ['uiLanguage']
 
 // ---------------------------------------------------------------------------
 // 归档迁移（更换保存位置）

@@ -86,6 +86,25 @@ app.setPath('userData', withInstanceSuffix(userDataDir, instance.id))
 app.setPath('sessionData', withInstanceSuffix(sessionDataDir, instance.id))
 
 /**
+ * 界面语言：决定 `navigator.language` 的那个开关（[ADR-0063]）。
+ *
+ * ⚠️ 它**只能在这里设**，而且必须早于 `whenReady` —— `--lang` 是 Chromium 的启动期开关，
+ * 运行期改不了。因此「界面语言」是**重启后生效**的（`RESTART_REQUIRED_SETTINGS`），
+ * 设置页也这么写。
+ *
+ * 为什么非它不可：网页版是纯 JS 应用，按 `navigator.language` 挑自己的语言包，而那个值来自
+ * **应用 locale**。实测（Electron 44.7）只设会话的 `Accept-Language` **完全改不动**它 ——
+ * 那个头只影响网络层，`navigator.language` 始终是系统的 `zh-CN`。会话级的
+ * `setUserAgent(ua, acceptLanguages)` 仍然保留：它负责请求头里的**有序回退**，两件事互不替代。
+ *
+ * ⚠️ 副作用要照看：这一步会把 Chromium 自己的 locale 一起切过去（`app.getLocale()` 实测从
+ * `zh-CN` 变成 `en-US`），而 Electron 的 `role` 菜单项（剪切 / 复制 / 粘贴 / 全选）用的是**它的**
+ * 字符串。我们自己的界面文案必须是中文（`ai/CONVENTIONS.md` 第 1 节），因此那几项在
+ * `context-menu.ts` 里显式给了 label —— 改这里时别忘了那一边。
+ */
+app.commandLine.appendSwitch('lang', getSettings().uiLanguage)
+
+/**
  * Linux：**Wayland 的臭氧路径没有 Vulkan surface**。Chromium 里有一条默认开启的
  * 「WebGPU 在原生 Vulkan 上 + GL 互操作」的路，每次启动都会去建一个原生 Vulkan 实现，
  * 于是留下一行 `wayland_surface_factory.cc … not compatible with Vulkan` 的 ERROR。

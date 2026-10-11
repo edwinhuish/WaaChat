@@ -64,12 +64,11 @@ import {
 import { applyLaunchAtLogin } from '../integration/login'
 import { openPath, revealPath } from '../integration/open'
 import { getTray } from '../integration/tray'
-import { applyUserAgentAndLanguages } from '../language'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { getSettings, updateSettings } from '../settings'
 import { applySpellcheck } from '../spellcheck'
-import { getFilesWindow, getMainWindow, getSettingsWindow } from '../window'
+import { getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
 /**
@@ -275,26 +274,20 @@ function applySettings(value: unknown): Settings {
   if ('cacheMaxBytes' in patch) void enforceCacheLimit(next.cacheMaxBytes)
 
   /**
-   * 界面语言走的是**请求头**（[ADR-0060]）：`session.setUserAgent(ua, acceptLanguages)` 是
-   * Electron 唯一能设它的入口，而它明确"不影响已存在的 WebContents" —— 因此这里必须**配一次
-   * 页面重载**，否则"改完就生效"是假的。
+   * 界面语言**这里什么都不做**（[ADR-0063]）。
    *
-   * 重载不是注入（[INV-1] 与此无关，我们一个字节都没往页面里写）：它只是让页面重新装载一次，
-   * 上游据此重新挑语言包。代价是页面里**未发送**的输入会丢，因此设置页那一行写着这句话。
+   * 曾经这里会重设会话的 `Accept-Language` 并重载页面，理由是"`setUserAgent` 不影响已存在的
+   * WebContents"。但那条路**根本改不动**「网页版显示哪种语言」：实测只设请求头时
+   * `navigator.language` 依旧是系统的 `zh-CN`，而网页版是纯 JS 应用、看的正是它。真正的杠杆
+   * 是启动期的 `--lang` 开关（`main/index.ts`），它**只能重启生效**（`RESTART_REQUIRED_SETTINGS`）。
    *
-   * ⚠️ 必须是 `reloadIgnoringCache()` 而不是 `reload()`：普通重载**可以命中 HTTP 缓存**，
-   * 而缓存命中意味着这次导航根本不发请求 —— 新设的 `Accept-Language` 于是没有出去，用户看到
-   * 的就是"改了没反应"，而日志里一切正常（连"没生效"都无从判断）。上游的文档响应并不保证带
-   * `Vary: Accept-Language`，因此这里不能指望缓存自己判断。
-   */
-  if ('uiLanguage' in patch) {
-    applyUserAgentAndLanguages(session.fromPartition(sessionPartition()), next)
-    getMainWindow()?.webContents.reloadIgnoringCache()
-  }
-
-  /**
-   * 拼写检查**不需要**重载：`setSpellCheckerLanguages()` 对已存在的输入框立即生效
-   * （拼写检查是每次输入时向内核要素材的，不是页面渲染出来的）。
+   * 因此这里刻意留空，而不是"顺手也把会话头改一下"：那会让用户看到请求头变了、页面却纹丝不动，
+   * 从而以为"这个设置生效了但上游不认" —— 而事实是我们只做了一半。设置页那一行写着要重启。
+   *
+   * ── 与它相反的是拼写检查（下面这一段）──
+   *
+   * 拼写检查**不需要**重启、**也不需要**重载页面：`setSpellCheckerLanguages()` 对已存在的输入框
+   * 立即生效（拼写检查是每次输入时向内核要素材的，不是页面渲染出来的）。
    */
   if ('spellcheck' in patch || 'spellcheckLanguages' in patch) {
     applySpellcheck(session.fromPartition(sessionPartition()), next)

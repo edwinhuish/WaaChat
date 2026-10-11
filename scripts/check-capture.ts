@@ -1217,11 +1217,18 @@ check(
 section('界面语言与拼写检查')
 
 check(
-  '每一项界面语言的 Accept-Language 都以它自己的码开头，且不含空格',
+  '每一项界面语言的 acceptLanguages 都以它自己的码开头、不含空格、且不含 `;`（q 值由内核排）',
   UI_LANGUAGES.every((entry) => {
-    const primary = (entry.acceptLanguages.split(',')[0] ?? '').split(';')[0] ?? ''
-    return primary === entry.code && !entry.acceptLanguages.includes(' ')
+    const primary = entry.acceptLanguages.split(',')[0] ?? ''
+    return (
+      primary === entry.code &&
+      !entry.acceptLanguages.includes(' ') &&
+      // 手写的 q 值**不会**被内核理解：它会被当成语言标签的一部分原样拼回去，实测
+      // `en-US,en;q=0.9` 发出去是 `en-US,en;q=0.9;q=0.9`（见 ADR-0063）。
+      !entry.acceptLanguages.includes(';')
+    )
   }),
+  '有一个语言码自带 q 值，或者主语言与语言码对不上',
 )
 check(
   '认不出的语言码回落到默认（调用点在启动路径上，抛错等于起不来）',
@@ -1229,12 +1236,16 @@ check(
     acceptLanguagesFor('') === acceptLanguagesFor(DEFAULT_UI_LANGUAGE),
 )
 check(
-  '拼写词典用的是内核的命名：区域码只有 en-US / en-GB / pt-BR',
+  '拼写词典统一用基础语言码（我们的取舍）：区域码只有 en-US / en-GB / pt-BR',
   SPELLCHECK_LANGUAGES.map((entry) => entry.code)
     .filter((code) => code.includes('-'))
     .sort()
     .join(',') === 'en-GB,en-US,pt-BR',
 )
+// 注意这条断言的**理由**是实测出来的，不是照抄的：Electron 44.7 的清单是 57 门，
+// `de` 与 `de-DE` / `fr` 与 `fr-FR` / `it` 与 `it-IT` / `es` 与 `es-ES` **都在**里面 ——
+// 也就是说上一版注释里"内核不认 de-DE"那句是错的（见 ADR-0063 的"顺带纠正"）。
+// 但 `zh*` 确实一个都没有，所以下面这条到现在依然成立。
 check(
   '拼写词典里没有中文（内核的清单里也没有：列上去等于一个永远不生效的选项）',
   !SPELLCHECK_LANGUAGES.some((entry) => entry.code.startsWith('zh')),
@@ -1286,6 +1297,49 @@ check(
   mainWindowBody === ''
     ? 'window.ts 里找不到 createMainWindow()'
     : 'createMainWindow() 的 webPreferences 里没有 spellcheck: true',
+)
+
+/**
+ * 界面语言的真正杠杆是启动期的 `--lang` 开关：网页版按 `navigator.language` 挑语言包，而那个值
+ * 来自**应用 locale**（实测 Electron 44.7：只设会话的 `Accept-Language` 时它依旧是 `zh-CN`，
+ * 见 [ADR-0063]）。
+ *
+ * 因此断言那条开关**在 `whenReady` 之前**被追加。顺序错了不会报任何错，只会让这一项设置
+ * **永远不生效**，而症状与"上游不支持"一模一样 —— 正是这个仓库最讨厌的一类失败。
+ */
+// 不叫 `entrySource`：那一节（启动顺序）在下面已经有一个同名的常量。
+const startupSource = source('../src/main/index.ts')
+const atLang = startupSource.indexOf(`appendSwitch('lang'`)
+const atReady = startupSource.indexOf('app.whenReady()')
+check(
+  '界面语言在 whenReady 之前交给 `--lang`（运行期设不了，顺序错了这一项就永远不生效）',
+  atLang > -1 && atReady > atLang,
+  atLang === -1
+    ? `index.ts 里找不到 appendSwitch('lang')`
+    : `它在 app.whenReady() 之后（${atLang} > ${atReady}）`,
+)
+check(
+  '界面语言在"重启后生效"名单里（界面据此渲染徽标，而不是靠人记得改文案）',
+  RESTART_REQUIRED_SETTINGS.includes('uiLanguage'),
+)
+
+/**
+ * 右键菜单里**每一个** `role` 项都必须带 `label`。
+ *
+ * `role` 的默认文案取自 Chromium 自己的 locale，而「界面语言」那一项会把那个 locale 一起切走
+ * （`--lang`，[ADR-0063]）—— 于是把内嵌页面切成英文的用户，会在**我们自己的**菜单里看到
+ * Cut / Copy / Paste / Select All。而我们的界面文案必须是中文（`ai/CONVENTIONS.md` 第 1 节）。
+ *
+ * 断言"每一个 role 都有 label"而不是逐项点名：将来加一项（`redo` / `undo`）时，这里会直接变红。
+ */
+const menuSource = source('../src/main/context-menu.ts')
+const roleItems = menuSource.match(/\{\s*role:\s*'[a-zA-Z]+'[^}]*\}/g) ?? []
+check(
+  '右键菜单里每个 role 项都带中文 label（否则会跟着内嵌页面的语言变成英文）',
+  roleItems.length > 0 && roleItems.every((item) => item.includes('label:')),
+  roleItems.length === 0
+    ? 'context-menu.ts 里找不到任何 role 项'
+    : `这几项没有 label：${roleItems.filter((item) => !item.includes('label:')).join(' ')}`,
 )
 
 const mainSourceFiles = sourceFiles(join(srcRoot, 'main'))

@@ -1,10 +1,15 @@
 /**
  * 会话级的 **User-Agent 与 Accept-Language**。
  *
- * [INV-1] 禁止向被承载的页面注入任何东西，因此"让上游页面换一种语言"只剩**请求层面**这一条路：
- * 改 `Accept-Language`，页面自己据此挑它的语言包 —— 与 `shared/user-agent.ts` 里"去掉
- * `Electron/` 标记"是同一个思路，只是那一位管"看起来是不是普通浏览器"，这一位管"看起来说哪种
- * 语言"。
+ * [INV-1] 禁止向被承载的页面注入任何东西，因此"让上游页面换一种语言"只剩**表现得像一个普通
+ * 浏览器**这一条路 —— 与 `shared/user-agent.ts` 里"去掉 `Electron/` 标记"是同一个思路，
+ * 只是那一位管"看起来是不是普通浏览器"，这一位管"看起来说哪种语言"。
+ *
+ * ⚠️ **这一层不是决定性的那一半**（[ADR-0063]）。网页版是纯 JS 应用，按 `navigator.language`
+ * 挑自己的语言包，而那个值来自**应用 locale**：实测（Electron 44.7）只设这里的
+ * `acceptLanguages`，`navigator.language` 依旧是系统的 `zh-CN` —— 一个字节都不变。真正的杠杆
+ * 是启动期的 `--lang` 开关（`main/index.ts`）。这里保留的是**请求头**那一半：有序回退（主语言
+ * 之外还要带上 `en`），以及把 UA 与它成对下发。
  *
  * ⚠️ **为什么 UA 也在这个文件里**（而不是留在 `window.ts`）：Electron 里能设 `acceptLanguages`
  * 的**只有** `session.setUserAgent(userAgent, acceptLanguages)` 这一个入口 ——
@@ -26,15 +31,13 @@ import { logger } from './logger'
 /**
  * 把 UA 与界面语言写到会话上。
  *
- * 调用时机只有两个，都不是随手加的：
+ * 调用时机**只有一个**：`configureSession()` —— **早于任何窗口创建**，因此页面的第一次导航
+ * 就用上它。（[ADR-0063] 之前还有第二个调用点：改设置之后重设 + 重载页面。那条路被去掉了，
+ * 因为它改不动 `navigator.language` —— 界面语言现在是**重启后生效**，见 `index.ts` 的
+ * `--lang`。）
  *
- *   1. `configureSession()` —— **早于任何窗口创建**，因此页面的第一次导航就用上它；
- *   2. 设置里的 `uiLanguage` 被改动之后 —— 与一次页面重载配对（见 `ipc/index.ts`）。
- *
- * Electron 的文档写着这次调用"**不影响已存在的 WebContents**"，所以第 2 种情况必须跟着重载
- * 页面，否则那句"改完就能生效"是假的。反过来，只要还有哪扇窗口自己调过
- * `webContents.setUserAgent()`，它就会用自己那份（只有 UA、没有语言）盖掉这里 —— 因此
- * 承载上游页面的窗口现在**不再**自己设 UA。
+ * 反过来，只要还有哪扇窗口自己调过 `webContents.setUserAgent()`，它就会用自己那份（只有 UA、
+ * 没有语言）盖掉这里 —— 因此承载上游页面的窗口**不**自己设 UA（自检第 19 节断言这一点）。
  */
 export function applyUserAgentAndLanguages(ses: Session, settings: Settings): void {
   const userAgent = buildUserAgent(process.versions.chrome)
