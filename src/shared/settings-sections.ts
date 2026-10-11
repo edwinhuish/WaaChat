@@ -21,13 +21,14 @@ import type { Settings } from './types'
  * 设置项之外的**额外行**。
  *
  * 它们同样是"界面上一行的身份"，但不落进 `Settings`：应用图标是"设置之外的一个动作"，
- * 「关于」是"只读的说明"。单独列一个清单的理由有两条：
+ * 「关于」是"只读的说明"，「界面语言」那一条同样是只读说明（[ADR-0066]：语言由**账号**决定，
+ * 我们这一层没有可动的杠杆，因此它从设置项变成了说明文字）。单独列一个清单的理由有两条：
  *
  *   1. {@link ALL_SETTINGS_RENDERED} 只能断言"每个**设置项**都有一行"，因此多出来的行必须
  *      有一个**显式**的来源 —— 单测与离线自检据此核对总数，而不是写一个会过期的魔法数字；
  *   2. 新增一行却忘了放进区域时，总数对不上，报错能直接指出是哪个清单的问题。
  */
-export const EXTRA_SETTINGS_ROWS = ['appIcon', 'about'] as const
+export const EXTRA_SETTINGS_ROWS = ['appIcon', 'about', 'languageNotice'] as const
 
 /** 上面那个清单里的行。 */
 export type ExtraSettingsRow = (typeof EXTRA_SETTINGS_ROWS)[number]
@@ -76,11 +77,15 @@ export const SETTINGS_SECTIONS = [
      * 查不查拼写。两项都只影响被承载的页面，不改我们自己的界面 —— 因此它们不与「外观与启动」
      * 合并：那个区域的每一行都是"我们这扇应用"的事，而这两行不是。
      *
+     * ⚠️ 语言那一行是**说明**而不是设置项（[ADR-0066]）：语言由**账号**决定，而入口在手机端，
+     * 我们做的任何固定都会被页面改回去。它留在这一区域的最前面，是因为用户会先在这里找"怎么
+     * 换语言"—— 让他看到的必须是那句实话，而不是一个按不动的下拉框。
+     *
      * 词典列表**紧跟**它管辖的开关（与两个容量项同一条纪律）："英语（美国）"这一行离开
      * 「拼写检查」就读不懂 —— 那是给谁查的？
      */
     title: '语言与输入',
-    rows: ['uiLanguage', 'spellcheck', 'spellcheckLanguages'],
+    rows: ['languageNotice', 'spellcheck', 'spellcheckLanguages'],
   },
   {
     title: '外观与启动',

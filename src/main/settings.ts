@@ -12,7 +12,7 @@ import { join } from 'node:path'
 
 import { app } from 'electron'
 
-import { normalizeSpellcheckLanguages, normalizeUiLanguage } from '../shared/language'
+import { normalizeSpellcheckLanguages } from '../shared/language'
 import {
   DEFAULT_SETTINGS,
   changedRestartKeys,
@@ -22,6 +22,17 @@ import {
 import { logger } from './logger'
 
 const SETTINGS_FILE = 'settings.json'
+
+/**
+ * 已经从 `Settings` 里删掉、但用户磁盘上可能还留着的键。
+ *
+ * ⚠️ 留着它们**不会**改变任何行为（{@link coerce} 只认 `DEFAULT_SETTINGS` 里的键，未知键一律
+ * 丢掉），但会让下一个读这个文件的人（用户自己、或排查问题时）以为它还有用 —— 而这一条恰好是
+ * "设置里的东西不起作用"的另一种形状。因此加载时发现一次就记一条，并把文件写回干净的一份。
+ *
+ * `uiLanguage` 是 [ADR-0066] 撤掉「界面语言」时留下的：那项设置整条去掉了。
+ */
+const REMOVED_SETTINGS_KEYS = ['uiLanguage'] as const
 
 function settingsPath(): string {
   return join(app.getPath('userData'), SETTINGS_FILE)
@@ -49,18 +60,12 @@ function coerce(raw: unknown): Settings {
   }
 
   /**
-   * 两个**枚举型**字段在同一个地方收敛到表内（判据在 `shared/language.ts`）。
+   * **枚举型**字段在这里收敛到表内（判据在 `shared/language.ts`）。
    *
-   * 上面那圈 `typeof` 比对管不住它们：任何字符串都能通过，`en-XX` 也能带走。而存下一个
-   * 我们不认识的值，症状是"设置里显示的是 A、实际按 B 跑" —— 用户没有任何办法看出来。
-   * 因此收敛发生在**读设置的那一刻**，而不是在各个消费点上各判一次（那样必然漏一处）。
+   * 上面那圈 `typeof` 比对管不住它：任何字符串都能通过，`de-DE` 也能带走。而存下一个我们不认识
+   * 的值，症状是"设置里显示的是 A、实际按 B 跑" —— 用户没有任何办法看出来。因此收敛发生在
+   * **读设置的那一刻**，而不是在各个消费点上各判一次（那样必然漏一处）。
    */
-  const uiLanguage = normalizeUiLanguage(result['uiLanguage'])
-  if (uiLanguage !== result['uiLanguage']) {
-    logger.warn('settings: unknown interface language, falling back to the default')
-  }
-  result['uiLanguage'] = uiLanguage
-
   const spellcheckLanguages = normalizeSpellcheckLanguages(result['spellcheckLanguages'])
   if (spellcheckLanguages !== result['spellcheckLanguages']) {
     logger.warn('settings: adjusted the spellcheck dictionaries to the known list')
@@ -74,7 +79,25 @@ export function loadSettings(): Settings {
   const path = settingsPath()
 
   try {
-    return coerce(JSON.parse(readFileSync(path, 'utf8')))
+    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    const settings = coerce(raw)
+
+    /**
+     * 磁盘上若还留着**已经删掉的键**，顺手把文件写回干净的一份（见 {@link REMOVED_SETTINGS_KEYS}）。
+     *
+     * 刻意只在这一处做：读设置只有启动与 `updateSettings()` 两条路，而后者本来就会落盘，
+     * 于是"陈旧键"最多活到下一次成功加载。
+     */
+    if (typeof raw === 'object' && raw !== null) {
+      const stale = REMOVED_SETTINGS_KEYS.filter((key) => key in (raw as Record<string, unknown>))
+
+      if (stale.length > 0) {
+        logger.info('settings: rewriting the file without fields of removed settings', { stale })
+        saveSettings(settings)
+      }
+    }
+
+    return settings
   } catch (error) {
     // 首次启动时文件不存在是正常情况，不记为错误。
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -117,11 +140,14 @@ export function getSettings(): Settings {
 }
 
 /**
- * 本次运行改过、但**还没生效**的那些设置项（判据在 `shared/types.ts` 的
- * {@link changedRestartKeys}，因此这里只是一次取值）。
+ * 本次运行改过、且**要重启**才生效的那些设置项（判据是纯函数
+ * `shared/types.ts` 的 {@link changedRestartKeys}，因此这里只是一次取值）。
  *
  * 界面据此决定要不要给「立即重启」按钮 —— 常驻一个按钮就成了噪音，而"改完却什么都不说"
  * 会让用户以为这一项已经生效了。
+ *
+ * ⚠️ `RESTART_REQUIRED_SETTINGS` 现在是**空的**（[ADR-0066] 撤掉了唯一待过的成员「界面语言」），
+ * 因此它现在恒返回空数组。`initial` 这份快照与判据都留着：它们与哪一项在名单里无关。
  */
 export function pendingRestart(): SettingsKey[] {
   const loaded = initial ?? getSettings()

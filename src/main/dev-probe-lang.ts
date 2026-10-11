@@ -1,10 +1,17 @@
 /**
- * 开发模式：只读观察「界面语言」那条 cookie 的**写入来源**。
+ * 开发模式：只读观察网页版那条**界面语言偏好** cookie 在做什么。
+ *
+ * ⚠️ **我们不再写它**（[ADR-0066] 撤掉了「界面语言」这一项）：登录之后语言由**账号**决定，
+ * 我们做的任何固定都会被页面改回去（`docs/research/lang-preference.md` §4.5）。这条探针留下，
+ * 是因为它是"上游什么时候动这条 cookie、有没有哪天开始提供网页端语言开关"的**唯一**直接耳目 ——
+ * 观察不等于能改，而"上游改版了我们不知道"正是这个仓库最讨厌的那类静默变化。
  *
  * 回答的问题（`docs/research/lang-preference.md`）：
  *
- *   - 它是**网络响应**写进来的（`Set-Cookie`），还是**页面脚本**自己写的？
- *   - 它被改了几次、什么时候、原因（`cause`）是什么？
+ *   - 那条 cookie 被改了几次、什么时候、`cause` 是什么？
+ *   - 有没有**网络响应**在写它（`Set-Cookie`）？⚠️ 这一条才是"形态 A 还是形态 B"的判据：
+ *     `cause` **分不出**我们自己的 `cookies.set()` 与页面的写入（实测两者打出来是同一组
+ *     `overwrite` + `inserted`，见 §4.5 判据二）。
  *   - 它带不带 `HttpOnly` —— 带了就排除了"页面脚本写的"（脚本写不出 HttpOnly）。
  *
  * ── 与 [INV-1] 的关系 ──────────────────────────────────────────────────────
@@ -32,8 +39,13 @@ import { isUpstreamOrigin } from '../shared/upstream'
 import { failureReason } from './errors'
 import { logger } from './logger'
 
-/** 网页版记界面语言的那条 cookie。 */
-export const LANG_PREF_COOKIE = 'wa_web_lang_pref'
+/**
+ * 被观察的那条 cookie：**上游自己的**名字（实测，`docs/research/lang-preference.md` §4.4）。
+ *
+ * 常量就放在这里：[ADR-0066] 之后 `src/` 里没有任何地方会去写它，因此"两处各写一份会分家"
+ * 这个风险不存在了 —— 探针是唯一提到它的地方，也是唯一该提到它的地方。
+ */
+const LANG_PREF_COOKIE = 'wa_web_lang_pref'
 
 /**
  * "看起来就是语言码"的判据：`zh-CN` / `en` / `pt_BR` / `zh-Hans-CN`。
@@ -121,8 +133,9 @@ export function attachLangProbeSession(ses: Session): void {
   /**
    * cookie 的每一次变化。
    *
-   * `cause` 是这条探针的**核心**判据：`explicit` = 页面脚本（或 `cookies.set`）写的，
-   * 其它取值（`overwrite` 等）= **网络响应**写回来的。这正是"形态 A 还是形态 B"的分界线。
+   * ⚠️ `cause` **不是**"谁写的"的判据：实测里我们自己的 `cookies.set()` 与页面的写入打出来是
+   * **同一组** `overwrite` + `inserted`，而 `explicit` 一次都没出现过（§4.5 判据二）。
+   * 因此这里只把它当**线索**记下来，判据看下面那条 `Set-Cookie` 的观察。
    */
   ses.cookies.on('changed', (_event, cookie, cause, removed) => {
     if (cookie.name !== LANG_PREF_COOKIE) return

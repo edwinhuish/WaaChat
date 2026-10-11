@@ -30,13 +30,7 @@
 import { actionButtonAttrs } from '../../shared/action-button'
 import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
-import {
-  DEFAULT_UI_LANGUAGE,
-  SPELLCHECK_LANGUAGES,
-  UI_LANGUAGES,
-  formatLanguageList,
-  parseLanguageList,
-} from '../../shared/language'
+import { SPELLCHECK_LANGUAGES, formatLanguageList, parseLanguageList } from '../../shared/language'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
 import {
@@ -247,18 +241,18 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   let cacheSwitch: CacheSwitchState = { kind: 'idle' }
 
   /**
-   * 「重启后生效」的状态（[ADR-0064]）。
+   * 「有改动还没生效」的状态（[ADR-0064]）。
    *
-   * 取不到时按"没有待重启的改动"处理：那只是少一颗按钮（与本改动之前的行为一致），而反过来
-   * 会把一颗按下去就能重启整个应用的按钮摆在一个我们并不确定的判断上。
+   * 取不到时按"没有"处理：那只是少一条提示，而反过来会把一颗按下去就重启应用的按钮摆在一个
+   * 我们并不确定的判断上。
    */
-  let restart: RestartState = { pending: [] }
+  let restartState: RestartState = { restart: [] }
 
-  /** 读「待重启」状态。失败退化为"没有"（见 {@link restart} 的说明）。 */
+  /** 读待生效状态。失败退化为"没有"（见 {@link restartState} 的说明）。 */
   async function readRestartState(): Promise<RestartState> {
     return bridge()
       .getRestartState()
-      .catch(() => ({ pending: [] }))
+      .catch(() => ({ restart: [] }))
   }
 
   /**
@@ -274,11 +268,11 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     settings = await bridge().setSettings(change)
 
     /**
-     * 紧接着重读「待重启」：改一个需要重启的项正是那颗按钮**唯一**会出现（或消失）的途径，
-     * 而它的判据在主进程（"进程启动时读到的是什么"）。留在这里不问，界面就会一直显示改动
-     * 之前的状态 —— 用户改完语言看不到任何变化，正是这一项最容易被误解的地方。
+     * 紧接着重读待生效状态：改一个"要重启"的项正是那条提示**唯一**会出现（或消失）的途径，
+     * 而判据在主进程（"进程启动时读到的是什么"）。留在这里不问，界面就会一直显示改动之前
+     * 的状态 —— 而那正是"改完没人告诉你要重启"这一种静默失效。
      */
-    restart = await readRestartState()
+    restartState = await readRestartState()
     render()
   }
 
@@ -286,6 +280,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (settings === null) return
 
     const current = settings
+    const restartNotice = pendingRestartRow()
 
     /**
      * 每个区域画成 `<section>` + 一个小标题。
@@ -294,6 +289,8 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
      * 是用户扫视时的锚点。区域与行序都来自 `shared/settings-sections.ts`。
      */
     root.replaceChildren(
+      // 「待生效」那一条在最前面：它是一句要用户做事的提示，埋在最后等于没说。
+      ...(restartNotice === null ? [] : [restartNotice]),
       ...SETTINGS_SECTIONS.map((section) =>
         h(
           'section',
@@ -315,7 +312,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (key === 'appIcon') return iconRow()
     if (key === 'archiveDir') return locationRow(current)
     if (key === 'about') return aboutRow()
-    if (key === 'uiLanguage') return languageRow(current)
+    if (key === 'languageNotice') return languageNoticeRow()
     if (key === 'spellcheckLanguages') return spellcheckLanguagesRow(current)
 
     const toggle = TOGGLES.find((spec) => spec.key === key)
@@ -650,101 +647,88 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
-   * 界面语言那一行。
+   * 「有改动还没生效」那一条（[ADR-0064]）。
    *
-   * 它是**重启后生效**的（[ADR-0063]）：真正决定「网页版显示哪种语言」的是启动期的 `--lang`
-   * 开关（网页版按 `navigator.language` 挑语言包），而那个开关只能启动前设。徽标因此来自
-   * `RESTART_REQUIRED_SETTINGS`，与别的需要重启的项同一个来源 —— 不在这里写死。
+   * 只在真有等待重启的项时才画：常驻一条提示是噪音，而且会让"刚刚那次改动"失去信号。
+   * 位置在**整个列表的最前面**（见 {@link render}）—— 它是一句要用户做事的提示，
+   * 埋在最后等于没说。
    *
-   * ⚠️ 提示语必须说清"要重启"。曾经它写的是"切换后会重新加载页面"，而那条路**根本改不动**
-   * `navigator.language` —— 用户照着做只会得到"改了没反应"，然后以为是我们或者上游的 bug。
-   *
-   * **改过之后才给「立即重启」**（[ADR-0064]）。判据由主进程给（`pending` 里有没有
-   * `uiLanguage`），界面只负责照它显示：
-   *
-   *   - 没改过 ⇒ 什么都不多显示。常驻一个按钮是噪音，而且会让"这一项已经改过了"这件事
-   *     失去信号；
-   *   - 改过 ⇒ 多一句"已改，重启后生效" + 一个按钮。用户不必自己去关掉再打开，也**不必**
-   *     猜自己刚才到底有没有改成功。
-   *
-   * 结构与应用图标 / 文件保存位置那两行**同构**：文字列在前（`.meta` 撑开剩余宽度），
-   * 操作列在最后（`.actions`，因此下拉框与按钮贴右边缘）。按钮换个位置就会让几行的对齐规则
-   * 各说各话。
-   *
-   * 选中项取设置值；设置值不在表里时（手工改坏的配置文件）**显示默认项**而不是"什么都不选"。
-   * 后者会得到一行"界面说 A、实际按 B 跑"，而 `main/settings.ts` 的 `coerce()` 本来就会把这种
-   * 值收敛掉 —— 这里只是不让界面在收敛之前显示成自相矛盾的样子。
+   * ⚠️ **今天这条路径是死的**：`RESTART_REQUIRED_SETTINGS` 是空的（[ADR-0066] 撤掉了它唯一
+   * 待过的成员「界面语言」）。它仍然必须存在且**可达** —— 那一项回来的时候，"改完却什么都不说"
+   * 会让用户以为已经生效了，而那正是这一整套机制当初存在的理由。自检第 19 节据此断言界面里
+   * 确实有这个触发点，而不是只剩一条没人用的通道。
    */
-  function languageRow(current: Settings): HTMLElement {
-    const chosen = UI_LANGUAGES.some((entry) => entry.code === current.uiLanguage)
-      ? current.uiLanguage
-      : DEFAULT_UI_LANGUAGE
+  function pendingRestartRow(): HTMLElement | null {
+    if (restartState.restart.length === 0) return null
 
-    // 与开关那一行同一个口径：徽标来自那个列表，不在这里写死。
-    const needsRestart = RESTART_REQUIRED_SETTINGS.includes('uiLanguage')
-    const restartPending = restart.pending.includes('uiLanguage')
-
-    const select = h(
-      'select',
-      {
-        class: 'language-select',
-        onChange: (event) => {
-          void patch({ uiLanguage: (event.target as HTMLSelectElement).value })
-        },
-      },
-      ...UI_LANGUAGES.map((entry) =>
-        h('option', {
-          value: entry.code,
-          selected: entry.code === chosen,
-          text: entry.label,
-        }),
+    return h(
+      'section',
+      { class: 'group' },
+      h('h2', { class: 'group-title', text: '待生效' }),
+      h(
+        'div',
+        { class: 'setting' },
+        h(
+          'div',
+          { class: 'meta' },
+          h(
+            'div',
+            { class: 'label' },
+            '改动还没生效',
+            h('span', { class: 'badge', text: '重启后生效' }),
+          ),
+          h('div', {
+            class: 'hint',
+            text: '改动已经保存，但要让它真的运行起来，需要重启一次。',
+          }),
+        ),
+        h(
+          'div',
+          { class: 'actions' },
+          actionButton({
+            text: '立即重启',
+            onClick: () => {
+              /**
+               * ⚠️ **不 await、也不在之后做任何事**：这一步会让进程退出，回调落在空处
+               * （[ADR-0064]）。失败也没有可展示的余地 —— 那意味着连退出都没发生，
+               * 用户再点一次即可。
+               */
+              void bridge().restart()
+            },
+          }),
+        ),
       ),
     )
+  }
 
+  /**
+   * 「界面语言」那一行 —— 它现在是一句**说明**，不是一个设置项（[ADR-0066]）。
+   *
+   * 为什么撤掉可改的那一半：网页版的语言由**账号**决定，具体地说是随账号同步下来的**手机语言**
+   * （`WALangPhonePref`）。三种杠杆都试过了 —— 会话的 `Accept-Language`（[ADR-0060]）、启动期的
+   * `--lang`（[ADR-0063]）、网页版自己那条偏好 cookie（[ADR-0065]）—— 实测的结论是：登录之后
+   * 页面会在 2–3 秒内把 cookie 改回账号语言并按它渲染，用户只看到"闪一下目标语言、然后变回去"
+   * （`docs/research/lang-preference.md` §4.5）。因此这一项的入口只在**手机端**，这里能做的只有
+   * 把这件事说清楚。
+   *
+   * ⚠️ 文案里必须出现"手机版 WhatsApp"这几个字：用户找到这一行就是想换语言，而"语言跟随账号"
+   * 这种说法他不知道该去哪里改。自检第 19 节断言这句说明在位（连"改哪里"一起）。
+   *
+   * 结构与其它行**不同构**：没有 `.actions` —— 这里没有任何可动的东西，放一个灰掉的下拉框只会
+   * 让人去点它。
+   */
+  function languageNoticeRow(): HTMLElement {
     return h(
       'div',
       { class: 'setting' },
       h(
         'div',
         { class: 'meta' },
-        h(
-          'div',
-          { class: 'label' },
-          '界面语言',
-          ...(needsRestart ? [h('span', { class: 'badge', text: '重启后生效' })] : []),
-        ),
+        h('div', { class: 'label', text: '界面语言' }),
         h('div', {
           class: 'hint',
-          text: '内嵌页面的显示语言。网页版按浏览器的语言偏好挑自己的语言包，因此改完要重新启动应用才生效（我们一个字都不往页面里写）。',
+          text: '内嵌页面的语言由你的手机版 WhatsApp 决定 —— 网页版没有自己的语言设置，我们在这里也改不动它。请在手机的 WhatsApp 里更改（语言跟随账号），改完这边会自动跟着变。',
         }),
-        ...(restartPending
-          ? [
-              h('div', {
-                class: 'hint',
-                text: '已改，重启后生效 —— 点右边那颗按钮就行，不必自己退出再打开。',
-              }),
-            ]
-          : []),
-      ),
-      h(
-        'div',
-        { class: 'actions' },
-        select,
-        ...(restartPending
-          ? [
-              actionButton({
-                text: '立即重启',
-                onClick: () => {
-                  /**
-                   * ⚠️ **不 await、也不在之后做任何事**：这一步会让进程退出，回调落在空处
-                   * （[ADR-0064]）。失败也没有可展示的余地 —— 那意味着连退出都没发生，
-                   * 用户再点一次即可。
-                   */
-                  void bridge().restart()
-                },
-              }),
-            ]
-          : []),
       ),
     )
   }
@@ -1048,29 +1032,30 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
        * 后两者取不到时各自退化为"没有自定义图标"与"版本未知"：某一行的问题不该把**别的**
        * 行也带走 —— 让整个设置页空掉，用户连保存位置都看不到。
        */
-      const [nextSettings, nextIcon, nextVersion, nextInstance, nextRestart] = await Promise.all([
-        bridge().getSettings(),
-        bridge()
-          .getAppIcon()
-          .catch(() => null),
-        /**
-         * 版本失败同样只影响它自己那一行（界面显示破折号）—— 一条元数据取不到，
-         * 不该把整扇设置窗口带走。
-         */
-        bridge()
-          .getAppVersion()
-          .catch(() => null),
-        bridge()
-          .getInstanceInfo()
-          .catch(() => null),
-        readRestartState(),
-      ])
+      const [nextSettings, nextIcon, nextVersion, nextInstance, nextRestartState] =
+        await Promise.all([
+          bridge().getSettings(),
+          bridge()
+            .getAppIcon()
+            .catch(() => null),
+          /**
+           * 版本失败同样只影响它自己那一行（界面显示破折号）—— 一条元数据取不到，
+           * 不该把整扇设置窗口带走。
+           */
+          bridge()
+            .getAppVersion()
+            .catch(() => null),
+          bridge()
+            .getInstanceInfo()
+            .catch(() => null),
+          readRestartState(),
+        ])
 
       settings = nextSettings
       appIcon = nextIcon
       appVersion = nextVersion
       instanceInfo = nextInstance
-      restart = nextRestart
+      restartState = nextRestartState
       render()
     },
 

@@ -12,15 +12,38 @@ import type { Session } from 'electron'
 
 import type { Settings } from '../shared/types'
 import { isUpstreamOrigin } from '../shared/upstream'
+import { buildUserAgent, isCleanUserAgent } from '../shared/user-agent'
 import { enforceCacheLimit, reconcileCiphertextCache } from './capture/cache-files'
 import { attachDownloadCapture } from './capture/download'
 import { onHealthChange } from './capture/health'
 import { attachCiphertextCache } from './capture/protocol'
-import { applyUserAgentAndLanguages } from './language'
 import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
 import { applySpellcheck, watchSpellcheck } from './spellcheck'
+
+/**
+ * 把 UA 写到会话上（[ADR-0060] 决定 4）。
+ *
+ * 为什么必须是**会话级**且**早于任何窗口**：`session.setUserAgent()` 明确"不影响已存在的
+ * WebContents"，晚一步就只能靠一次页面重载补回来 —— 而那时用户已经在看着页面了。
+ *
+ * ⚠️ 承载上游页面的窗口（`window.ts`）因此**不**自己设 UA：两处各设一次会互相覆盖，
+ * 而且**不报任何错**（自检第 19 节断言这一点）。
+ *
+ * 为什么现在只剩 UA：[ADR-0066] 之前这里还传了第二个参数 `acceptLanguages`（Electron 唯一能设
+ * `Accept-Language` 的入口），用来下发用户选的界面语言。那一项撤掉之后不再传 —— 请求头回到内核
+ * 按系统 locale 生成的默认值，也就是普通浏览器的样子。
+ */
+function applyUserAgent(ses: Session): void {
+  const userAgent = buildUserAgent(process.versions.chrome)
+
+  ses.setUserAgent(userAgent)
+
+  // 记的是"UA 干净吗"，不是整条头：上游会据此判定浏览器是否受支持，而它是这一类改动最容易
+  // 静默坏掉的地方（`Electron/` 标记一旦漏出去，页面会出现什么行为不由我们决定）。
+  logger.info('session: user agent applied', { userAgentClean: isCleanUserAgent(userAgent) })
+}
 
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
@@ -29,8 +52,9 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // **拼写检查**在设置被改动时会重新写到会话上（见 ipc/index.ts 的 applySettings），因此这里
   // 只是启动时的首次装配。
   //
-  // **界面语言**不在这里定：它真正的杠杆是启动期的 `--lang` 开关，早在 `main/index.ts` 里就
-  // 已经固定（[ADR-0063]）。这里下发的 `Accept-Language` 只是它的另一半 —— 请求头那一半。
+  // **界面语言**曾经也在这里落（`--lang` + 请求头 + 网页版那条偏好 cookie，[ADR-0063] /
+  // [ADR-0065]）。[ADR-0066] 把那一项整个撤掉了：登录之后语言由**账号**决定，我们做的任何固定
+  // 都会被页面改回去，于是连 UA 之外的那些会话级语言设置也一并去掉。
   const settings = getSettings()
 
   // --- 权限 -----------------------------------------------------------------
@@ -71,15 +95,8 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   )
 
   // --- 语言与输入 -------------------------------------------------------------
-  /**
-   * UA 与界面语言必须**在创建任何窗口之前**写进会话：Electron 的 `session.setUserAgent()`
-   * 明确"不影响已存在的 WebContents"（见 `language.ts`），晚一步就得靠一次页面重载补回来 ——
-   * 而那时用户已经在看着页面了。
-   *
-   * ⚠️ 承载上游页面的窗口因此**不**再自己设 UA（`window.ts` 里删掉的那一行）：UA 与
-   * `acceptLanguages` 只能成对设置，两处各设一半会得到一个"语言设了但被覆盖回去"的状态。
-   */
-  applyUserAgentAndLanguages(ses, settings)
+  // UA 必须在创建任何窗口之前写进会话（见上面那个函数的说明）；拼写检查随后装配。
+  applyUserAgent(ses)
 
   /**
    * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效

@@ -9,7 +9,6 @@ import { app, dialog, session } from 'electron'
 
 import { APP_ID, DESKTOP_FILE_NAME } from '../shared/constants'
 import { isForeignArchiveDir, withInstanceSuffix } from '../shared/instance'
-import { localeMatchesRequest } from '../shared/language'
 import { resolveAccountKey } from './account'
 import { attachContextMenu } from './context-menu'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
@@ -88,23 +87,20 @@ app.setPath('userData', withInstanceSuffix(userDataDir, instance.id))
 app.setPath('sessionData', withInstanceSuffix(sessionDataDir, instance.id))
 
 /**
- * 界面语言：决定 `navigator.language` 的那个开关（[ADR-0063]）。
+ * 这里**曾经**设过 `--lang`（「界面语言」，[ADR-0063] → [ADR-0065]）。[ADR-0066] 把它撤了。
  *
- * ⚠️ 它**只能在这里设**，而且必须早于 `whenReady` —— `--lang` 是 Chromium 的启动期开关，
- * 运行期改不了。因此「界面语言」是**重启后生效**的（`RESTART_REQUIRED_SETTINGS`），
- * 设置页也这么写。
+ * 为什么撤：登录之后网页版的语言由**账号**决定（`WALangPhonePref`，随账号同步下来的手机语言），
+ * 页面会在 2–3 秒内把我们写下的任何固定改回去并按账号语言渲染（实测，
+ * `docs/research/lang-preference.md` §4.5）。三轮尝试（请求头 → 启动开关 → 页面那条 cookie）
+ * 都把可行域摸到了同一个结论：**这件事不在我们这一层**。于是这一项设置、这条开关、以及它连带
+ * 的 INV-1 写入例外一起退休 —— 语言交给账号，说明交给设置页里那一行文字。
  *
- * 为什么非它不可：网页版是纯 JS 应用，按 `navigator.language` 挑自己的语言包，而那个值来自
- * **应用 locale**。实测（Electron 44.7）只设会话的 `Accept-Language` **完全改不动**它 ——
- * 那个头只影响网络层，`navigator.language` 始终是系统的 `zh-CN`。会话级的
- * `setUserAgent(ua, acceptLanguages)` 仍然保留：它负责请求头里的**有序回退**，两件事互不替代。
- *
- * ⚠️ 副作用要照看：这一步会把 Chromium 自己的 locale 一起切过去（`app.getLocale()` 实测从
- * `zh-CN` 变成 `en-US`），而 Electron 的 `role` 菜单项（剪切 / 复制 / 粘贴 / 全选）用的是**它的**
- * 字符串。我们自己的界面文案必须是中文（`ai/CONVENTIONS.md` 第 1 节），因此那几项在
- * `context-menu.ts` 里显式给了 label —— 改这里时别忘了那一边。
+ * ⚠️ 由它而来的一条**对策仍然生效**：启动期改 locale 会把 Chromium 自己的 locale 一起切走，
+ * 而 Electron 的 `role` 菜单项（剪切 / 复制 / 粘贴 / 全选）用的就是它的字符串。现在没人改
+ * locale 了，但**系统 locale 照样可能是英文** —— 我们的界面文案必须是中文
+ * （`ai/CONVENTIONS.md` 第 1 节），因此 `context-menu.ts` 里那几项仍然必须显式给 label
+ * （自检第 19 节断言这一点）。想恢复 `--lang` 时，先读 [ADR-0066] 的"被否决的替代方案"。
  */
-app.commandLine.appendSwitch('lang', getSettings().uiLanguage)
 
 /**
  * Linux：**Wayland 的臭氧路径没有 Vulkan surface**。Chromium 里有一条默认开启的
@@ -245,7 +241,10 @@ app.whenReady().then(async () => {
   await configureSession(session.fromPartition(sessionPartition()), getSettings)
 
   /**
-   * 开发模式：只读观察「界面语言」那条 cookie 的写入来源（未打包时才生效，见 dev-probe-lang.ts）。
+   * 开发模式：只读观察网页版那条语言偏好 cookie（未打包时才生效，见 dev-probe-lang.ts）。
+   *
+   * 我们**不再写它**了（[ADR-0066]），探针留着当耳目：上游哪天开始提供网页端语言开关，或者
+   * 改了它怎么写这条 cookie，这是我们唯一能在自己这边看见的窗口。
    *
    * 必须在这里（窗口之前）：要看到页面**第一次**请求的响应头 —— 那一条正是"服务端有没有发
    * `Set-Cookie`"的证据。晚一步就只能从第二次请求看起，而服务端未必要在每一次响应里都写它。
@@ -273,19 +272,11 @@ app.whenReady().then(async () => {
   createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })
 
   /**
-   * 语言这一项**必须**同时记下"请求了什么"与"内核实际给了什么"（[ADR-0063]）。
+   * `app.getLocale()` 仍然记一条（[ADR-0066] 之后它是**系统** locale，不再由我们设置）。
    *
-   * 理由与别处的"允许失效，不允许静默失效"是同一条：`--lang` 是启动期开关，给它一个 Chromium
-   * 不认识的码时它**直接回落到系统 locale** —— 而设置页照常显示用户选的那一种、徽标也照常写着
-   * "重启后生效"，从任何一处都看不出这一项其实没生效。实测（Electron 44.7）见
-   * `shared/language.ts` 的 {@link baseLanguage}：一部分区域变体会被规范化成基础码
-   * （`es-ES` → `es`），那**不是**失败，因此判据比的是**基础语言**，不是字符串。
-   *
-   * 摆放位置也重要：`app.getLocale()` 要在 `ready` 之后读才代表真正的生效值。
+   * 它有两个用处：内嵌页面在**登录之前**按 `navigator.language` 挑语言，因此它解释了"登录页
+   * 为什么是这门语言"；而报告问题时这是第一时间要确认的环境事实之一。
    */
-  const requestedLanguage = settings.uiLanguage
-  const effectiveLocale = app.getLocale()
-
   logger.info('ready', {
     packaged: app.isPackaged,
     chromium: process.versions.chrome,
@@ -293,16 +284,8 @@ app.whenReady().then(async () => {
     // 两个实例的日志可能被贴进同一份 issue：先写清这一份是谁的。
     instance: instance.id || 'default',
     partition: sessionPartition(),
-    requestedLanguage,
-    locale: effectiveLocale,
+    locale: app.getLocale(),
   })
-
-  if (!localeMatchesRequest(requestedLanguage, effectiveLocale)) {
-    logger.warn('language: the app locale does not match the requested interface language', {
-      requested: requestedLanguage,
-      effective: effectiveLocale,
-    })
-  }
 })
 
 /**

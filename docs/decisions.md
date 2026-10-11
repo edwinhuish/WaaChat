@@ -9,7 +9,7 @@
 | 编号 | 决定 | 状态 |
 |---|---|---|
 | [0001](#adr-0001) | 采用"Chromium 内核壳 + 内核层接管"，不做协议重实现 | 已生效（曾被 [ADR-0043](#adr-0043) 取代，[ADR-0057](#adr-0057) 恢复） |
-| [0002](#adr-0002) | 绝不向被承载的页面注入脚本 | 已生效（**含 [ADR-0057](#adr-0057) 的只读元数据例外**；曾被 [ADR-0043](#adr-0043) 取代） |
+| [0002](#adr-0002) | 绝不向被承载的页面注入脚本 | 已生效（**含 [ADR-0057](#adr-0057) 的只读元数据例外**；[ADR-0065](#adr-0065) 那条**写入例外已被 [ADR-0066](#adr-0066) 撤销**；曾被 [ADR-0043](#adr-0043) 取代） |
 | [0003](#adr-0003) | 媒体按内容寻址归档，索引用 SQLite + FTS5 | 已生效 |
 | [0004](#adr-0004) | 分发 deb + AppImage；AppImage 使用静态 runtime 工具链 | 已生效 |
 | [0005](#adr-0005) | 包管理器用 npm，不用 pnpm | **已被 [ADR-0010](#adr-0010) 取代** |
@@ -66,11 +66,12 @@
 | [0056](#adr-0056) | 托盘菜单用分隔线分成**三组**（显示聊天｜文件列表、设置｜退出）；设置窗口末尾加一个只读的「关于」区域显示应用名与版本，版本经新通道 `app:version`（`app.getVersion()`）取；非设置行改由显式的 `EXTRA_SETTINGS_ROWS` 列出 | 已生效（补充 [ADR-0025](#adr-0025) 的两扇本地界面与 [ADR-0042](#adr-0042) 去掉顶栏之后的界面形态） |
 | [0058](#adr-0058) | 直通重发（`ses.fetch`）前把原请求的 fetch 元数据补回去：只读的 `webRequest.onBeforeRequest` 观察者按 `method + url` 记下 `resourceType` 与原 `referrer`，重发时换算回 `Sec-Fetch-Mode` / `Dest` / `User` 并补上 `Referer`（`Sec-Fetch-Site` 补不了，不写）；换算表的取值受**内核校验**约束（`Mode` 只用 `navigate` / `no-cors`，故 `xhr` 不收录） | 已生效（补充 [ADR-0033](#adr-0033) 的直通路径与 [ADR-0016](#adr-0016)「漏一个头就静默坏掉页面一部分」） |
 | [0059](#adr-0059) | 「关闭窗口 = 隐藏」**对未打包的运行同样成立**：删掉 `hideOnClose()` 里 `if (app.isPackaged === false) return` 那个例外（它让开发模式下关掉承载聊天的窗口＝真的销毁，而托盘持有的是创建时捕获的引用 ⇒ 双击托盘 / 「显示聊天」毫无反应） | 已生效（**修正**代码与 [ADR-0025](#adr-0025) / `tray.ts` 文档及 `docs/usage.md` 里"关闭只是隐藏"这条既有描述的不一致） |
-| [0060](#adr-0060) | 界面语言通过**会话级 `Accept-Language`** 落地（`session.setUserAgent(ua, acceptLanguages)`，Electron 唯一能设它的入口），改这一项后**重新加载页面**生效；UA 随之从窗口收到会话级（窗口再自己设一次会静默覆盖掉语言）；语言是枚举白名单，认不出的值在读设置时收敛到默认 | 已生效（决定 1 / 2 / 4 仍生效；**决定 3 与决定 5 已由 [ADR-0063](#adr-0063) 取代**） |
+| [0060](#adr-0060) | 界面语言通过**会话级 `Accept-Language`** 落地（`session.setUserAgent(ua, acceptLanguages)`，Electron 唯一能设它的入口），改这一项后**重新加载页面**生效；UA 随之从窗口收到会话级（窗口再自己设一次会静默覆盖掉语言）；语言是枚举白名单，认不出的值在读设置时收敛到默认 | 已生效（决定 3 / 5 由 [ADR-0063](#adr-0063) 取代；**界面语言的其余决定由 [ADR-0066](#adr-0066) 取代**，只有**决定 4（UA 归会话级）继续生效**） |
 | [0061](#adr-0061) | 启用内核自带的拼写检查：词典清单交 `setSpellCheckerLanguages()`，**只交内核实有的那些**（被拒的要记日志），一门都装不上时显式关闭检查器；纠错建议走新加的右键菜单（Electron 不像浏览器自带菜单，`dictionarySuggestions` 只在 `context-menu` 参数里） | 已生效 |
 | [0062](#adr-0062) | 多实例：`--instance <名>` 选实例，**唯一**杠杆是启动时按实例 `app.setPath('userData' \| 'sessionData')`（一次挪走登录态、分区存储、设置与图标），归档与缓存根同后缀派生；默认实例派生出的每个名字与改动前**逐字符相同**；单实例锁因锁文件在 userData 里而自动变成"每实例一把"；非法实例名**拒绝启动**；用户级 `.desktop` 与 autostart 归默认实例 | 已生效 |
-| [0063](#adr-0063) | 界面语言改由**启动期的 `--lang`** 决定（实测：会话的 `Accept-Language` 改不动 `navigator.language`，而网页版按后者挑语言包），因此变成**重启后生效**；会话头保留作请求层的有序回退，`acceptLanguages` 不再手写 `;q=`（q 值由内核排，手写会拼成 `en;q=0.9;q=0.9`）；`role` 菜单项显式给中文 label（`--lang` 会连带切走 Chromium 的 locale） | 已生效（**取代** [ADR-0060](#adr-0060) 的决定 3 / 5 与它对 `--lang` 的否决） |
-| [0064](#adr-0064) | 「重启后生效」的项在**改过之后**多一颗「立即重启」按钮：主进程记下**进程启动时**的设置快照并与当前值比较（`changedRestartKeys`，纯函数），经新通道 `app:restart-state`（只读，返回待重启的**键清单**）暴露给界面；按钮调 `app:restart` → `app.relaunch()` **先于** `app.quit()`（`quit` 而非 `exit`，退出清理照常），沿用原 argv；连点两下只重启一次 | 已生效（补上 [ADR-0063](#adr-0063)"重启后生效"缺的那个入口；实测 `relaunch()` 与 [ADR-0062](#adr-0062) 的每实例单实例锁不冲突） |
+| [0063](#adr-0063) | 界面语言改由**启动期的 `--lang`** 决定（实测：会话的 `Accept-Language` 改不动 `navigator.language`，而网页版按后者挑语言包），因此变成**重启后生效**；会话头保留作请求层的有序回退，`acceptLanguages` 不再手写 `;q=`（q 值由内核排，手写会拼成 `en;q=0.9;q=0.9`）；`role` 菜单项显式给中文 label（`--lang` 会连带切走 Chromium 的 locale） | **已被 [ADR-0066](#adr-0066) 取代**（界面语言整项与 `--lang` 随之撤掉；其中"每个 `role` 菜单项必须带中文 `label`"这条**仍然生效**，理由换成"系统 locale 可能是英文"） |
+| [0064](#adr-0064) | 「重启后生效」的项在**改过之后**多一颗「立即重启」按钮：主进程记下**进程启动时**的设置快照并与当前值比较（`changedKeys`，纯函数），经新通道 `app:pending`（只读，返回待生效的**键清单**）暴露给界面；按钮调 `app:restart` → `app.relaunch()` **先于** `app.quit()`（`quit` 而非 `exit`，退出清理照常），沿用原 argv；连点两下只重启一次 | 机制已生效，但**当前没有触发项**（[ADR-0066](#adr-0066) 撤掉界面语言之后，`RELOAD_REQUIRED_SETTINGS` 那张名单连同「重新载入页面」一起删除，通道名回到本条的 `app:restart-state`、函数名回到 `changedRestartKeys`；按钮与 `relaunchApp()` 都留着） |
+| [0065](#adr-0065) | 界面语言**不再需要重启**：网页版把语言记在自己那条 cookie 里，而它**优先于** `navigator.language`（实测，两个方向都验过）—— 我们在会话层按设置把它固定住（**启动时**早于任何窗口，**改设置时**再固定一次），值取实测出来的上游写法（`pageLanguageCode`，三处例外），作用域照它的 domain 级；改完给一颗「重新载入页面」（新通道 `app:reload-page`），**不自动重载**（会丢页面里未发送的输入）；`--lang` 保留为"全新 profile / cookie 被清掉"时的兜底 | **已被 [ADR-0066](#adr-0066) 取代**（实测：登录之后页面在 2–3 秒内把它改回**账号语言**并按它渲染 ——"重载即生效"对已登录账号不成立，见 `docs/research/lang-preference.md` §4.5） |
 
 ---
 
@@ -107,6 +108,12 @@
 **决定**：绝不向被承载的页面注入任何脚本。不使用 `executeJavaScript`、`insertCSS`、让 preload 直连页面世界、或通过调试协议驱动页面。
 
 **状态**：已生效 · 对应 [INV-1](../ai/INVARIANTS.md)
+
+> **后续**：这条决定此后多了**两条例外**，都不改它的实质（不主动注入、不给远程内容本地能力）
+> —— **[ADR-0057](#adr-0057)** 放行**只读地**求值一个表达式取回元数据；**[ADR-0065](#adr-0065)**
+> 再放行**按用户在本应用里的显式选择，写下上游自己那条语言偏好 cookie**（`wa_web_lang_pref`）。
+> 第二条是**唯一**一处往页面存储里写东西，边界只有三条（只写这一条名字 / 只写白名单里的语言码 /
+> 只表达用户的选择），见 [`../ai/INVARIANTS.md`](../ai/INVARIANTS.md) 的"不算注入的三类做法"。
 
 **背景**：最"直接"的实现方式是从页面内部取出媒体对象：注入脚本 hook 出解密后的 `Blob`，或者用自动化库的 `evaluate` 调用页面内部函数。那样能拿到最精确的数据，实现也最短。
 
@@ -3749,6 +3756,11 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
 
 **状态**：已生效（**取代** [ADR-0060](#adr-0060) 的决定 3、决定 5、理由 2、理由 5，以及它"被否决的替代方案"里对 `--lang` 的那条否决）
 
+> **后续**：这条的界面语言部分（连同 `--lang`）已被 **[ADR-0066](#adr-0066)** 撤销 —— 登录之后
+> 页面用的是**账号语言**，我们给的那条 cookie 会被它改回去。⚠️ 其中"每个 `role` 菜单项必须
+> 显式给中文 `label`"这一条**仍然生效**，但理由换了：不再是"我们把 Chromium 的 locale 切走了"，
+> 而是"系统 locale 可能是英文"。
+
 **背景**：[ADR-0060](#adr-0060) 落地后，"设置里换了界面语言，网页版不变"被报了上来。而 ADR-0060 的**已知限制第一条**恰好写着"上游是否按 `Accept-Language` 挑语言，本仓库无法断言……真机上必须确认一次"。本次把这一条**确认掉了**，结论是：我们只做了一半。
 
 **理由**：
@@ -3804,6 +3816,11 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
 ---
 
 ## ADR-0064
+
+> **后续**：[ADR-0065](#adr-0065) 把「界面语言」挪去了"**重载页面**即生效"，因此
+> `RESTART_REQUIRED_SETTINGS` 现在是**空的**、那颗「立即重启」按钮暂时不会出现；下面这条通道
+> 也从 `app:restart-state` 改名成了 `app:pending`（它现在同时带上"页面还没重装过"那一位）。
+> 判据、实现与实测结论都仍然成立 —— 本文其余部分照旧读。
 
 **决定**：给"重启后生效"的设置补上**重启的入口**。具体：
 
@@ -3906,3 +3923,222 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
   （而不是命令行），重启后就会丢 —— 那时这条要重新看。
 - **界面在重启失败时没有反馈**：`restart()` 之后进程就该退出，任何"没退出"的提示都无处可显示
   （用户再点一次即可）。真正需要的是日志里那条 `restart: relaunching the app`。
+
+---
+
+## ADR-0065
+
+**决定**：界面语言这一项**不再需要重启**，改为"重新载入页面即生效"。具体：
+
+1. **在会话层按设置固定网页版那条语言偏好 cookie**（`wa_web_lang_pref`）：启动时一次
+   （`configureSession`，**早于任何窗口**），改设置时再一次。值取 `shared/language.ts` 里
+   实测出来的**上游写法**（`pageLanguageCode`），作用域照上游的写法（domain 级
+   `.web.whatsapp.com`、路径 `/`、`Secure`、非会话 cookie）。
+2. **它从 `RESTART_REQUIRED_SETTINGS` 移到新的 `RELOAD_REQUIRED_SETTINGS`**：改完重载一次
+   页面即可。
+3. **界面**：那一行的徽标改成「重新载入页面即生效」；改过之后出现一颗「重新载入页面」
+   （新通道 `app:reload-page`，无参数）。**不自动重载**（理由 6）。
+4. **`--lang` 那一半保留**（[ADR-0063](#adr-0063)）：它声明应用对外的语言偏好，是"全新 profile /
+   那条 cookie 被清掉"时的兜底。它仍然只在启动时设，但**不再是这一项生效的前提**。
+
+**状态**：已生效（**取代** [ADR-0063](#adr-0063) 的"重启后生效"及其界面结论；
+[ADR-0064](#adr-0064) 的「立即重启」因此暂时没有触发项）
+
+> **后续**：**已被 [ADR-0066](#adr-0066) 取代。** 本条上线后立刻实测到：它成立的前提只到"登录
+> 之前"为止。已登录的账号上，页面会在 2–3 秒内把这条 cookie 改回**账号语言**
+> （`WALangPhonePref`，随账号同步下来的手机语言）并按它渲染 —— 用户看到的是"闪一下目标语言、
+> 然后变回去"（`docs/research/lang-preference.md` §4.5）。**INV-1 的写入例外随之退休。**
+
+**背景**：[ADR-0063](#adr-0063) 把语言落在启动期的 `--lang` 上，并如实记下一条**未确认**的推测：
+"上游仍可能把语言存进页面存储：那样它只在**首次装载**时跟随我们"。用户的实测报告把它变成了
+一个真问题：设置里选了西班牙语、重启多少次都还是中文。
+
+`docs/research/lang-preference.md` 把这件事量清了（§4.2）：**全新 profile** 下登录页确实跟随
+`navigator.language`（zh-CN / es-ES / en-US 三种文案都对得上）；但**只要那条 cookie 已经在**，
+它就**优先于** `navigator.language` —— 把 cookie 预置成与 `--lang` 相反的语言，页面跟着
+**cookie** 走（两个方向都验过）。
+
+也就是说：页面**首次**装载时按 `navigator.language` 挑语言**并把它记进那条 cookie**，此后
+一直以那条 cookie 为准。**只改 `--lang` 在"用过的 profile"上永远改不动它** —— 而这件事在此
+之前没有任何地方能看出来。
+
+**理由**：
+
+1. **这是唯一能解释"重启多少次都不变"的机制**，而且它有两条独立的证据（cookie 优先 +
+   页面自己会写它）。修在别处（改请求头、加重启入口）都不会有效果。
+2. **写这条 cookie 是一次新的接管类别，边界必须写清楚。** 此前我们的接管只**读**：下载事件、
+   请求观察、缓存命中与写入，从不改页面看得见的状态。这里改的是**上游自己定义的**偏好
+   cookie —— 因此只写这一条名字、只写一个来自白名单的语言码（`UI_LANGUAGES`）、只写上游域，
+   而且只表达用户在这一项里的选择。它仍然是"**表现得像一个普通浏览器**"（浏览器本来就持有这条
+   cookie，用户若在上游自己的界面里选过语言，得到的就是同一条），不注入脚本、不给远程内容任何
+   本地能力 —— [INV-1](#adr-0057) 的实质（不主动注入、不给远程内容本地能力）不变。
+3. **值必须照上游的写法**（§4.4 实测）：上游用下划线（`zh-CN` → `zh_CN`），而三处**不是**机械
+   替换 —— `en-US` → `en_GB`、`es-ES` → `es_LA`、`ar` → `ar_AR`。写成它不认的值**不会报错**，
+   只是"好像没变"（正是这次要修的那个症状），因此取值只走 `pageLanguageCode()` 一处，并由
+   单测与自检守着"不许自己拼"。
+4. **属性也必须照上游的作用域**：它写的是 domain 级 `.web.whatsapp.com`。图省事写成 host-only
+   会与它**并存两条同名 cookie**，谁生效取决于内核"更具体的作用域优先" —— 实测今天站在我们
+   这边（`docs/research/lang-preference.md` §4.2 第 5 条），但那是一处随时会翻的隐式依赖。
+5. **启动时那次固定发生在窗口之前**，因此**全新 profile 第一条就是对的**：不依赖 `--lang`，
+   也不依赖"页面先挑一次"。`--lang` 退居兜底（cookie 被清掉时页面按 `navigator.language` 挑）。
+6. **不自动重载页面**：重载会丢掉页面输入框里**还没发出去的文字**（[ADR-0060](#adr-0060) 记过
+   这笔账），而那扇窗口此刻多半不在用户眼前 —— 悄悄清掉他的草稿，比多按一次按钮糟得多。
+   按钮把时机交回用户；装完之后那一位会自己变回 `false`（`did-finish-load`），因此按钮会消失，
+   用户看得见自己那一下起了作用。
+
+**被否决的替代方案**：
+
+- **只拦上游的 `Set-Cookie`**：不够。那条 cookie 不是 `HttpOnly`（页面脚本读得到），因此页面
+  自己也能写它 —— 形态 B 下拦响应头毫无用处。
+- **删掉那条 cookie，让页面重新按 `navigator.language` 挑**：有效，但**要重启才生效**
+  （`navigator.language` 是启动期固定的），而"不重启就换语言"正是这次要解决的事。
+- **改设置之后自动重载页面**：见理由 6。
+- **改会话的 `Accept-Language`**：[ADR-0063](#adr-0063) 已否决（改不动 `navigator.language`）。
+- **往页面里注入**：违反 [INV-1](#adr-0057)。
+- **在设置页写一段"请自己去网页版里改语言"**：不可执行，而且用户没做错任何事。
+
+**影响**：
+
+- `src/shared/language.ts`：`UiLanguage.pageCode` 一列（实测值）+ `pageLanguageCode()`。
+- `src/main/language.ts`：`pinLanguageCookie()`、`markLanguageReloadPending()` /
+  `clearLanguageReloadPending()` / `languageReloadPending()`、`LANGUAGE_PREF_COOKIE`。
+- `src/main/session.ts`：启动时固定（早于任何窗口）；`src/main/window.ts`：`reloadChatWindow()`
+  与 `did-finish-load` 上清除标记。
+- `src/shared/types.ts`：`RELOAD_REQUIRED_SETTINGS`（新）、`RESTART_REQUIRED_SETTINGS`（空）、
+  `changedKeys()`（原 `changedRestartKeys`，改成接受名单）、`PendingActions`。
+- `src/main/ipc/channels.ts` + `ipc/index.ts` + `shared/bridge.ts` + `preload/index.ts`：
+  `app:pending`（由 `app:restart-state` 改名并扩展）与 `app:reload-page`；`applySettings`
+  变成异步（要先写完 cookie 再回包）。
+- `src/renderer/views/settings.ts`：那一行的徽标、提示与那颗按钮。
+- `scripts/check-capture.ts`：把"界面语言在重启名单里"改成"在重载名单里"，并新增"不许自己拼
+  页面语言码""必须按 domain 写""不许自动重载""`did-finish-load` 才清标记"等断言。
+- `test/unit/language.test.ts` + `test/unit/restart.test.ts`。
+- 文档：本文件、`docs/usage.md` 第 5 节、`CHANGELOG.md`、`AGENTS.md` 第 5 节坑表、
+  `docs/research/lang-preference.md`（§4.4 实测表）。
+
+**已知限制**：
+
+- **上游换写法会静默退化。** `pageCode` 是一份**实测快照**（§4.4）。上游改语言清单之后，我们
+  可能写进一个它不认的值 —— 那时页面回落到按 `navigator.language` 挑，也就是本改动之前的
+  行为。日志里那条 `language: pinned the page language cookie`（含 `pageCode` 与 `previous`）
+  是唯一线索。
+- **上游若从服务端把它写回来，语言会在会话中途翻回去。** 这一条**尚未实测**：
+  `docs/research/lang-preference.md` §4.3 的两问（服务端会不会发 `Set-Cookie`、cookie 每次变化
+  的 `cause`）需要登录态与主进程日志。⚠️ **在拿到数据之前不要加"不停写回去"的监听**：那就是
+  与上游对抢同一条 cookie，抢输时的表现（页面语言来回跳）比现在更糟。要加也是另一条 ADR，
+  并且必须写清"抢输了会怎样"。
+- **页面内部若将来提供语言开关**，用户在那里做的选择会在下次启动时被我们的固定值覆盖
+  （这一项的语言由我们的设置决定）。这与"浏览器持有这条 cookie"是同一个语义，但要在文档里
+  说清楚，否则会被当成"我的选择丢了"。
+- **只对承载上游页面的那扇窗口有意义**：`reloadPage()` 重载的是它，别的窗口不读这条 cookie。
+- **`pageCode` 的实测只覆盖本仓库钉住的 Electron（44.7.0）**：换内核版本要重测一次
+  （`AGENTS.md` 第 5 节最后一条）。
+
+---
+
+## ADR-0066
+
+**状态**：已生效 · **取代 [ADR-0065](#adr-0065)、[ADR-0063](#adr-0063) 的界面语言部分、
+[ADR-0060](#adr-0060) 的决定 1 / 2（决定 4 继续生效）**，并**撤销 INV-1 的写入例外**
+
+**背景**：[ADR-0065](#adr-0065) 落地后第一次真机运行就把它证伪了一半。用户在**已登录**的账号上
+看到的是"闪一下英文，然后自己变回中文"。实测（`docs/research/lang-preference.md` §4.5）三条判据
+都指向同一个结论：
+
+1. **形态 A 不存在**：整场运行里没有任何响应带过 `Set-Cookie`（探针 0 次命中）—— 改回那条 cookie
+   的是**页面这一侧**。ADR-0065 早先否决过的"拦响应头"那条路因此彻底没有对象。
+2. **页面握着它自己的参照物**：页面存储里有 `WALangPhonePref = "zh_CN"`（随账号同步下来的**手机**
+   语言偏好）与 `WALangPrefDidMismatchWithCookie` —— 后者在一场运行里被写成
+   `true`（我们改之后）→ `false`（页面改回之后）→ `true`（我们又改之后）。**上游自己就在检测
+   "我的语言 vs cookie 里的语言"这种不一致，并按自己的参照物纠正它。**
+3. **我们写的固定会在约 2–3 秒后被改回去**，而且**每次装载都改**（不是偶发）。页面按**账号语言**
+   渲染，与 `navigator.language` 无关（实测那一场 `--lang=es-ES` 是生效的，页面照样中文）。
+
+于是一条更基本的事实浮出来：**界面语言的真源是账号**，而账号语言的入口只在**手机端**
+（外部资料一致：网页版没有自己的语言设置，手机端改了之后网页版会在 1–2 秒内自动跟着换）。
+换句话说，"在 WaaChat 里换内嵌页面的语言"这件事，**我们这一层没有干净的做法** —— 三轮尝试
+（改请求头 → 改启动参数 → 写页面那条 cookie）已经把可行域摸完了。
+
+**决定**：
+
+1. **删掉「界面语言」这一项设置**（`Settings.uiLanguage`），设置页原来那一行改成一**只读的说明
+   行**：「界面语言由手机版 WhatsApp 的语言决定」——把真源与入口直接告诉用户，而不是留一个按不动
+   的开关。
+2. **删掉会话层写 `wa_web_lang_pref` 的整条路**：`pinLanguageCookie()`、`LANGUAGE_PREF_COOKIE`、
+   `languageCookieDomain()`、改设置时的重新固定，以及 `--lang` 的界面语言用途。
+3. **INV-1 的写入例外随之退休**：`src/` 里不得出现 `cookies.set(` / `cookies.remove(`。
+   ESLint 的 INV-1 守卫与缓存自检各加一道（自检那条是"回归断言"：这次删掉的能力不许回来）。
+4. **删掉「重新载入页面」整条路**：`RELOAD_REQUIRED_SETTINGS`、通道 `app:reload-page`、桥的
+   `reloadPage()`、`reloadChatWindow()`、界面那颗按钮 —— 它只有这一个使用者。
+5. **回退 [ADR-0065](#adr-0065) 对 IPC 面的泛化**（它的第二个成员没了）：`PendingActions` 回到
+   `RestartState`、`changedKeys(keys, …)` 回到 `changedRestartKeys(initial, current)`、通道
+   `app:pending` 回到 `app:restart-state`、桥的 `getPendingActions()` 回到 `getRestartState()`。
+   [ADR-0064](#adr-0064) 的机制本身（按钮、`relaunchApp()`、空名单）不变。
+6. **请求头不再由我们写**：`ses.setUserAgent(ua)` 不再传 `acceptLanguages`，回到内核按系统 locale
+   生成的默认值（= 普通浏览器的行为）。**UA 仍然归会话级**（[ADR-0060](#adr-0060) 决定 4 继续生效）。
+7. **`--lang` 不再设置**：`navigator.language` 回到系统 locale。⚠️ 由它而来的对策**保留**：右键
+   菜单的每个 `role` 项仍必须显式给中文 `label`（理由从"我们切走了 Chromium 的 locale"换成
+   "**系统 locale 可能是英文**"）；`RESTART_REQUIRED_SETTINGS` 机制与「立即重启」按钮保留。
+8. **语言探针（dev-only）保留**：它观察的对象是**上游自己的** cookie 与页面存储，不是我们的设置。
+   我们不再写它，但"上游何时把它改回去、何时改版"是我们需要看得见的事 —— 观察不等于能改。
+9. **磁盘上的遗留字段要清掉**：`settings.json` 里可能还留着 `uiLanguage`。加载时忽略它，并**主动
+   写回一次**把文件清理干净（同时记一条日志），不留一个"已经不存在的东西"躺在用户目录里。
+
+**理由**：
+
+1. **一个做不到承诺的设置项比没有更糟。** 用户改了它、重启了、点了「重新载入页面」，看到的还是
+   账号的语言 —— 而"设置里的东西不起作用"正是这个仓库最讨厌的一类失败（静默失效）。改文案
+   （"仅影响登录前"）只是把同一个坑换个说法留着：仍然会有人当成 bug 报回来。
+2. **抢写 cookie 已经被实测否决。** 页面的渲染跟**账号的参照物**走，抢写拿不到可见结果；而上游
+   自己有 `WALangPrefDidMismatchWithCookie` 这套纠错逻辑 —— 我们持续制造不一致，是在跟它的纠错
+   对抢，抢输时的表现（语言来回跳）只会比不做更糟（[ADR-0065](#adr-0065) §5 的否决理由 + §4.5）。
+3. **撤掉写入例外把 INV-1 拉回干净边界。** 这条能力换来的只是"登录页一次性"的语言，代价却是
+   INV-1 那条强表述（页面逐字节等同上游、不给远程内容本地能力）长期被削弱。边界越少，
+   下次判断"这算不算注入"就越不需要解释。
+4. **真源与入口都在我们之外，那就只能说明。** 语言由账号决定、账号的入口在手机端 —— 这不是
+   我们执行得了的事，说明文字比假开关诚实。
+
+**被否决的替代方案**：
+
+- **保留设置项，只改文案（"仅影响登录前"）**：留一个登录后无效的开关，用户仍然会当成 bug 报
+  回来（它已经发生过一次，正是本条的起因）。
+- **在 `cookies.on('changed')` 里反复写回去**：见理由 2。[ADR-0065](#adr-0065) 已否决，§4.5 的
+  实测又补了两条（抢不到可见结果、上游自己在检测不一致）。
+- **拦响应头**：实测 0 次命中，没有对象（§4.5 判据一）。
+- **写页面存储**（`WALangPhonePref` / localStorage）让页面认我们的语言：越过 INV-1 明写的边界
+  （**不碰 localStorage / IndexedDB**），而那份值本身是**服务端同步下来的缓存** —— 写进去也会被
+  下一次同步覆盖。要做必须单独论证，本次不做。
+- **注入页面、点它自己的菜单**：违反 INV-1。
+- **照官方桌面客户端那套语言菜单做**：那不在网页版这一层 —— 我们承载的是网页版。
+- **什么都不做，保持现状**：等于把一个已知为假的承诺留在设置页里。
+
+**影响**：
+
+- `src/shared/types.ts`：删 `uiLanguage`、`RELOAD_REQUIRED_SETTINGS`；`PendingActions` →
+  `RestartState`；`changedKeys` → `changedRestartKeys`。
+- `src/shared/language.ts`：删 `UiLanguage` / `UI_LANGUAGES` / `DEFAULT_UI_LANGUAGE` /
+  `uiLanguage()` / `acceptLanguagesFor()` / `pageLanguageCode()` / `normalizeUiLanguage()` /
+  `baseLanguage()` / `localeMatchesRequest()`。**拼写词典那两张表与它们的解析函数留在原处**
+  （它们与界面语言无关，只是碰巧在同一个文件里）。
+- `src/main/language.ts`：**删除**；会话级那一次 `setUserAgent()` 移到 `src/main/session.ts`。
+- `src/main/settings.ts`：`coerce()` 不再认 `uiLanguage`，并把磁盘上的遗留字段清掉（决定 9）。
+- `src/main/index.ts`：删 `--lang` 与 `ready` 里那段 locale 诊断。
+- `src/main/ipc/channels.ts` + `ipc/index.ts` + `src/shared/bridge.ts` + `preload/index.ts` +
+  `src/renderer/views/settings.ts`：删 `app:reload-page` 与那颗按钮；通道/桥的名字按决定 5 回退。
+- `scripts/check-capture.ts` 第 19 节：删掉界面语言那一批断言（语言码、`pageLanguageCode`、
+  domain 写、启动时固定、`did-finish-load` 清标记、重载名单…），保留拼写检查与 `role` label，
+  新增"`src/` 里不得出现 `cookies.set(` / `cookies.remove(`"。
+- `test/unit/language.test.ts`（只剩拼写词典那几组）、`test/unit/restart.test.ts`。
+- 文档：本文件、`ai/INVARIANTS.md`（撤掉 INV-1 的写入例外）、`AGENTS.md`（第 0 / 1 / 5 节）、
+  `README.md`、`SECURITY.md`、`docs/security.md`、`docs/usage.md` 第 5 节、
+  `docs/research/lang-preference.md`（追加收官一节，原文不改）、`CHANGELOG.md`。
+
+**已知限制**：
+
+- **登录页的语言现在不由我们决定**：全新 profile 的登录页跟随**系统 locale**（普通浏览器的行为）。
+  要换它只能改系统语言 —— 这是我们主动接受的代价（换来的是 INV-1 的干净边界）。
+- **上游将来若在网页版提供语言开关**，说明文字要跟着改：那时"由手机决定"不再准确，
+  而我们**有能力**把它接上（探针还在，能先看清它怎么写）。
+- **探针仍在，但只能看**：它不提供任何修改能力，也不该被当作修改能力的预留位。
+- **`WALangPhonePref` 这个名字是实测观察来的**：它是上游内部状态，改版即可能消失或改名；
+  自检因此**不**对它做任何断言，只在研究文档里记着。

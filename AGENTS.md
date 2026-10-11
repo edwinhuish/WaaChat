@@ -10,7 +10,7 @@
 
 WaaChat 是一个 Linux 桌面聊天客户端：**Electron 承载官方网页版**，在浏览器内核层接管下载与网络；归档层在这一层之上把文件按内容哈希落盘，避免重复占用、避免链接过期后打不开。
 
-**一句话判据**：我们交付的是「一个由网页版能力驱动的桌面客户端」—— Electron 承载官方网页版，在浏览器内核层接管「下载文件」这一个动作。INV-1 / INV-2 曾被 [ADR-0043](docs/decisions.md#adr-0043) 撤销，现已由 [ADR-0057](docs/decisions.md#adr-0057) **恢复**：现行边界是全部四条硬约束（INV-1 附带一条只读元数据例外）。引入 `whatsapp-web.js` 那条路线**已经放弃**。
+**一句话判据**：我们交付的是「一个由网页版能力驱动的桌面客户端」—— Electron 承载官方网页版，在浏览器内核层接管「下载文件」这一个动作。INV-1 / INV-2 曾被 [ADR-0043](docs/decisions.md#adr-0043) 撤销，现已由 [ADR-0057](docs/decisions.md#adr-0057) **恢复**：现行边界是全部四条硬约束（INV-1 附带一条只读元数据例外；它曾经还有一条"写上游那条语言偏好 cookie"的写入例外，已由 [ADR-0066](docs/decisions.md#adr-0066) 撤销）。引入 `whatsapp-web.js` 那条路线**已经放弃**。
 
 ## 1. 硬约束（先读这个，再读别的）
 
@@ -20,7 +20,7 @@ WaaChat 是一个 Linux 桌面聊天客户端：**Electron 承载官方网页版
 
 | 编号 | 约束 | 一句话理由 |
 |---|---|---|
-| **INV-1** | **绝不向被承载的页面注入脚本**（附一条**只读元数据例外**）。不通过 CDP 驱动页面、不注入样式、不引入 puppeteer 家族 / `whatsapp-web.js` / `wwebjs-electron`。 | 立身之本是「页面逐字节等同官方网页版」；只读例外削弱了这条强表述，但「不主动注入、不给远程内容本地能力」这条实质不变 —— 见 `docs/decisions.md` ADR-0057 |
+| **INV-1** | **绝不向被承载的页面注入脚本**（附一条**只读元数据例外**，见 `ai/INVARIANTS.md`，[ADR-0057](docs/decisions.md#adr-0057)）。不通过 CDP 驱动页面、不注入样式、不引入 puppeteer 家族 / `whatsapp-web.js` / `wwebjs-electron`。⚠️ 它曾经还有一条"按用户显式选择写下上游那条语言偏好 cookie"的**写入例外**（[ADR-0065](docs/decisions.md#adr-0065)），**已由 [ADR-0066](docs/decisions.md#adr-0066) 撤销**（实测：页面会在几秒内按账号语言把它改回去）。 | 立身之本是「页面逐字节等同官方网页版」；那条例外削弱了这条强表述，但「不主动注入、不给远程内容本地能力」这条实质不变 —— 见 [ADR-0057](docs/decisions.md#adr-0057) 与 [ADR-0066](docs/decisions.md#adr-0066) |
 | **INV-2** | **绝不重实现传输协议**：不引入 whatsmeow / Baileys / WPPConnect / Venom 之类协议库，不自行实现握手、密钥协商与消息编解码。 | 协议级客户端是被重点识别的一类，能力缺口是结构性的；这条与承载方式无关，因此没有理由放弃 —— 见 `docs/decisions.md` ADR-0001 / ADR-0057 |
 | **INV-3** | **绝不经手密钥与加密。** 不解析 mediaKey、不修改加密流量、不做自己的解密实现。解密只由官方页面代码完成。 | 触碰加密会把项目从「宿主」变成「破解工具」，性质完全不同 |
 | **INV-4** | **绝不使用服务方的视觉标识资产。** 不用 WhatsApp / Meta 的 Logo、图标、字体、吉祥物、官方配色，也不用其素材做应用图标。项目名 `WaaChat` 不含服务方名称，但强制义务不变：非官方声明必须同时出现在 `README.md`、`DISCLAIMER.md` 与安装产物中。 | 名称与知名服务近似，而应用承载的正是那个服务——声明义务是"不做官方外观"之外的第二道防线；视觉资产则成本为零、风险最高，因此始终是红线 —— 见 `docs/decisions.md` ADR-0020 |
@@ -32,6 +32,8 @@ WaaChat 是一个 Linux 桌面聊天客户端：**Electron 承载官方网页版
 **INV-1 的只读例外**在调用点用行内 `eslint-disable-next-line no-restricted-syntax` 显式声明（当前两处：
 `capture/download.ts`、`dev-probe.ts`，见 [ADR-0057](docs/decisions.md#adr-0057)）。
 `pnpm run selfcheck` 第 15 节再加一道 INV-3 的文本扫描，并断言依赖里没有在 Node 侧解密的库。
+第 19 节另有一条**负向回归断言**：`src/` 里不出现 `cookies.set(` / `cookies.remove(` —— 被 [ADR-0066](docs/decisions.md#adr-0066)
+撤销的写入例外不许悄悄回来（`eslint.config.mjs` 只禁**注入类** API，管不到"写 cookie"）。
 
 渲染侧的**进程边界**（G-1）：渲染进程仍不得 import `electron` / `node:fs` / `node:path`，仍由 ESLint 强制。
 
@@ -129,7 +131,7 @@ pnpm run clean           # 清理 out/ dist/ coverage/ node_modules/.vite/ .tmp/
 | 重画图标后必须**看一眼** `build/icon.png` | ImageMagick 在没有 librsvg 时会把渐变渲染成纯色方块，而且退出码是 0。`scripts/make-icons.sh` 会校验颜色数，但肉眼确认一次仍然值得。 |
 | 不要在 `electron-builder.yml` 里手写 `deb.depends` | Ubuntu 的 time_t 过渡把若干库改名成 `*t64`，硬编码列表会失效。理由见 `docs/packaging.md`。 |
 | **多实例隔离的唯一杠杆是启动时按实例 `app.setPath('userData'/'sessionData')`** | 它一次挪走登录态、分区存储、`settings.json` 与自定义图标；归档/缓存根再各自按同一个后缀派生（判据全在 `withInstanceSuffix()`）。**不要在子系统里再判一次实例**，也不要在 `whenReady` 之后才改路径。启动顺序（解析实例 → setPath → 申请锁）有一条断言看着：顺序错了不会报错，只会让两个实例抢同一份登录态。详见 [ADR-0062](docs/decisions.md#adr-0062)。 |
-| **改「界面语言」只能靠启动期的 `--lang`** | 它改的是 `navigator.language`（网页版真正看的那个值）。会话级的 `Accept-Language` **改不动** `navigator.language` —— 实测过（[ADR-0063](docs/decisions.md#adr-0063)），因此这一项**必须重启**生效，也**不要**顺手给它加"改完重载页面"：那条路是死的，加回去只会让"改了没反应"看起来像上游不配合。顺带的坑：`--lang` 会把 Chromium 自己的 locale 一起切走，而 `role` 菜单项的默认文案取自它 ⇒ 每个 `role` 都要显式给中文 `label`（自检第 19 节断言），否则把页面切成英文的用户会在**我们自己的**右键菜单里看到 Cut / Copy。 |
+| **不要再试图在 WaaChat 里改内嵌页面的语言** | 界面语言的真源是**账号**（随账号同步下来的手机语言，`WALangPhonePref`），入口只在**手机端**。三种杠杆都试过并全部证伪：[ADR-0060](docs/decisions.md#adr-0060) 的会话级 `Accept-Language`（**改不动** `navigator.language`，只影响网络层）、[ADR-0063](docs/decisions.md#adr-0063) 的启动期 `--lang`、[ADR-0065](docs/decisions.md#adr-0065) 的"写下网页版自己那条偏好 cookie `wa_web_lang_pref`" —— 最后一条实测会在 2–3 秒内被页面按账号语言**改回去**（页面自身还有 `WALangPrefDidMismatchWithCookie` 纠错逻辑，我们是在跟它抢）。[ADR-0066](docs/decisions.md#adr-0066) 因此把这一项整个撤掉，设置页只留一句说明。⚠️ 由此**INV-1 的写入例外也一并退休**：`src/` 里不得再出现 `cookies.set(` / `cookies.remove(`（自检第 19 节有负向断言，防它悄悄回来）。⚠️ 一个**仍然生效**的副产品：`role` 菜单项的默认文案取自 Chromium 自己的 locale，而系统 locale 可能是英文 ⇒ 每个 `role` 都要显式给中文 `label`（自检第 19 节断言），否则用户会在**我们自己的**右键菜单里看到 Cut / Copy。 |
 | 上游页面结构随时会变 | 接管逻辑只允许依赖**标准内核行为**（下载事件、https 请求），不得依赖任何上游内部函数名或选择器。 |
 
 ## 6. 何时应该停下来问人

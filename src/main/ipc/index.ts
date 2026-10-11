@@ -276,20 +276,16 @@ function applySettings(value: unknown): Settings {
   if ('cacheMaxBytes' in patch) void enforceCacheLimit(next.cacheMaxBytes)
 
   /**
-   * 界面语言**这里什么都不做**（[ADR-0063]）。
+   * ── 界面语言为什么**不在**这里 ──
    *
-   * 曾经这里会重设会话的 `Accept-Language` 并重载页面，理由是"`setUserAgent` 不影响已存在的
-   * WebContents"。但那条路**根本改不动**「网页版显示哪种语言」：实测只设请求头时
-   * `navigator.language` 依旧是系统的 `zh-CN`，而网页版是纯 JS 应用、看的正是它。真正的杠杆
-   * 是启动期的 `--lang` 开关（`main/index.ts`），它**只能重启生效**（`RESTART_REQUIRED_SETTINGS`）。
+   * 这里曾经把网页版那条偏好 cookie 重新固定一遍（[ADR-0065]）。[ADR-0066] 撤掉了整项：
+   * 登录之后页面会在 2–3 秒内把它改回**账号语言**（`docs/research/lang-preference.md` §4.5），
+   * 因此在设置通道里做任何动作都是白做 —— 连 `acceptLanguages` 也不行（那条路改不动
+   * `navigator.language`，[ADR-0063] 的实测）。
    *
-   * 因此这里刻意留空，而不是"顺手也把会话头改一下"：那会让用户看到请求头变了、页面却纹丝不动，
-   * 从而以为"这个设置生效了但上游不认" —— 而事实是我们只做了一半。设置页那一行写着要重启。
-   *
-   * ── 与它相反的是拼写检查（下面这一段）──
-   *
-   * 拼写检查**不需要**重启、**也不需要**重载页面：`setSpellCheckerLanguages()` 对已存在的输入框
-   * 立即生效（拼写检查是每次输入时向内核要素材的，不是页面渲染出来的）。
+   * 下面这一段与它相反：拼写检查**不需要**重启、**也不需要**重载页面 ——
+   * `setSpellCheckerLanguages()` 对已存在的输入框立即生效（拼写检查是每次输入时向内核要素材的，
+   * 不是页面渲染出来的）。
    */
   if ('spellcheck' in patch || 'spellcheckLanguages' in patch) {
     applySpellcheck(session.fromPartition(sessionPartition()), next)
@@ -787,12 +783,14 @@ export function registerIpcHandlers(): void {
   }))
 
   /**
-   * 「重启后生效」的状态（[ADR-0064]）。
+   * 「有改动还没生效」的状态（[ADR-0064]）。
    *
-   * 返回的是**键的清单**而不是一个布尔值：界面得知道是哪一项在等重启 —— 将来第二个
-   * "重启后生效"的项出现时，这一条通道不用改。
+   * `restart` 返回的是**键的清单**而不是一个布尔值：界面得知道是哪一项在等重启 —— 将来
+   * 第二个"重启后生效"的项出现时，这一条通道不用改。
    */
-  guard(CHANNELS.restartState, (): RestartState => ({ pending: pendingRestart() }))
+  guard(CHANNELS.restartState, (): RestartState => ({
+    restart: pendingRestart(),
+  }))
 
   /**
    * 重启应用（[ADR-0064]）。

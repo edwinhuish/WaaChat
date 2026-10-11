@@ -4,12 +4,12 @@
  * 只放**数据形状**，不放实现。这里出现的类型不应该导入任何 Electron 类型 ——
  * 渲染进程也要能编译它。
  *
- * 唯一的例外是下面两个**默认值常量**（`./language`）。它们在这里被 import 而不是抄写，
+ * 唯一的例外是下面那个**默认值常量**（`./language` 的拼写词典）。它在这里被 import 而不是抄写，
  * 是因为"抄一遍"等于让两处说同一件事，改动时必然漏一处 —— 与 `constants.ts` 里删掉
- * 同值 `cacheBytes` 的那段说明是同一个理由。那两个常量同样是纯数据。
+ * 同值 `cacheBytes` 的那段说明是同一个理由。那个常量同样是纯数据。
  */
 
-import { DEFAULT_SPELLCHECK_LANGUAGES, DEFAULT_UI_LANGUAGE } from './language'
+import { DEFAULT_SPELLCHECK_LANGUAGES } from './language'
 
 // ---------------------------------------------------------------------------
 // 归档
@@ -110,18 +110,6 @@ export interface Settings {
   /** 是否随桌面会话自启动。 */
   readonly launchAtLogin: boolean
   /**
-   * 内嵌页面的界面语言（[ADR-0063]，取代 [ADR-0060] 的机制）。值取自 `shared/language.ts`
-   * 的 `UI_LANGUAGES`。
-   *
-   * 它落在**两处**：启动时的 `--lang` 开关（决定 `navigator.language` —— 网页版真正看的东西）
-   * 与会话的 `Accept-Language` 头（请求层的回退）。因此它是**重启后生效**的
-   * （见 {@link RESTART_REQUIRED_SETTINGS}）。
-   *
-   * 它**不跟随我们的界面文案语言**：这两件事没有关系（我们的界面只有中文，见
-   * `ai/CONVENTIONS.md` 第 1 节）。
-   */
-  readonly uiLanguage: string
-  /**
    * 是否启用内核自带的拼写检查（[ADR-0061]）。
    *
    * 关掉它是一个**真实的**选择，而不只是偏好：词典由内核按需从第三方下载（默认是 Google
@@ -147,7 +135,6 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheMaxBytes: 2 * 1024 * 1024 * 1024,
   enableCiphertextCache: true,
   launchAtLogin: false,
-  uiLanguage: DEFAULT_UI_LANGUAGE,
   spellcheck: true,
   spellcheckLanguages: DEFAULT_SPELLCHECK_LANGUAGES,
 }
@@ -155,45 +142,46 @@ export const DEFAULT_SETTINGS: Settings = {
 /**
  * 哪些设置**需要重启**才能生效。
  *
- * 界面对照这个列表渲染"重启后生效"的徽标，不自己写死。
+ * 界面对照这个列表渲染"重启后生效"的徽标与「立即重启」按钮，不自己写死。
  *
- * 目前只有 `uiLanguage` 一项：它落在启动期的 `--lang` 开关上，而那个开关只能**启动前**设
- * （[ADR-0063]）。这不是保守，是 Electron 唯一的入口 —— 会话级的 `Accept-Language` 改不动
- * `navigator.language`，而网页版看的正是后者。
+ * ⚠️ **现在是空的**：机制与按钮都留着 —— 它是有判据、有单测、有实测结论的一套东西
+ * （[ADR-0064]），而"这一项要重启"是将来很容易再出现的性质。空列表的后果只有一个：
+ * 那颗按钮不显示。
  *
- * 历史：这个列表最初只有 `enableCiphertextCache`，理由是 `ses.protocol.handle('https')`
- * 过去只在启动时注册一次、之后不再变。密文缓存的切换改成了事务式（[ADR-0027]），它随之出列；
- * 列表与徽标机制保留下来了 —— 现在轮到了 `uiLanguage`。
+ * 历史：最初只有 `enableCiphertextCache`（`ses.protocol.handle('https')` 过去只在启动时注册
+ * 一次），密文缓存改事务式后出列（[ADR-0027]）；随后是 `uiLanguage`（[ADR-0063] 让它进来、
+ * [ADR-0065] 把它挪去「重载即生效」、[ADR-0066] 把这一项整个撤掉）。它旁边那张
+ * `RELOAD_REQUIRED_SETTINGS` 名单随 [ADR-0066] 一起删除 —— 那名单上从头到尾只有界面语言一项。
  */
-export const RESTART_REQUIRED_SETTINGS: readonly (keyof Settings)[] = ['uiLanguage']
+export const RESTART_REQUIRED_SETTINGS: readonly SettingsKey[] = []
 
 /** `Settings` 的键。跨 IPC 传"哪些设置项变了"时用它，而不是传裸字符串。 */
 export type SettingsKey = keyof Settings
 
 /**
- * 两个设置快照之间，**需要重启才生效**且真的变了的那些键。
+ * 两个设置快照之间，**在「重启后生效」名单里、且真的变了**的那些键。
  *
- * 这是"要不要给出「立即重启」"的唯一判据（[ADR-0064]），因此它必须是**纯函数**、能被单测：
- * 判错了的两个方向都很难看 —— 多显示一个按钮是噪音，少显示一次会让用户以为"改完就算生效了"，
- * 而那一项要等到他下次自己重启才生效。
+ * 这是「立即重启」那颗按钮的唯一判据（[ADR-0064]），因此它必须是**纯函数**、能被单测：
+ * 判错了的两个方向都很难看 —— 多显示一颗按钮是噪音，少显示一次会让用户以为
+ * "改完就算生效了"，而那一项要等到他下次自己重启才生效。
  *
- * ⚠️ 比的是**值与键都相同**的项，因此"改过去又改回来"不算待重启（与用户看到的界面一致：
- * 值回到原样，就没有任何东西等着重启）。
+ * ⚠️ 比的是**值与键都相同**的项，因此"改过去又改回来"不算待办（与用户看到的界面一致：
+ * 值回到原样，就没有任何东西等着生效）。
  */
 export function changedRestartKeys(initial: Settings, current: Settings): SettingsKey[] {
   return RESTART_REQUIRED_SETTINGS.filter((key) => initial[key] !== current[key])
 }
 
 /**
- * 「重启后生效」的状态（读给界面看的，[ADR-0064]）。
+ * 「有改动还没生效」的状态（读给界面看的，[ADR-0064]）。
  *
  * 它归**主进程**所有：只有它知道"进程启动时读到的设置是什么"（`main/settings.ts` 的快照）。
- * 让界面自己记一份启动值也能算，但那就成了"界面维护我改过什么"——`shared/bridge.ts` 的
- * `setSettings` 刻意返回完整设置，为的就是不出现这种两份状态互相打架的局面。
+ * 让界面自己记一份也能算，但那就成了"界面维护我改过什么"——`shared/bridge.ts` 的 `setSettings`
+ * 刻意返回完整设置，为的就是不出现这种两份状态互相打架的局面。
  */
 export interface RestartState {
-  /** 本次运行改过、但**还没生效**的那些键。空数组 = 没有待重启的改动。 */
-  readonly pending: readonly SettingsKey[]
+  /** 本次运行改过、且**要重启**才生效的键。空数组 = 没有待重启的改动。 */
+  readonly restart: readonly SettingsKey[]
 }
 
 // ---------------------------------------------------------------------------

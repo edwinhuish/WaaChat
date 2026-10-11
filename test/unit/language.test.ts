@@ -1,118 +1,25 @@
 /**
- * 界面语言与拼写词典判据表的单测（`src/shared/language.ts`）。
+ * 拼写词典判据表的单测（`src/shared/language.ts`）。
  *
- * 为什么值得测：这两张表是两个功能的**唯一事实来源**，而它们出错的方式全都是安静的 ——
- * 表里写错一个语言码，症状是"上游没换语言"（看起来像上游不支持，不像我们的 bug）；
- * 拼写词典写错一个，症状是"勾了却不查"（红波浪线照样出现，只是划分得不对）。
- * 因此这里断言的是**表本身的性质**，而不是某一次调用的返回值。
+ * 为什么值得测：这张表是「拼写检查」那一项**唯一**的事实来源，而它出错的方式全是安静的 ——
+ * 表里写错一个语言码，症状是"勾了却不查"（红波浪线照样出现，只是划分得不对）；写进一个内核
+ * 没有的码，那一项永远不生效。因此这里断言的是**表本身的性质**，而不是某一次调用的返回值。
+ *
+ * 历史：这个文件也测过**界面语言**那张表（`--lang` 的规范化、网页版那条偏好 cookie 的写法）。
+ * [ADR-0066] 撤掉那一整项之后，那些用例与被测的代码一起删掉了 —— 实测结论留在
+ * `docs/research/lang-preference.md` §4.5，决定留在 ADR 里。
  */
 
 import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_SPELLCHECK_LANGUAGES,
-  DEFAULT_UI_LANGUAGE,
   SPELLCHECK_LANGUAGES,
-  UI_LANGUAGES,
-  acceptLanguagesFor,
-  baseLanguage,
   formatLanguageList,
-  localeMatchesRequest,
   normalizeSpellcheckLanguages,
-  normalizeUiLanguage,
   parseLanguageList,
   resolveSpellcheckLanguages,
-  uiLanguage,
 } from '../../src/shared/language'
-
-/**
- * 取 `acceptLanguages` 里的主语言（第一段）。
- *
- * 这里刻意**不**去剥 `;q=`：那已经不是合法写法了（见下面那条关于 q 值的用例），留着剥壳反而
- * 会让"有人把 q 值写回来"逃过"主语言必须等于语言码"那条断言。
- */
-function primaryLanguage(acceptLanguages: string): string {
-  return (acceptLanguages.split(',')[0] ?? '').trim()
-}
-
-describe('UI_LANGUAGES', () => {
-  it('语言码不重复', () => {
-    const codes = UI_LANGUAGES.map((entry) => entry.code)
-    expect(new Set(codes).size).toBe(codes.length)
-  })
-
-  it('每一项的 Accept-Language 以它自己的语言码开头', () => {
-    // 主语言与语言码不一致时，选的是一种语言、请求的却是另一种 —— 这种错排没人看得出来。
-    for (const entry of UI_LANGUAGES) {
-      expect(primaryLanguage(entry.acceptLanguages)).toBe(entry.code)
-    }
-  })
-
-  it('语言码与 acceptLanguages 都是纯 ASCII、逗号分隔、没有空格', () => {
-    // 脏字符不会报错，只会让上游认不出这个头（`zh-CN , en` 里的空格就足以让部分实现只取到 " zh"）。
-    for (const entry of UI_LANGUAGES) {
-      expect(entry.code).toMatch(/^[a-z]{2}(-[A-Za-z]{2,4})?$/)
-      expect(entry.acceptLanguages).toMatch(/^[A-Za-z0-9,-]+$/)
-      expect(entry.acceptLanguages).not.toContain(' ')
-      expect(entry.acceptLanguages).not.toContain(',,')
-    }
-  })
-
-  it('不自己写 `;q=` 值 —— 内核会把它当成语言标签的一部分（[ADR-0063]）', () => {
-    // 实测 Electron 44.7：`setUserAgent(ua, 'en-US,en;q=0.9')` 发出去的头是
-    // `en-US,en;q=0.9;q=0.9` —— q 值重复，且 `en` 后面拖着一个畸形参数。q 值由内核自己按顺序排：
-    // 给 `'ja-JP,ja,en-US,en'` 得到的是 `ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7`。
-    for (const entry of UI_LANGUAGES) {
-      expect(entry.acceptLanguages).not.toContain(';')
-    }
-  })
-
-  it('每一项都有非空标签（界面上没有无名选项）', () => {
-    for (const entry of UI_LANGUAGES) {
-      expect(entry.label.trim()).not.toBe('')
-    }
-  })
-
-  it('默认项在表里，且是简体中文', () => {
-    expect(DEFAULT_UI_LANGUAGE).toBe('zh-CN')
-    expect(UI_LANGUAGES.some((entry) => entry.code === DEFAULT_UI_LANGUAGE)).toBe(true)
-  })
-
-  it('表里没有「跟随系统」这一项（它会让"选了语言却没反应"看起来像 bug）', () => {
-    expect(UI_LANGUAGES.some((entry) => entry.code === '')).toBe(false)
-  })
-})
-
-describe('uiLanguage / acceptLanguagesFor', () => {
-  it('认得出的码原样返回', () => {
-    expect(uiLanguage('en-US').code).toBe('en-US')
-    expect(acceptLanguagesFor('en-US')).toBe('en-US,en')
-  })
-
-  it('认不出的码回落到默认项，而不是抛错', () => {
-    // 调用点在启动路径上：为一个被改坏的配置值让应用起不来，代价远大于"语言回到默认"。
-    for (const bad of ['', 'xx-XX', 'zh-CN,en', 'zh']) {
-      expect(uiLanguage(bad).code).toBe(DEFAULT_UI_LANGUAGE)
-      expect(acceptLanguagesFor(bad)).toBe(acceptLanguagesFor(DEFAULT_UI_LANGUAGE))
-    }
-  })
-})
-
-describe('normalizeUiLanguage', () => {
-  it('只放行表里的语言码', () => {
-    expect(normalizeUiLanguage('en-US')).toBe('en-US')
-    expect(normalizeUiLanguage('zh-TW')).toBe('zh-TW')
-  })
-
-  it('坏值（类型不对 / 表外 / 空）一律收敛到默认', () => {
-    expect(normalizeUiLanguage(undefined)).toBe(DEFAULT_UI_LANGUAGE)
-    expect(normalizeUiLanguage(null)).toBe(DEFAULT_UI_LANGUAGE)
-    expect(normalizeUiLanguage(42)).toBe(DEFAULT_UI_LANGUAGE)
-    expect(normalizeUiLanguage({ code: 'en-US' })).toBe(DEFAULT_UI_LANGUAGE)
-    expect(normalizeUiLanguage('')).toBe(DEFAULT_UI_LANGUAGE)
-    expect(normalizeUiLanguage('xx-XX')).toBe(DEFAULT_UI_LANGUAGE)
-  })
-})
 
 describe('parseLanguageList / formatLanguageList', () => {
   it('按逗号切分，去空白、去空项、去重且保序', () => {
@@ -157,8 +64,6 @@ describe('SPELLCHECK_LANGUAGES', () => {
     const chinese = SPELLCHECK_LANGUAGES.filter((entry) => entry.code.startsWith('zh'))
 
     expect(chinese).toEqual([])
-    // 反过来说，界面语言表里是有中文的：两张表回答的是两个不同的问题，别把它们的差异当成笔误。
-    expect(UI_LANGUAGES.some((entry) => entry.code.startsWith('zh'))).toBe(true)
   })
 
   it('默认词典在表里', () => {
@@ -215,52 +120,5 @@ describe('resolveSpellcheckLanguages', () => {
 
   it('空列表两边都空', () => {
     expect(resolveSpellcheckLanguages('', ['en-US'])).toEqual({ applied: [], rejected: [] })
-  })
-})
-
-/**
- * 这一组守的是"`--lang` 有没有真的生效"这个判断（`main/index.ts` 在 `ready` 时用它决定要不要
- * 报一条 warn）。
- *
- * 它必须**区分**两件看起来一样的事：
- *
- *   - **规范化**：Chromium 把 `es-ES` 变成 `es`（实测 Electron 44.7，见 `baseLanguage`）——
- *     这是正常的，判成失败会让每一次都报假警报；
- *   - **回落**：内核不认这个码、退到系统 locale —— 这一条正是[静默失效]：
- *     设置页写着用户选的语言，而页面拿到的是系统语言。
- *
- * 假警报的代价不是噪音，是**真正的失败从此没人看**。
- */
-describe('baseLanguage / localeMatchesRequest', () => {
-  it('基础语言取自第一个 `-` 之前，大小写与下划线都不影响', () => {
-    expect(baseLanguage('es-ES')).toBe('es')
-    expect(baseLanguage('es_ES')).toBe('es')
-    expect(baseLanguage('zh-Hans-CN')).toBe('zh')
-    expect(baseLanguage('AR')).toBe('ar')
-    expect(baseLanguage('')).toBe('')
-  })
-
-  it('规范化（`es-ES` → `es`）算**匹配** —— 它不是失败', () => {
-    // 实测：--lang=es-ES 得到的是 navigator.language === 'es'。
-    expect(localeMatchesRequest('es-ES', 'es')).toBe(true)
-    expect(localeMatchesRequest('ja-JP', 'ja')).toBe(true)
-    expect(localeMatchesRequest('en-US', 'en-US')).toBe(true)
-    expect(localeMatchesRequest('zh-CN', 'zh-CN')).toBe(true)
-  })
-
-  it('回落（内核给了另一门语言）算**不匹配** —— 这才是要报出来的那一种', () => {
-    expect(localeMatchesRequest('es-ES', 'zh-CN')).toBe(false)
-    expect(localeMatchesRequest('ja-JP', 'en-US')).toBe(false)
-  })
-
-  it('请求值取不到基础语言时判为不匹配（宁可多说一句，也不静默通过）', () => {
-    expect(localeMatchesRequest('', 'zh-CN')).toBe(false)
-    expect(localeMatchesRequest('   ', 'zh-CN')).toBe(false)
-  })
-
-  it('清单里每一个语言码都能给自己一个非空的基础语言', () => {
-    for (const entry of UI_LANGUAGES) {
-      expect(baseLanguage(entry.code)).not.toBe('')
-    }
   })
 })

@@ -6,14 +6,17 @@
 四条硬约束对应四条被否决的技术路线。它们不是为了"好看"而立的规矩，每一条都排除掉一整类风险。
 
 > **现状**：四条**全部生效** —— INV-1 与 INV-2 曾被 [ADR-0043](../docs/decisions.md#adr-0043) 撤销，
-> 已由 [ADR-0057](../docs/decisions.md#adr-0057) 恢复。其中 INV-1 附带一条**只读元数据例外**（见下）。
+> 已由 [ADR-0057](../docs/decisions.md#adr-0057) 恢复。其中 INV-1 附带一条**只读元数据例外**
+> （见下）。它曾经还有过一条"'按用户的选择写下上游自己那条语言偏好 cookie'的写入例外"
+> （[ADR-0065](../docs/decisions.md#adr-0065)），**已由 [ADR-0066](../docs/decisions.md#adr-0066) 撤销**：
+> 实测证明网页版的语言由**账号**决定，我们写下的那条 cookie 会在几秒内被页面改回去。
 
 ---
 
 ## INV-1 · 绝不向被承载的页面注入脚本
 
 **状态**：**已生效**（曾被 [ADR-0043](../docs/decisions.md#adr-0043) 撤销，由
-[ADR-0057](../docs/decisions.md#adr-0057) 恢复），**附带一条只读例外**。
+[ADR-0057](../docs/decisions.md#adr-0057) 恢复），**附带一条只读例外**（见下）。
 
 **陈述**：不使用 `webContents.executeJavaScript`、`executeJavaScriptInIsolatedWorld`、
 `insertCSS`；不让 preload 直连页面世界（`contextIsolation: false`）；不通过调试协议（CDP）驱动页面；
@@ -32,15 +35,32 @@
 
 **例外仍然是注入面**：取回的值只留在主进程侧使用，**绝不回传页面**（T1 的判断在这里同样适用）。
 
-**不算注入的两类做法**（判据是同一个：*我们有没有往文档里写东西、有没有给远程内容新能力*）：
+**不算注入的两类做法**（判据是同一个：*我们有没有往页面里写东西、有没有给远程内容新能力*）：
 
-- **改请求头**：`Accept-Language` / UA 这类"在请求层面表现得像一个普通浏览器"的做法（[ADR-0060](../docs/decisions.md#adr-0060)）。启动期的 `--lang` 开关也属于这一类：它改的是**应用 locale**（进而影响 `navigator.language` 与 `app.getLocale()`），同样一个字节都不进页面（[ADR-0063](../docs/decisions.md#adr-0063)）。⚠️ 但**覆盖 `navigator.language` 本身**那一类做法（往页面里塞脚本改 `navigator`）**不在此列** —— 那正是这个例外没有放开的东西。
-  它的后果是**页面重新装载一次**、拿到另一种语言，而页面里跑的东西仍与上游逐字节一致；
+- **改请求头**：UA 这类"在请求层面表现得像一个普通浏览器"的做法（[ADR-0060](../docs/decisions.md#adr-0060)
+  决定 4，**仍生效**）。它一个字节都不进页面，页面里跑的东西仍与上游逐字节一致。⚠️ 由此而来的**会话级**
+  设置今天只有 UA：`Accept-Language` 与启动期的 `--lang` 曾经也用它落地「界面语言」，两者都已随那一项
+  一起撤掉（[ADR-0063](../docs/decisions.md#adr-0063) → [ADR-0066](../docs/decisions.md#adr-0066)）。
+  ⚠️ 而**覆盖 `navigator.language` 本身**那一类做法（往页面里塞脚本改 `navigator`）**不在此列**。
 - **用内核自己的既有能力**：拼写检查（[ADR-0061](../docs/decisions.md#adr-0061)）连页面都不碰 ——
   红线由渲染进程自己画，纠错建议是主进程弹出的原生菜单。
 
-⚠️ 反过来，"**改了页面已经渲染出来的东西**"无论用什么手段（`insertCSS`、`executeJavaScript`、CDP、
-或清掉它的存储逼它重来）都还是注入，上面两条不是它们的挡箭牌。
+⚠️ 反过来，"**改了页面已经渲染出来的东西**"无论用什么手段（`insertCSS`、`executeJavaScript`、
+CDP）都还是注入，上面几条不是它们的挡箭牌。
+
+⚠️ **"清掉它的存储逼它重来"同样不在此列** —— 那是把一个我们没有选择权的东西删掉、赌它自己会重建。
+（[ADR-0065](../docs/decisions.md#adr-0065) 因此没有采用"删掉那条语言 cookie、让它重新按
+`navigator.language` 挑"这条更省事的路：它要重启才生效，而且删的是用户没要求删的东西；
+[ADR-0066](../docs/decisions.md#adr-0066) 又复核了一遍，结论不变。）
+
+⚠️ **今天这份文档里没有任何"写进页面存储"的口子。** 曾经有过一条 —— 按用户的显式选择写下上游那条
+语言偏好 cookie（[ADR-0065](../docs/decisions.md#adr-0065)）—— 已由
+[ADR-0066](../docs/decisions.md#adr-0066) 撤销（实测：页面会在几秒内按**账号语言**把它改回去）。
+`pnpm run selfcheck` 第 19 节因此断言 `src/` 里不出现 `cookies.set(` / `cookies.remove(` ——
+这条负向断言就是为了不让它悄悄回来。若将来有人要重新开这样的口子，那等于"**我们替用户决定上游的
+状态**"（哪怕只是一小步、哪怕看起来更方便），产品性质就是
+[ADR-0057](../docs/decisions.md#adr-0057) 所说的"修改过的客户端"。**改任何一条守卫之前，先在
+`docs/decisions.md` 追加 ADR。**
 
 **自查**：
 
@@ -51,6 +71,8 @@ rg -n 'executeJavaScript' src/
 #   src/main/capture/download.ts（filehash / 会话ID 反查）
 #   src/main/dev-probe.ts（仅开发模式的只读探针）
 rg -n "from '(puppeteer|puppeteer-core|puppeteer-in-electron|whatsapp-web\.js|wwebjs-electron)'" src/
+# 应当无输出：今天没有任何地方往页面存储里写东西（写入例外已由 ADR-0066 撤销）：
+rg -n 'cookies\.(set|remove)\(' src/
 ```
 
 ---

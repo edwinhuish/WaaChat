@@ -79,10 +79,7 @@ import {
 } from '../src/shared/instance'
 import {
   DEFAULT_SPELLCHECK_LANGUAGES,
-  DEFAULT_UI_LANGUAGE,
   SPELLCHECK_LANGUAGES,
-  UI_LANGUAGES,
-  acceptLanguagesFor,
   normalizeSpellcheckLanguages,
   resolveSpellcheckLanguages,
 } from '../src/shared/language'
@@ -1203,38 +1200,22 @@ check(
 )
 
 // ---------------------------------------------------------------------------
-// 19. 界面语言与拼写检查
+// 19. 拼写检查与 UA
 // ---------------------------------------------------------------------------
 //
-// 这两项都建立在**内核的既有能力**上，因此没有"接管"可以断言，风险全落在三个安静的失败模式上：
+// 这两项都建立在**内核的既有能力**上，因此没有"接管"可以断言，风险全落在安静的失败模式上：
 //
-//   1. 语言码写错 → 上游不换语言，看起来像"上游不支持"；
-//   2. 拼写词典的码写成区域形式（`de-DE`）→ 内核拒收，勾了等于没勾，且不报错；
-//   3. **两处各设一半 UA**（会话设了语言、窗口又设 UA）→ 语言被覆盖回默认。
+//   1. 拼写词典的码写成区域形式（`de-DE`）→ 内核拒收，勾了等于没勾，且不报错；
+//   2. **两处各设一半 UA**（会话设了、窗口又设）→ 会话那一份被盖掉，而没有任何报错。
 //
-// 前两个断言判据表本身；第三个断言的是**源码**，因为那一半是"两个地方各写一行"造成的。
+// 前者断言判据表本身；后者断言的是**源码**，因为那一半是"两个地方各写一行"造成的。
+//
+// 「界面语言」曾经也住在这一节：它那条偏好 cookie 的**写法**与**作用域**都值得钉住（[ADR-0065]）。
+// [ADR-0066] 把那一项整个撤掉，连带退休了 INV-1 的**写入例外**，那批断言随之删除 ——
+// "被撤掉的口子不许悄悄回来"的负向回归守卫改放在下面「立即重启」那一组里（见该节开头）。
 
-section('界面语言与拼写检查')
+section('拼写检查与 UA')
 
-check(
-  '每一项界面语言的 acceptLanguages 都以它自己的码开头、不含空格、且不含 `;`（q 值由内核排）',
-  UI_LANGUAGES.every((entry) => {
-    const primary = entry.acceptLanguages.split(',')[0] ?? ''
-    return (
-      primary === entry.code &&
-      !entry.acceptLanguages.includes(' ') &&
-      // 手写的 q 值**不会**被内核理解：它会被当成语言标签的一部分原样拼回去，实测
-      // `en-US,en;q=0.9` 发出去是 `en-US,en;q=0.9;q=0.9`（见 ADR-0063）。
-      !entry.acceptLanguages.includes(';')
-    )
-  }),
-  '有一个语言码自带 q 值，或者主语言与语言码对不上',
-)
-check(
-  '认不出的语言码回落到默认（调用点在启动路径上，抛错等于起不来）',
-  acceptLanguagesFor('xx-XX') === acceptLanguagesFor(DEFAULT_UI_LANGUAGE) &&
-    acceptLanguagesFor('') === acceptLanguagesFor(DEFAULT_UI_LANGUAGE),
-)
 check(
   '拼写词典统一用基础语言码（我们的取舍）：区域码只有 en-US / en-GB / pt-BR',
   SPELLCHECK_LANGUAGES.map((entry) => entry.code)
@@ -1273,15 +1254,16 @@ check(
 )
 
 // `windowSource` 复用它上面那一节（"关闭窗口 = 隐藏"）读到的同一份文本。
-const languageSource = source('../src/main/language.ts')
+// UA 归会话级（`applyUserAgent()` 在 `session.ts` 里）—— `src/main/language.ts` 随 [ADR-0066] 删除。
+const sessionSource = source('../src/main/session.ts')
 
 check(
-  '承载上游页面的窗口不自己设 UA（两处各设一半会让语言被静默覆盖回默认）',
+  '承载上游页面的窗口不自己设 UA（两处各设一半会让会话那一份被静默盖掉）',
   !windowSource.includes('webContents.setUserAgent(') &&
-    languageSource.includes('ses.setUserAgent('),
+    sessionSource.includes('ses.setUserAgent('),
   windowSource.includes('webContents.setUserAgent(')
     ? 'window.ts 里又出现了这一次调用'
-    : 'language.ts 里找不到会话级的 setUserAgent',
+    : 'session.ts 里找不到会话级的 setUserAgent',
 )
 
 /**
@@ -1300,40 +1282,42 @@ check(
 )
 
 /**
- * 界面语言的真正杠杆是启动期的 `--lang` 开关：网页版按 `navigator.language` 挑语言包，而那个值
- * 来自**应用 locale**（实测 Electron 44.7：只设会话的 `Accept-Language` 时它依旧是 `zh-CN`，
- * 见 [ADR-0063]）。
+ * 「立即重启」这条链（[ADR-0064]）与「界面语言已撤」的回归守卫（[ADR-0066]）。
  *
- * 因此断言那条开关**在 `whenReady` 之前**被追加。顺序错了不会报任何错，只会让这一项设置
- * **永远不生效**，而症状与"上游不支持"一模一样 —— 正是这个仓库最讨厌的一类失败。
- */
-// 不叫 `entrySource`：那一节（启动顺序）在下面已经有一个同名的常量。
-const startupSource = source('../src/main/index.ts')
-const atLang = startupSource.indexOf(`appendSwitch('lang'`)
-const atReady = startupSource.indexOf('app.whenReady()')
-check(
-  '界面语言在 whenReady 之前交给 `--lang`（运行期设不了，顺序错了这一项就永远不生效）',
-  atLang > -1 && atReady > atLang,
-  atLang === -1
-    ? `index.ts 里找不到 appendSwitch('lang')`
-    : `它在 app.whenReady() 之后（${atLang} > ${atReady}）`,
-)
-check(
-  '界面语言在"重启后生效"名单里（界面据此渲染徽标，而不是靠人记得改文案）',
-  RESTART_REQUIRED_SETTINGS.includes('uiLanguage'),
-)
-
-/**
- * 「立即重启」（[ADR-0064]）：让"重启后生效"的那些项不必让用户自己去关再开。
- *
- * 这一条路有两类**静默**的坏法，都靠下面的断言挡住：
+ * 它们有同一类**静默**的坏法，都靠下面的断言挡住：
  *
  *   - **顺序**：`relaunch()` 必须在 `quit()` **之前**；反了就是"点了重启、应用没了"。
  *     同理必须是 `quit()` 而不是 `exit()` —— `exit()` 不发 `before-quit` / `will-quit`，
  *     于是"退出时清除归档"（隐私承诺）与 SQLite 收尾一起被跳过，而日志里什么都看不出来。
- *   - **三处一致**："新增一个能力 = 新增一个具名方法 + 一条通道"（`shared/bridge.ts` 开头），
+ *   - **四处一致**："新增一个能力 = 新增一个具名方法 + 一条通道"（`shared/bridge.ts` 开头），
  *     桥、preload、通道表与处理器四处漏掉任何一处，症状都是"点了没反应"。
+ *   - **撤掉的东西不许悄悄回来**：[ADR-0066] 撤掉「界面语言」时连带退休了 INV-1 的**写入例外**
+ *     （那是这个项目唯一一处往页面存储里写东西的口子）。下面那条负向断言就是这件事在 CI 里的
+ *     化身 —— `eslint.config.mjs` 那几条禁的是**注入**类 API，管不到"写 cookie"。
  */
+const bridgeSource = source('../src/shared/bridge.ts')
+const preloadSource = source('../src/preload/index.ts')
+const channelsSource = source('../src/main/ipc/channels.ts')
+const ipcSource = source('../src/main/ipc/index.ts')
+const settingsViewSource = source('../src/renderer/views/settings.ts')
+
+const cookieWriters = srcFiles.filter((file) => {
+  const code = stripComments(readFileSync(file, 'utf8'))
+  return code.includes('.cookies.set(') || code.includes('.cookies.remove(')
+})
+
+check(
+  'INV-1 不再有写入例外：`src/` 里没有任何地方写 cookie（[ADR-0066] 把它撤掉了）',
+  cookieWriters.length === 0,
+  `这几处在写 cookie：${cookieWriters.map((file) => basename(file)).join(', ')}`,
+)
+check(
+  '「界面语言」那一行是**说明**而不是设置项，且说清了入口在手机端（[ADR-0066]）',
+  settingsViewSource.includes('手机版 WhatsApp') &&
+    !settingsViewSource.includes('UI_LANGUAGES') &&
+    !settingsViewSource.includes('uiLanguage'),
+  '设置页里那句话不在，或者语言选择器又回来了 —— 后者是一个改不动页面的开关',
+)
 const restartSource = source('../src/main/restart.ts')
 
 /**
@@ -1361,15 +1345,9 @@ check(
   'restart.ts 的代码里用了 app.exit()：before-quit / will-quit 不会发出',
 )
 
-const bridgeSource = source('../src/shared/bridge.ts')
-const preloadSource = source('../src/preload/index.ts')
-const channelsSource = source('../src/main/ipc/channels.ts')
-const ipcSource = source('../src/main/ipc/index.ts')
-const settingsViewSource = source('../src/renderer/views/settings.ts')
-
 check(
-  '「立即重启」这条能力四处齐全：桥 / preload / 通道表 / 处理器',
-  bridgeSource.includes('getRestartState()') &&
+  '「立即重启 / 待办状态」两条能力四处齐全：桥 / preload / 通道表 / 处理器',
+  bridgeSource.includes('getRestartState(): Promise<RestartState>') &&
     bridgeSource.includes('restart(): Promise<void>') &&
     preloadSource.includes('CHANNELS.restartState') &&
     preloadSource.includes('CHANNELS.restart)') &&
@@ -1380,16 +1358,17 @@ check(
   '有一处漏了：调用会静默失败（没有反应也没有报错）',
 )
 check(
-  '「立即重启」按钮的显示判据来自主进程的 pending，而不是写死成常驻按钮',
-  settingsViewSource.includes("restart.pending.includes('uiLanguage')"),
-  'views/settings.ts 里找不到基于 restart.pending 的判据',
+  '那颗「立即重启」的显示判据来自主进程的待办状态，而不是写死成常驻按钮',
+  settingsViewSource.includes('restartState.restart.length === 0') &&
+    settingsViewSource.includes('pendingRestartRow'),
+  'views/settings.ts 里找不到基于 restartState 的判据',
 )
 
 /**
  * 右键菜单里**每一个** `role` 项都必须带 `label`。
  *
- * `role` 的默认文案取自 Chromium 自己的 locale，而「界面语言」那一项会把那个 locale 一起切走
- * （`--lang`，[ADR-0063]）—— 于是把内嵌页面切成英文的用户，会在**我们自己的**菜单里看到
+ * `role` 的默认文案取自 Chromium 自己的 locale（`--lang` 曾经能把它切走，[ADR-0063]；那一项已由
+ * [ADR-0066] 撤掉，但**系统 locale 照样可能是英文**）—— 那时用户会在**我们自己的**菜单里看到
  * Cut / Copy / Paste / Select All。而我们的界面文案必须是中文（`ai/CONVENTIONS.md` 第 1 节）。
  *
  * 断言"每一个 role 都有 label"而不是逐项点名：将来加一项（`redo` / `undo`）时，这里会直接变红。
@@ -1406,8 +1385,8 @@ check(
 
 const mainSourceFiles = sourceFiles(join(srcRoot, 'main'))
 check(
-  '三个新设置项在主进程里都有读者（能改的就一定真的会被执行）',
-  ['uiLanguage', 'spellcheck', 'spellcheckLanguages'].every((key) =>
+  '拼写检查的两个设置项在主进程里都有读者（能改的就一定真的会被执行）',
+  ['spellcheck', 'spellcheckLanguages'].every((key) =>
     mainSourceFiles.some(
       (file) => basename(file) !== 'settings.ts' && readFileSync(file, 'utf8').includes(key),
     ),
