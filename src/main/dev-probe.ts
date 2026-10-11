@@ -1,11 +1,15 @@
 /**
- * 开发模式：把「媒体元数据探针」自动装进承载上游页面的窗口。
+ * 开发模式：把只读探针自动装进承载上游页面的窗口。目前**两份**：
  *
- * ── 为什么需要它 ──
+ *   - **媒体元数据探针**（`test/fixtures/probe-media-metadata.js` → `__waProbe`）：
+ *     它本来是**粘贴进控制台**用的，而 P2/P3 要求"切一次会话就重扫一次" —— 粘贴于是成了整条
+ *     流程里最贵的一步。装上之后控制台里直接就是 `__waProbe.scan()`。
+ *   - **界面语言探针**（`test/fixtures/probe-lang-pref.js` → `__waLangPref`，见
+ *     `docs/research/lang-preference.md`）：回答"网页版的界面语言记在哪、谁能写它"。
  *
- * 探针本体（`test/fixtures/probe-media-metadata.js`）本来是**粘贴进控制台**用的：重启应用要
- * 重粘、刷新页面要重粘，而 P2/P3 要求"切一次会话就重扫一次" —— 粘贴于是成了整条流程里最贵
- * 的一步。这里在未打包时自动把它装上，控制台里直接就是 `__waProbe.scan()`。
+ * 为什么是同一个文件、同一处注入：两份探针都**必须**经由下面**唯一那一处**
+ * `executeJavaScript`（{@link evaluate}）进页面 —— INV-1 的例外每多一处都要在源码里看得见
+ * （`ai/INVARIANTS.md` 的自查段落就是这么读的）。因此新增探针只加夹具，不加调用点。
  *
  * ── 为什么是 `executeJavaScript`，而不是给聊天窗口挂 preload ──
  *
@@ -17,9 +21,12 @@
  * ── 纪律 ──
  *
  * - **只在未打包时**注入：产物里既没有 `test/fixtures/`，也不该有这段行为。
- * - 注入的是磁盘上的**同一份**探针，不复制源码 —— 它的两条性质（绝不打印值、必须走原型链
- *   上的 getter）由 `test/unit/probe-media-metadata.test.ts` 守着，复制就等于让守卫失效。
- * - 探针自身只读元数据：不下载、不发请求、不读密钥。见探针文件头与 INV-3。
+ * - 注入的是磁盘上的**同一份**探针，不复制源码 —— 它的性质（媒体探针"绝不打印值、必须走原型链
+ *   上的 getter"；语言探针"只报 cookie 名字"）由 `test/unit/` 下的守卫守着，复制就等于让守卫失效。
+ * - 探针自身只读元数据：不下载、不发请求、不写页面、不读密钥。见两份探针的文件头。
+ *
+ * ⚠️ 语言探针在**页面侧**只是一半：它看不见"服务端有没有发 `Set-Cookie`"，那一半挂在**会话**
+ * 上（`dev-probe-lang.ts`）。
  */
 
 import { readFileSync } from 'node:fs'
@@ -28,8 +35,11 @@ import { app, type BrowserWindow } from 'electron'
 
 import { failureReason } from './errors'
 import {
+  LANG_PROBE_GLOBAL,
+  LANG_PROBE_SOURCE_RELATIVE_PATH,
   PROBE_GLOBAL,
   PROBE_SOURCE_RELATIVE_PATH,
+  langProbeSourcePath,
   probeBootstrapCode,
   probeReadyExpression,
   probeScanExpression,
@@ -66,7 +76,13 @@ export function attachDevProbe(window: BrowserWindow): void {
 }
 
 async function install(window: BrowserWindow): Promise<void> {
-  const source = readProbeSource()
+  await installMediaProbe(window)
+  await installLanguageProbe(window)
+}
+
+/** 媒体元数据探针：装 API，等上游就绪后自动扫一次（见 {@link scanWhenReady}）。 */
+async function installMediaProbe(window: BrowserWindow): Promise<void> {
+  const source = readSource(PROBE_SOURCE_RELATIVE_PATH, probeSourcePath)
   if (source === null) return
 
   const injected = await evaluate(window, probeBootstrapCode(source))
@@ -78,6 +94,30 @@ async function install(window: BrowserWindow): Promise<void> {
   })
 
   await scanWhenReady(window)
+}
+
+/**
+ * 界面语言探针（`test/fixtures/probe-lang-pref.js`）。
+ *
+ * 与媒体探针的差别只有一处、但很关键：它**装完就取一次快照**。
+ * 媒体探针要等上游的 store 起来（早了会打出一条"没找到消息集合"的**假警报**，所以那个有
+ * bootstrap 标记）；而本探针读的是 cookie / 页面存储 / `navigator`，在 `did-finish-load`
+ * 就已经可读，没有"未就绪"这个状态，因此不需要标记，也不需要轮询。
+ *
+ * 服务端那一半（`Set-Cookie` 与 cookie 变化的 cause）在 `dev-probe-lang.ts` 里 —— 它挂在
+ * **会话**上，与窗口无关，因此不在这里。
+ */
+async function installLanguageProbe(window: BrowserWindow): Promise<void> {
+  const source = readSource(LANG_PROBE_SOURCE_RELATIVE_PATH, langProbeSourcePath)
+  if (source === null) return
+
+  const injected = await evaluate(window, source)
+  if (!injected.ok) return
+
+  logger.info('dev probe: language probe installed', {
+    call: `${LANG_PROBE_GLOBAL}.report()`,
+    source: LANG_PROBE_SOURCE_RELATIVE_PATH,
+  })
 }
 
 /**
@@ -106,20 +146,21 @@ async function scanWhenReady(window: BrowserWindow): Promise<void> {
  * 读探针源码。
  *
  * 路径依据 `app.getAppPath()`：未打包时它就是仓库根 —— 与 `integration/appicon.ts` 读
- * `build/icon.png` 是同一个依据。
+ * `build/icon.png` 是同一个依据。"路径怎么由仓库根推出来"由 `dev-probe-source.ts` 给
+ * （那里可以单测），这里只负责读。
  */
-function readProbeSource(): string | null {
+function readSource(relativePath: string, pathOf: (appPath: string) => string): string | null {
   try {
-    return readFileSync(probeSourcePath(app.getAppPath()), 'utf8')
+    return readFileSync(pathOf(app.getAppPath()), 'utf8')
   } catch (error) {
     /**
      * 只记仓库内的**相对**路径（`docs/security.md` T4）：相对目录名可以进日志，绝对路径不行。
      *
      * 这也不是用户可见的失败，而是开发环境的配置问题（比如探针被挪走了）—— 说清是哪个文件
-     * 就够行动了。`test/unit/dev-probe-source.test.ts` 会断言这个文件确实在。
+     * 就够行动了。`test/unit/dev-probe-source.test.ts` 会断言这两个文件确实在。
      */
     logger.warn('dev probe: cannot read the probe source', {
-      source: PROBE_SOURCE_RELATIVE_PATH,
+      source: relativePath,
       reason: failureReason(error),
     })
     return null

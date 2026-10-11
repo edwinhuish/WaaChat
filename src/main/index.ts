@@ -9,11 +9,13 @@ import { app, dialog, session } from 'electron'
 
 import { APP_ID, DESKTOP_FILE_NAME } from '../shared/constants'
 import { isForeignArchiveDir, withInstanceSuffix } from '../shared/instance'
+import { localeMatchesRequest } from '../shared/language'
 import { resolveAccountKey } from './account'
 import { attachContextMenu } from './context-menu'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
 import { wipeArchive } from './archive/blobs'
 import { attachDevProbe } from './dev-probe'
+import { attachLangProbeSession } from './dev-probe-lang'
 import { registerIpcHandlers } from './ipc'
 import { applyLaunchAtLogin } from './integration/login'
 import { createTray } from './integration/tray'
@@ -242,6 +244,14 @@ app.whenReady().then(async () => {
   // 传读取函数而不是快照 —— 见 settings.ts 里 current 的说明。
   await configureSession(session.fromPartition(sessionPartition()), getSettings)
 
+  /**
+   * 开发模式：只读观察「界面语言」那条 cookie 的写入来源（未打包时才生效，见 dev-probe-lang.ts）。
+   *
+   * 必须在这里（窗口之前）：要看到页面**第一次**请求的响应头 —— 那一条正是"服务端有没有发
+   * `Set-Cookie`"的证据。晚一步就只能从第二次请求看起，而服务端未必要在每一次响应里都写它。
+   */
+  attachLangProbeSession(session.fromPartition(sessionPartition()))
+
   // 让系统里的自启条目与设置一致。用户可能在设置里关了自启，或手工删过那个
   // `.desktop` 条目 —— 每次启动对齐一次，代价是一次同步写入。
   applyLaunchAtLogin(settings.launchAtLogin)
@@ -262,6 +272,20 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
   createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })
 
+  /**
+   * 语言这一项**必须**同时记下"请求了什么"与"内核实际给了什么"（[ADR-0063]）。
+   *
+   * 理由与别处的"允许失效，不允许静默失效"是同一条：`--lang` 是启动期开关，给它一个 Chromium
+   * 不认识的码时它**直接回落到系统 locale** —— 而设置页照常显示用户选的那一种、徽标也照常写着
+   * "重启后生效"，从任何一处都看不出这一项其实没生效。实测（Electron 44.7）见
+   * `shared/language.ts` 的 {@link baseLanguage}：一部分区域变体会被规范化成基础码
+   * （`es-ES` → `es`），那**不是**失败，因此判据比的是**基础语言**，不是字符串。
+   *
+   * 摆放位置也重要：`app.getLocale()` 要在 `ready` 之后读才代表真正的生效值。
+   */
+  const requestedLanguage = settings.uiLanguage
+  const effectiveLocale = app.getLocale()
+
   logger.info('ready', {
     packaged: app.isPackaged,
     chromium: process.versions.chrome,
@@ -269,7 +293,16 @@ app.whenReady().then(async () => {
     // 两个实例的日志可能被贴进同一份 issue：先写清这一份是谁的。
     instance: instance.id || 'default',
     partition: sessionPartition(),
+    requestedLanguage,
+    locale: effectiveLocale,
   })
+
+  if (!localeMatchesRequest(requestedLanguage, effectiveLocale)) {
+    logger.warn('language: the app locale does not match the requested interface language', {
+      requested: requestedLanguage,
+      effective: effectiveLocale,
+    })
+  }
 })
 
 /**

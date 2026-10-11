@@ -39,6 +39,7 @@
 | [`research/browser-runtime-assessment.md`](research/browser-runtime-assessment.md) | 承载/浏览器从哪来：能不能换成 Playwright、或复用已有浏览器 | 评估承载方式时 |
 | [`research/early-file-identity.md`](research/early-file-identity.md) | 从"点击"到"Blob"的完整流程；能否在下载前拿到内容身份以跳过下载与哈希 | 评估"自建客户端 + 早期去重"之前 |
 | [`research/runtime-migration-assessment.md`](research/runtime-migration-assessment.md) | 宿主运行时：能不能把 Electron 换成 Tauri / Wails / 其它；两个接管点各依赖内核的什么能力 | 评估"换宿主 / 换框架 / 减小体积"之前 |
+| [`research/lang-preference.md`](research/lang-preference.md) | 内嵌页面的界面语言记在哪儿（`wa_web_lang_pref`）、是网络写的还是页面脚本写的；`?lang=` 认不认 | 想让语言"运行期可换"之前 |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 开发流程、分支与提交规范、PR 清单 | 提 PR 之前 |
 
 ### 面向 AI 助手

@@ -15,7 +15,9 @@ import {
   SPELLCHECK_LANGUAGES,
   UI_LANGUAGES,
   acceptLanguagesFor,
+  baseLanguage,
   formatLanguageList,
+  localeMatchesRequest,
   normalizeSpellcheckLanguages,
   normalizeUiLanguage,
   parseLanguageList,
@@ -213,5 +215,52 @@ describe('resolveSpellcheckLanguages', () => {
 
   it('空列表两边都空', () => {
     expect(resolveSpellcheckLanguages('', ['en-US'])).toEqual({ applied: [], rejected: [] })
+  })
+})
+
+/**
+ * 这一组守的是"`--lang` 有没有真的生效"这个判断（`main/index.ts` 在 `ready` 时用它决定要不要
+ * 报一条 warn）。
+ *
+ * 它必须**区分**两件看起来一样的事：
+ *
+ *   - **规范化**：Chromium 把 `es-ES` 变成 `es`（实测 Electron 44.7，见 `baseLanguage`）——
+ *     这是正常的，判成失败会让每一次都报假警报；
+ *   - **回落**：内核不认这个码、退到系统 locale —— 这一条正是[静默失效]：
+ *     设置页写着用户选的语言，而页面拿到的是系统语言。
+ *
+ * 假警报的代价不是噪音，是**真正的失败从此没人看**。
+ */
+describe('baseLanguage / localeMatchesRequest', () => {
+  it('基础语言取自第一个 `-` 之前，大小写与下划线都不影响', () => {
+    expect(baseLanguage('es-ES')).toBe('es')
+    expect(baseLanguage('es_ES')).toBe('es')
+    expect(baseLanguage('zh-Hans-CN')).toBe('zh')
+    expect(baseLanguage('AR')).toBe('ar')
+    expect(baseLanguage('')).toBe('')
+  })
+
+  it('规范化（`es-ES` → `es`）算**匹配** —— 它不是失败', () => {
+    // 实测：--lang=es-ES 得到的是 navigator.language === 'es'。
+    expect(localeMatchesRequest('es-ES', 'es')).toBe(true)
+    expect(localeMatchesRequest('ja-JP', 'ja')).toBe(true)
+    expect(localeMatchesRequest('en-US', 'en-US')).toBe(true)
+    expect(localeMatchesRequest('zh-CN', 'zh-CN')).toBe(true)
+  })
+
+  it('回落（内核给了另一门语言）算**不匹配** —— 这才是要报出来的那一种', () => {
+    expect(localeMatchesRequest('es-ES', 'zh-CN')).toBe(false)
+    expect(localeMatchesRequest('ja-JP', 'en-US')).toBe(false)
+  })
+
+  it('请求值取不到基础语言时判为不匹配（宁可多说一句，也不静默通过）', () => {
+    expect(localeMatchesRequest('', 'zh-CN')).toBe(false)
+    expect(localeMatchesRequest('   ', 'zh-CN')).toBe(false)
+  })
+
+  it('清单里每一个语言码都能给自己一个非空的基础语言', () => {
+    for (const entry of UI_LANGUAGES) {
+      expect(baseLanguage(entry.code)).not.toBe('')
+    }
   })
 })

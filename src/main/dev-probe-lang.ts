@@ -1,0 +1,198 @@
+/**
+ * 开发模式：只读观察「界面语言」那条 cookie 的**写入来源**。
+ *
+ * 回答的问题（`docs/research/lang-preference.md`）：
+ *
+ *   - 它是**网络响应**写进来的（`Set-Cookie`），还是**页面脚本**自己写的？
+ *   - 它被改了几次、什么时候、原因（`cause`）是什么？
+ *   - 它带不带 `HttpOnly` —— 带了就排除了"页面脚本写的"（脚本写不出 HttpOnly）。
+ *
+ * ── 与 [INV-1] 的关系 ──────────────────────────────────────────────────────
+ *
+ * 这一切都发生在**会话 / 网络层**，不在页面里跑任何脚本：`onHeadersReceived` 这一处只**看**、
+ * 只 `callback({})` 放行，一个字节都不改 —— 与 `capture/request-context.ts` 观察请求角色是
+ * 同一个做法（那次也是"只读：`callback({})` 放行，不改一个字节"）。
+ * 页面里那一半是 `test/fixtures/probe-lang-pref.js`（[ADR-0057] 的只读元数据例外）。
+ *
+ * ⚠️ **不要**在这里注册 `onBeforeRequest`：那个事件被密文缓存层占着（`capture/protocol.ts`，
+ * 而且它摘掉时会 `onBeforeRequest(null)`）—— 再注册一个会把它的观察者**顶掉**，症状是
+ * "缓存命中时请求角色丢了"这种极难定位的问题。`onHeadersReceived` 目前没人用，因此安全。
+ *
+ * ⚠️ 与媒体探针一样**只在未打包时**生效：产物里不该有这段行为。
+ *
+ * ── 日志纪律（`docs/security.md`）──────────────────────────────────────────
+ *
+ * cookie 值**可能是凭据**，因此只有"看起来就是语言码"的值才原样打出来，其余一律只报长度；
+ * 地址只报 `origin + pathname`（query 里可能有凭据）。
+ */
+
+import { app, type Cookie, type Session } from 'electron'
+
+import { isUpstreamOrigin } from '../shared/upstream'
+import { failureReason } from './errors'
+import { logger } from './logger'
+
+/** 网页版记界面语言的那条 cookie。 */
+export const LANG_PREF_COOKIE = 'wa_web_lang_pref'
+
+/**
+ * "看起来就是语言码"的判据：`zh-CN` / `en` / `pt_BR` / `zh-Hans-CN`。
+ *
+ * ⚠️ 与 `test/fixtures/probe-lang-pref.js` 里同名的那一条**必须一致**（夹具不能 `import`，
+ * 只能各写一份）：判据不同就会出现"主进程打了、页面没打"这种对不上的报告 —— **改一处记得改另一处**。
+ */
+const LANGUAGE_CODE = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/
+
+/** 值 → 可打印的形状。**只有语言码原样报出**，其余一律只报长度。 */
+function safeValue(value: string): string {
+  return LANGUAGE_CODE.test(value) ? value : `len=${value.length}`
+}
+
+/** 一条 cookie 里可以进日志的那部分（没有值，除非它看起来就是语言码）。 */
+function describeCookie(cookie: Cookie): Record<string, unknown> {
+  return {
+    domain: cookie.domain,
+    path: cookie.path,
+    value: safeValue(cookie.value),
+    httpOnly: cookie.httpOnly,
+    secure: cookie.secure,
+    session: cookie.session,
+    sameSite: cookie.sameSite,
+  }
+}
+
+/** 只报 `origin + pathname`：query 里可能有凭据（同 `logger` 的脱敏约定）。 */
+function safeLocation(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.origin}${parsed.pathname}`
+  } catch {
+    return '(unparsable url)'
+  }
+}
+
+/** 一个 `Set-Cookie` 行里**我们只关心属性在不在**，不关心它的值（`SameSite` 除外）。 */
+function attributesOf(line: string): Record<string, unknown> {
+  const sameSite = /;\s*samesite=([^;]+)/i.exec(line)?.[1]
+
+  return {
+    httpOnly: /;\s*httponly/i.test(line),
+    secure: /;\s*secure/i.test(line),
+    sameSite: sameSite?.trim() ?? null,
+    maxAge: /;\s*max-age=/i.test(line),
+    expires: /;\s*expires=/i.test(line),
+    domain: /;\s*domain=([^;]+)/i.exec(line)?.[1]?.trim() ?? null,
+    path: /;\s*path=([^;]+)/i.exec(line)?.[1]?.trim() ?? null,
+  }
+}
+
+/** 这一行 `Set-Cookie` 是不是在写我们关心的那条 cookie。 */
+function writesCookie(line: string, name: string): boolean {
+  return new RegExp(`^\\s*${name}=`).test(line)
+}
+
+/** `responseHeaders` 的键大小写由内核决定 —— 两种都收。 */
+function setCookieLines(headers: Record<string, string[]>): string[] {
+  const lines: string[] = []
+
+  for (const [key, values] of Object.entries(headers)) {
+    if (key.toLowerCase() !== 'set-cookie') continue
+    lines.push(...values)
+  }
+
+  return lines
+}
+
+/** 每个会话只装一次（`configureSession` 之外还有别的调用点时会重复挂监听器）。 */
+let watching = false
+
+/**
+ * 把观察者挂到会话上。
+ *
+ * 必须在**创建任何窗口之前**调用：要看到页面第一次请求的响应头。
+ * 与 `attachDevProbe()` 一样，调用方**不需要**判断是否打包。
+ */
+export function attachLangProbeSession(ses: Session): void {
+  if (app.isPackaged) return
+  if (watching) return
+
+  watching = true
+
+  /**
+   * cookie 的每一次变化。
+   *
+   * `cause` 是这条探针的**核心**判据：`explicit` = 页面脚本（或 `cookies.set`）写的，
+   * 其它取值（`overwrite` 等）= **网络响应**写回来的。这正是"形态 A 还是形态 B"的分界线。
+   */
+  ses.cookies.on('changed', (_event, cookie, cause, removed) => {
+    if (cookie.name !== LANG_PREF_COOKIE) return
+
+    logger.info('lang probe: cookie changed', {
+      cause,
+      removed,
+      ...describeCookie(cookie),
+    })
+  })
+
+  /**
+   * 响应头里的 `Set-Cookie` —— "服务端有没有发它"的**直接**证据（比看 cookie 变化的 cause 更直白）。
+   *
+   * 只在**首次**见到某个地址时报一条：同一份响应会反复出现，每次都打会把真正有用的那几行埋掉。
+   */
+  const reported = new Set<string>()
+
+  ses.webRequest.onHeadersReceived((details, callback) => {
+    try {
+      if (isUpstreamOrigin(details.url)) {
+        for (const line of setCookieLines(details.responseHeaders ?? {})) {
+          if (!writesCookie(line, LANG_PREF_COOKIE)) continue
+
+          const where = safeLocation(details.url)
+          if (reported.has(where)) break
+
+          reported.add(where)
+          logger.info('lang probe: a response carries the language cookie', {
+            where,
+            attributes: attributesOf(line),
+          })
+          break
+        }
+      }
+    } catch (error) {
+      /**
+       * 观察失败**不能**把请求卡住：`callback` 必须被调用（这也是为什么整段都在 `try` 里）。
+       */
+      logger.warn('lang probe: could not inspect the response headers', {
+        reason: failureReason(error),
+      })
+    }
+
+    callback({})
+  })
+
+  logger.info('lang probe: watching the language cookie (dev only)', { cookie: LANG_PREF_COOKIE })
+
+  void readLangCookies(ses)
+}
+
+/**
+ * 启动时先看一眼现有的那条 cookie（它是上次运行留下的，因此**不一定**是本次谁会写的形状）。
+ *
+ * 读不到不是错误：全新 profile 里它本来就不存在 —— 那也是一条有用的信息（"它由页面访问创建"）。
+ */
+async function readLangCookies(ses: Session): Promise<void> {
+  try {
+    const cookies = await ses.cookies.get({ name: LANG_PREF_COOKIE })
+
+    logger.info('lang probe: the language cookie as it stands now', {
+      count: cookies.length,
+      cookies: cookies.map(describeCookie),
+    })
+
+    if (cookies.length === 0) {
+      logger.info('lang probe: no such cookie yet — it appears once the page talks to the server')
+    }
+  } catch (error) {
+    logger.warn('lang probe: could not read the language cookie', { reason: failureReason(error) })
+  }
+}

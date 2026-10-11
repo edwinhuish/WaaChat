@@ -103,6 +103,38 @@ export function normalizeUiLanguage(value: unknown): string {
     : DEFAULT_UI_LANGUAGE
 }
 
+/**
+ * 语言码的**基础语言**部分：`es-ES` → `es`，`zh-Hans-CN` → `zh`。
+ *
+ * ⚠️ 这个函数存在的唯一理由是**实测**（Electron 44.7，本仓库钉住的那一版）：`--lang` 交给
+ * Chromium 之后，一部分区域变体会被**规范化成基础码**，另一部分原样保留 ——
+ *
+ * | `--lang=` | `navigator.language` |
+ * |---|---|
+ * | `es-ES` / `ja-JP` / `tr-TR` / `hi-IN` / `vi-VN` / `th-TH` / `id-ID` / `ko-KR` / `fr-FR` / `de-DE` / `it-IT` / `ru-RU` | 基础码（`es` / `ja` / …） |
+ * | `en-US` / `en-GB` / `zh-CN` / `zh-TW` / `pt-BR` | 原样保留 |
+ *
+ * 因此"请求的值与生效的值不完全相同"**不是**失败 —— 比同一门语言就够了，见
+ * {@link localeMatchesRequest}。完整实测见 `docs/research/lang-preference.md`。
+ */
+export function baseLanguage(code: string): string {
+  return code.trim().toLowerCase().split(/[-_]/)[0] ?? ''
+}
+
+/**
+ * 请求的界面语言与内核**实际生效**的 locale 是不是同一门语言（判据见 {@link baseLanguage}）。
+ *
+ * 判据必须是"基础语言相同"而不是"字符串相同"：后者会把上表那一整列规范化当成失败，
+ * 每次都报一次假警报 —— 而假警报的代价是真正的失败不再有人看。
+ *
+ * ⚠️ 它有一个**盲区**：系统语言与请求的语言同属一门时（系统 `es-MX`、请求 `es-ES`），
+ * 内核回落到系统 locale 与"正常生效"看不出来。那里没有杠杆，只能把两个值都记下来。
+ */
+export function localeMatchesRequest(requested: string, effective: string): boolean {
+  const requestedBase = baseLanguage(requested)
+  return requestedBase !== '' && requestedBase === baseLanguage(effective)
+}
+
 /** 拼写检查可选的一门词典。 */
 export interface SpellcheckLanguage {
   /** 语言码，直接交给 `session.setSpellCheckerLanguages`。 */

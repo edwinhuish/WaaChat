@@ -26,6 +26,20 @@ export const PROBE_SOURCE_RELATIVE_PATH = 'test/fixtures/probe-media-metadata.js
 export const PROBE_GLOBAL = '__waProbe'
 
 /**
+ * 「界面语言」那条探针（`test/fixtures/probe-lang-pref.js`），**相对**仓库根。
+ *
+ * 与媒体探针同一个理由读磁盘上那一份、同一个注入通道（`dev-probe.ts` 的那**一处**
+ * `executeJavaScript` 调用点 —— 例外每多一处都要在源码里看得见，见 [ADR-0057]）。
+ *
+ * 它回答的是另一个问题（cookie / 页面存储里谁写着语言），因此单独一个夹具、单独一个全局对象：
+ * 两者混在一起会让媒体探针那份守卫（`test/unit/probe-media-metadata.test.ts`）失去意义。
+ */
+export const LANG_PROBE_SOURCE_RELATIVE_PATH = 'test/fixtures/probe-lang-pref.js'
+
+/** 语言探针挂在页面上的全局对象（`window.__waLangPref`）。 */
+export const LANG_PROBE_GLOBAL = '__waLangPref'
+
+/**
  * 一次性标记：注入方在求值**之前**设上它，探针就只装 API、不立刻扫描。
  *
  * 理由是时序：注入发生在 `did-finish-load`，那时上游的 store 往往还没起来，立刻扫描会把
@@ -37,6 +51,11 @@ export const PROBE_BOOTSTRAP_VALUE = 'inject'
 /** 探针源码的绝对路径。未打包时 `app.getAppPath()` 就是仓库根（同 `integration/appicon.ts`）。 */
 export function probeSourcePath(appPath: string): string {
   return join(appPath, PROBE_SOURCE_RELATIVE_PATH)
+}
+
+/** 语言探针源码的绝对路径（同 {@link probeSourcePath} 的依据）。 */
+export function langProbeSourcePath(appPath: string): string {
+  return join(appPath, LANG_PROBE_SOURCE_RELATIVE_PATH)
 }
 
 /**

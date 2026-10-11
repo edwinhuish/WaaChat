@@ -17,9 +17,12 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import {
+  LANG_PROBE_GLOBAL,
+  LANG_PROBE_SOURCE_RELATIVE_PATH,
   PROBE_BOOTSTRAP_FLAG,
   PROBE_GLOBAL,
   PROBE_SOURCE_RELATIVE_PATH,
+  langProbeSourcePath,
   probeBootstrapCode,
   probeReadyExpression,
   probeScanExpression,
@@ -103,5 +106,19 @@ describe('开发探针：注入源', () => {
   it('就绪与扫描的表达式指向注入时定义的那个全局对象', () => {
     expect(probeReadyExpression()).toContain(`window.${PROBE_GLOBAL}`)
     expect(probeScanExpression()).toContain(`window.${PROBE_GLOBAL}`)
+  })
+
+  /**
+   * 语言探针走**同一个注入通道**（`dev-probe.ts` 里那一处 `executeJavaScript`），因此这里只
+   * 守两件事：它指向的夹具真的在仓库里，且两个探针不共用全局对象 —— 共用会互相覆盖状态，
+   * 症状是"装了两个、只有一个能用"。
+   */
+  it('语言探针也指向仓库里那份真夹具，且与媒体探针不共用全局对象', () => {
+    const path = langProbeSourcePath(REPO_ROOT)
+
+    expect(path.endsWith(LANG_PROBE_SOURCE_RELATIVE_PATH)).toBe(true)
+    expect(existsSync(path)).toBe(true)
+    expect(readFileSync(path, 'utf8').length).toBeGreaterThan(0)
+    expect(LANG_PROBE_GLOBAL).not.toBe(PROBE_GLOBAL)
   })
 })
