@@ -103,7 +103,7 @@ waachat/
 │   │   ├── window.ts               窗口创建、两扇本地窗口的引用（UA 与界面语言在会话上，见 language.ts）
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口
 │   │   ├── instance.ts             当前实例：解析 argv、派生分区名与界面名（不导入 electron）
-│   │   ├── language.ts             会话级 UA + Accept-Language：界面语言（ADR-0060）
+│   │   ├── language.ts             会话级 UA + Accept-Language（界面语言的**一半**，ADR-0063）
 │   │   ├── spellcheck.ts           内核自带的拼写检查：词典清单按内核实有者过滤（ADR-0061）
 │   │   ├── context-menu.ts         承载页面的右键菜单：拼写建议 + 编辑动作（ADR-0061）
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取

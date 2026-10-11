@@ -129,6 +129,7 @@ pnpm run clean           # 清理 out/ dist/ coverage/ node_modules/.vite/ .tmp/
 | 重画图标后必须**看一眼** `build/icon.png` | ImageMagick 在没有 librsvg 时会把渐变渲染成纯色方块，而且退出码是 0。`scripts/make-icons.sh` 会校验颜色数，但肉眼确认一次仍然值得。 |
 | 不要在 `electron-builder.yml` 里手写 `deb.depends` | Ubuntu 的 time_t 过渡把若干库改名成 `*t64`，硬编码列表会失效。理由见 `docs/packaging.md`。 |
 | **多实例隔离的唯一杠杆是启动时按实例 `app.setPath('userData'/'sessionData')`** | 它一次挪走登录态、分区存储、`settings.json` 与自定义图标；归档/缓存根再各自按同一个后缀派生（判据全在 `withInstanceSuffix()`）。**不要在子系统里再判一次实例**，也不要在 `whenReady` 之后才改路径。启动顺序（解析实例 → setPath → 申请锁）有一条断言看着：顺序错了不会报错，只会让两个实例抢同一份登录态。详见 [ADR-0062](docs/decisions.md#adr-0062)。 |
+| **改「界面语言」只能靠启动期的 `--lang`** | 它改的是 `navigator.language`（网页版真正看的那个值）。会话级的 `Accept-Language` **改不动** `navigator.language` —— 实测过（[ADR-0063](docs/decisions.md#adr-0063)），因此这一项**必须重启**生效，也**不要**顺手给它加"改完重载页面"：那条路是死的，加回去只会让"改了没反应"看起来像上游不配合。顺带的坑：`--lang` 会把 Chromium 自己的 locale 一起切走，而 `role` 菜单项的默认文案取自它 ⇒ 每个 `role` 都要显式给中文 `label`（自检第 19 节断言），否则把页面切成英文的用户会在**我们自己的**右键菜单里看到 Cut / Copy。 |
 | 上游页面结构随时会变 | 接管逻辑只允许依赖**标准内核行为**（下载事件、https 请求），不得依赖任何上游内部函数名或选择器。 |
 
 ## 6. 何时应该停下来问人
