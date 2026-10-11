@@ -1355,6 +1355,8 @@ const LANGUAGE_UI_CLASSES = [
   'language-item',
   'language-name',
   'language-code',
+  'language-progress',
+  'language-status',
   'language-menu-button',
   'language-menu',
   'language-menu-item',
@@ -1364,11 +1366,37 @@ const LANGUAGE_UI_CLASSES = [
   'language-option',
 ]
 check(
-  '拼写词典是"表头 + 一门一行的清单 + 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070]）',
+  '拼写词典是"表头 + 一门一行的清单（带下载进度）+ 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070] / [ADR-0071]）',
   LANGUAGE_UI_CLASSES.every(
     (name) => settingsViewSource.includes(`'${name}'`) && stylesheet.includes(`.${name} {`),
   ),
   '类名与样式表对不上：控件会静默失去外观（或者那一整块根本没画出来）',
+)
+
+/**
+ * 词典下载状态这一条链（[ADR-0071]）与它最容易静默坏掉的那一处。
+ *
+ * "语言码大小写归一"是这条链上唯一的**推理**（不是实测）：事件里的码用的是我们交给内核的
+ * 那个形状，而设置里存的是另一份字符串。两处都调 `dictionaryKey()` 才保证它们碰得上 ——
+ * 少一处，那一格永远停在"未开始"，而那与"这门词典本来就不需要下载"长得一模一样。
+ */
+check(
+  '词典下载状态四处齐全：桥 / preload / 通道表 / 处理器，且状态由主进程推给设置窗口',
+  bridgeSource.includes('getDictionaryStatuses(): Promise<DictionaryStatusMap>') &&
+    bridgeSource.includes('onDictionaryStatusChange(listener:') &&
+    preloadSource.includes('CHANNELS.dictionaryStatus)') &&
+    preloadSource.includes('CHANNELS.dictionaryStatusChanged') &&
+    channelsSource.includes("dictionaryStatus: 'settings:dictionary-status'") &&
+    channelsSource.includes("dictionaryStatusChanged: 'settings:dictionary-status-changed'") &&
+    ipcSource.includes('CHANNELS.dictionaryStatus,') &&
+    ipcSource.includes('dictionaryStatusSnapshot') &&
+    sessionSource.includes('onDictionaryStatusChange('),
+  '有一处漏了：那一门词典的状态会静静地什么都不显示（没有反应也没有报错）',
+)
+check(
+  '状态表的键在两处都经过 `dictionaryKey()` 归一（少一处 = 那一格永远停在"未开始"）',
+  spellcheckSource.includes('dictionaryKey(') && settingsViewSource.includes('dictionaryKey('),
+  '大小写没有归一：内核事件里的码与设置里存的码将彼此看不见',
 )
 
 /**

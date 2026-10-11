@@ -20,6 +20,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 import type { ArchiveIdInput, ArchiveIdsInput, WaaChatBridge } from '../shared/bridge'
+import type { DictionaryStatusMap } from '../shared/dictionary-status'
 import type {
   AppIconInput,
   ArchiveMigrationProgress,
@@ -77,6 +78,19 @@ const bridge: WaaChatBridge = {
   },
 
   switchCiphertextCache: (target: boolean) => ipcRenderer.invoke(CHANNELS.cacheSwitch, target),
+
+  getDictionaryStatuses: () => ipcRenderer.invoke(CHANNELS.dictionaryStatus),
+
+  onDictionaryStatusChange: (listener: (statuses: DictionaryStatusMap) => void) => {
+    // 与 `onArchiveMigration` 同一个理由：不包一层就会把 Electron 的 `event` 交给渲染侧代码。
+    const wrapped = (_event: unknown, statuses: DictionaryStatusMap): void => listener(statuses)
+
+    ipcRenderer.on(CHANNELS.dictionaryStatusChanged, wrapped)
+
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.dictionaryStatusChanged, wrapped)
+    }
+  },
 
   getAppVersion: () => ipcRenderer.invoke(CHANNELS.appVersion),
 

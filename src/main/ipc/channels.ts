@@ -58,6 +58,27 @@ export const CHANNELS = {
    */
   cacheSwitch: 'settings:switch-ciphertext-cache',
 
+  /**
+   * 拼写词典的下载状态（[ADR-0071]）。
+   *
+   * 只读、无参数、无副作用：它是**一份快照**，用来回答"设置窗口刚打开时这几门是什么状态"。
+   * 之后的变化由 {@link dictionaryStatusChanged} 推过来 —— 订阅式而不是轮询，与迁移进度
+   * （{@link archiveMigration}）同一条理由：下载可能持续几十秒，轮询要么错过过程、要么
+   * 在没事的时候也一直问。
+   *
+   * ⚠️ 它**不是**一个能力：渲染进程无法用它触发任何下载。词典由内核按需取，
+   * 触发点是 `setSpellCheckerLanguages()`（`settings:set` 那条路）。
+   */
+  dictionaryStatus: 'settings:dictionary-status',
+  /**
+   * 拼写词典下载状态的变化（主进程 → 渲染进程的单向推送）。
+   *
+   * 推的是**整张快照**而不是"哪一门变了"：状态表的规模是"用户勾了几门"，最多十几项，
+   * 而整张推过去让渲染进程不需要维护任何增量逻辑 —— 少一处"两边状态不一致"的可能
+   * （与 `shared/bridge.ts` 的 `setSettings` 返回完整设置是同一条理由）。
+   */
+  dictionaryStatusChanged: 'settings:dictionary-status-changed',
+
   /** 读取自定义图标状态（是否启用、预览、启动器条目）。 */
   appIconGet: 'appicon:get',
   /**

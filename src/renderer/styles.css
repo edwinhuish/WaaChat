@@ -316,9 +316,12 @@ ul.archive li:last-child {
   gap: 12px;
 }
 
-/* 清单在表头下面，宽度**不**跟着窗口涨：一行一门，太长了反而难扫。 */
+/*
+ * 清单在表头下面，占满这一行的宽度（[ADR-0071]，取代 [ADR-0070] 决定 4 里的 `min(20rem, 100%)`）：
+ * 每一门现在还要放一条下载进度，而那一条窄了就读不出"它在动"。
+ */
 .setting .language-items {
-  width: min(20rem, 100%);
+  width: 100%;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
@@ -333,8 +336,8 @@ ul.archive li:last-child {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 6px 4px 10px;
+  gap: 10px;
+  padding: 6px 6px 6px 10px;
 }
 
 .setting .language-item + .language-item {
@@ -344,9 +347,91 @@ ul.archive li:last-child {
 /* 长名字（"葡萄牙语（巴西）"）省略，而不是把语言码与 `⋯` 挤出这一行。 */
 .setting .language-name {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * 一门词典的下载进度（[ADR-0071]）。
+ *
+ * ⚠️ 它**不是**一条有百分比的进度条：内核只发"开始 / 成功 / 失败 / 装载好"四个事件，
+ * 不给字节数（词典请求由浏览器进程发出，不经过我们的协议层与 `webRequest`，[ADR-0068]）。
+ * 因此四态各有一种样子，"下载中"是**不确定**动画 —— 画一条假的百分比会比它更糟。
+ *
+ * 颜色取现有的三个变量：`--ok` 是"下好了"（全绿），`--danger` 是"取不回来"，`--accent` 是"正在下"。
+ */
+.setting .language-progress {
+  position: relative;
+  flex: 0 0 clamp(6rem, 24%, 14rem);
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+/*
+ * 填充走伪元素：`transform: scaleX()` 而不是 `width` —— 后者每一帧都要重新布局，
+ * 而这条动画可能在设置窗口里一直转着。
+ */
+.setting .language-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+.setting .language-progress[data-state='downloading']::after {
+  animation: dictionary-downloading 1.4s ease-in-out infinite;
+}
+
+/* 下好了就是一条**走满的绿条** —— 那是这一格的全部结论。 */
+.setting .language-progress[data-state='ready']::after {
+  background: var(--ok);
+  transform: scaleX(1);
+}
+
+.setting .language-progress[data-state='failed']::after {
+  background: var(--danger);
+  transform: scaleX(1);
+}
+
+@keyframes dictionary-downloading {
+  0%,
+  100% {
+    transform: scaleX(0.1);
+  }
+
+  50% {
+    transform: scaleX(0.9);
+  }
+}
+
+/* 关掉动效时留一条**静止**的填充：状态仍然看得见（"有东西在里面"），只是不再来回跑。 */
+@media (prefers-reduced-motion: reduce) {
+  .setting .language-progress[data-state='downloading']::after {
+    animation: none;
+    transform: scaleX(0.4);
+  }
+}
+
+/*
+ * 状态文字（"下载中…" / "下载失败"）**总是**占着一份宽度，哪怕这一态没有话说 ——
+ * 不这样的话，状态一变，后面那颗 `⋯` 会跟着左右跳。
+ */
+.setting .language-status {
+  flex: 0 0 auto;
+  min-width: 4.5rem;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.setting .language-status[data-state='failed'] {
+  color: var(--danger);
 }
 
 /* `⋯`：一颗不抢视线的按钮 —— 它打开的是"对这一门做什么"，不是行本身。 */

@@ -30,6 +30,11 @@
 import { actionButtonAttrs } from '../../shared/action-button'
 import { describeIconFailure } from '../../shared/appicon'
 import { describeCacheSwitchFailure } from '../../shared/cache-conversion'
+import {
+  dictionaryKey,
+  type DictionaryStatus,
+  type DictionaryStatusMap,
+} from '../../shared/dictionary-status'
 import { SPELLCHECK_LANGUAGES, formatLanguageList, parseLanguageList } from '../../shared/language'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
@@ -153,6 +158,19 @@ const SIZES: readonly SizeSpec[] = [
 ]
 
 /**
+ * 词典进度条悬停时的那句话（[ADR-0071]）。
+ *
+ * 为什么要它：那条进度条只有"满没满"两种样子，而状态有四种 —— 颜色之外必须有一句话能把
+ * 差别说清（尤其是 `unknown` 与 `failed`，它们**都不是**"正在下载"）。
+ */
+const DICTIONARY_STATUS_TITLES: Readonly<Record<DictionaryStatus, string>> = {
+  unknown: '还没有这一门词典的下载消息（磁盘上本来就有它时，内核会直接装载而不下载）',
+  downloading: '正在从下载源取这一门词典',
+  ready: '这一门词典已经装好，拼写检查会用它',
+  failed: '这一门词典没能从下载源取回来，这门语言的拼写不会被标注',
+}
+
+/**
  * 行的身份。区域与顺序**不在这里** —— 它们是数据（`shared/settings-sections.ts`），
  * 因为"哪些项该在一起"这种约定要能被离线断言，而不是靠人盯屏幕。
  */
@@ -247,6 +265,17 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * 我们并不确定的判断上。
    */
   let restartState: RestartState = { restart: [] }
+
+  /**
+   * 每一门拼写词典的下载状态（[ADR-0071]）。
+   *
+   * 事实源在**主进程**（只有它订阅得到内核的事件），这里只保存最近一次的整张快照：
+   * 挂载时通过 `getDictionaryStatuses()` 读一次，之后由 `onDictionaryStatusChange` 推着更新。
+   *
+   * 取不到的时刻按 `{}` 处理 —— 那只是"这一格暂时没有状态可说"（`unknown`），而不是失败；
+   * 让整扇设置窗口因为一条进度读不到而空掉，比少画一条进度条糟得多。
+   */
+  let dictionaryStatuses: DictionaryStatusMap = {}
 
   /**
    * 「拼写检查的词典」那个选择对话框，`null` = 没开（[ADR-0069]）。
@@ -758,11 +787,47 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
+   * 一门词典的下载进度（[ADR-0071]）。
+   *
+   * 两块：一条**进度条**（四态见 `DictionaryStatus`）+ 一句**只在需要解释时才出现的**文字。
+   * 分工是这样定的：
+   *
+   *   - `ready` **只有**走满的绿条 —— "下载完成为全绿"是这件事的全部结论，再写一句"已就绪"
+   *     只是噪音（而绿是终局，不会再变回别的样子，见 `nextDictionaryStatus()`）；
+   *   - `downloading` / `failed` 各带一句话：这两种情况**都要用户等一下或做点什么**，而进度条
+   *     说到底只有"满没满"两种样子，分不出"正在下"与"下好了"；
+   *   - `unknown` 是一条**空槽**：它不是失败，是"还没听到关于它的任何消息"。
+   *
+   * 那个文字节点**总是**画出来（`ready` / `unknown` 时是空串）：它占着一份固定的宽度，
+   * 于是状态变化时后面那颗 `⋯` 不会左右跳。
+   */
+  function dictionaryProgressNode(status: DictionaryStatus): HTMLElement[] {
+    const text = status === 'downloading' ? '下载中…' : status === 'failed' ? '下载失败' : ''
+
+    return [
+      h('span', {
+        class: 'language-progress',
+        data: { state: status },
+        title: DICTIONARY_STATUS_TITLES[status],
+      }),
+      h('span', {
+        class: 'language-status',
+        data: { state: status },
+        text,
+      }),
+    ]
+  }
+
+  /**
    * 拼写检查的词典那一行：已选语言列成一张**清单**（一门一行，右侧一颗 `⋯`），清单头上是
    * 「添加语言」（[ADR-0070]，取代 [ADR-0069] 的决定 1 那条"只留一个触发器"）。
    *
    * ⚠️ 清单显示的是**已保存**的那一组，不是对话框里的草稿 —— 本文件开头第 1 条：界面显示的
    * 就是实际生效的（草稿不是）。
+   *
+   * 每一行还带一条**下载进度**（[ADR-0071]）：内核只发事件、不给百分比，所以它表达的是状态
+   * 而不是"下了百分之几"（映射见 {@link dictionaryProgressNode}）。这一格存在的理由是"过了
+   * 好久才显示下载失败"那件事的另一半 —— 等待期间要看得见它在动。
    *
    * 拼写检查关着时整块禁用，提示语也换成"这一行跟着停用"：一份"给谁查"的清单离开了那个开关就
    * 读不懂。要停用整个功能，请用上面那个开关（它同时还意味着不去下载词典）。
@@ -789,6 +854,12 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         onClick: () => openLanguageMenu(menuButton, code, removable),
       })
 
+      /**
+       * 整块停用时**不画**进度：一份下到哪了的报告离开了那个开关就没有对象 ——
+       * 而一条停在绿/红上的条子会让人以为"拼写检查关着，但词典还在用"。
+       */
+      const status = dictionaryStatuses[dictionaryKey(code)] ?? 'unknown'
+
       return h(
         'div',
         { class: 'language-item' },
@@ -798,6 +869,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
          * 与内核、日志、上游文档对得上的是这一串，而不是我们的中文名。
          */
         h('span', { class: 'language-code', text: code }),
+        ...(off ? [] : dictionaryProgressNode(status)),
         menuButton,
       )
     })
@@ -1298,6 +1370,19 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     render()
   })
 
+  /**
+   * 词典的下载状态也是主进程推过来的（[ADR-0071]）。推的是**整张快照**，因此这里直接换掉
+   * 那一份就够 —— 不需要增量合并，也就不会出现"两边各记一半"的状态。
+   *
+   * ⚠️ 它会让 `render()` 重画整棵子树，而 `⋯` 菜单挂在行元素里面：菜单开着时来了一个事件，
+   * 菜单会被收掉（[ADR-0070] 那条"已知限制"因此不再是形状上的）。代价可接受 —— 事件只在
+   * 下载的那几十秒里来几次，而那期间用户多半正盯着进度条看。
+   */
+  const disposeDictionaryStatus = bridge().onDictionaryStatusChange((statuses) => {
+    dictionaryStatuses = statuses
+    render()
+  })
+
   return {
     async refresh(): Promise<void> {
       /**
@@ -1309,7 +1394,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
        * 后两者取不到时各自退化为"没有自定义图标"与"版本未知"：某一行的问题不该把**别的**
        * 行也带走 —— 让整个设置页空掉，用户连保存位置都看不到。
        */
-      const [nextSettings, nextIcon, nextVersion, nextInstance, nextRestartState] =
+      const [nextSettings, nextIcon, nextVersion, nextInstance, nextRestartState, nextStatuses] =
         await Promise.all([
           bridge().getSettings(),
           bridge()
@@ -1326,6 +1411,13 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
             .getInstanceInfo()
             .catch(() => null),
           readRestartState(),
+          /**
+           * 词典状态同理：读不到就按"这一格还没有状态"渲染。它不能跟着 `settings` 一起失败
+           * （两者在同一个 `Promise.all` 里），否则一次 IPC 抖动会让整页设置消失。
+           */
+          bridge()
+            .getDictionaryStatuses()
+            .catch(() => ({})),
         ])
 
       settings = nextSettings
@@ -1333,11 +1425,13 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       appVersion = nextVersion
       instanceInfo = nextInstance
       restartState = nextRestartState
+      dictionaryStatuses = nextStatuses
       render()
     },
 
     dispose(): void {
       disposeMigration()
+      disposeDictionaryStatus()
 
       /**
        * 词典对话框挂在 `document.body` 上，不随 `root` 的重画消失 —— 窗口卸载时要自己收掉，

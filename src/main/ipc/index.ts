@@ -69,7 +69,7 @@ import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { relaunchApp } from '../restart'
 import { getSettings, pendingRestart, updateSettings } from '../settings'
-import { applySpellcheck } from '../spellcheck'
+import { applySpellcheck, dictionaryStatusSnapshot } from '../spellcheck'
 import { getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
@@ -791,6 +791,17 @@ export function registerIpcHandlers(): void {
   guard(CHANNELS.restartState, (): RestartState => ({
     restart: pendingRestart(),
   }))
+
+  /**
+   * 拼写词典的下载状态（[ADR-0071]）。
+   *
+   * 只读的一件事：把主进程那一份状态表原样交出去。**必须**是从主进程问出来的，而不是让界面
+   * 自己攒 —— 内核事件只有主进程订阅得到，而设置窗口是后开的（那时可能有几门早就下好了）。
+   *
+   * 它没有参数、也没有副作用：渲染进程表达不了"我要你下载某一门"，那是
+   * `setSpellCheckerLanguages()` 的副作用（`settings:set` 那条路）。
+   */
+  guard(CHANNELS.dictionaryStatus, () => dictionaryStatusSnapshot())
 
   /**
    * 重启应用（[ADR-0064]）。

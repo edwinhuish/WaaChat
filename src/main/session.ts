@@ -17,10 +17,12 @@ import { enforceCacheLimit, reconcileCiphertextCache } from './capture/cache-fil
 import { attachDownloadCapture } from './capture/download'
 import { onHealthChange } from './capture/health'
 import { attachCiphertextCache } from './capture/protocol'
+import { CHANNELS } from './ipc/channels'
 import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
-import { applySpellcheck, watchSpellcheck } from './spellcheck'
+import { applySpellcheck, onDictionaryStatusChange, watchSpellcheck } from './spellcheck'
+import { getSettingsWindow } from './window'
 
 /**
  * 把 UA 写到会话上（[ADR-0060] 决定 4）。
@@ -102,12 +104,27 @@ export async function configureSession(ses: Session, getSettings: () => Settings
    * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效
    * （拼写检查是每一次输入时向内核要素材的，不是页面自己渲染的），因此它不需要重载页面。
    *
-   * 紧随其后的订阅补两个窟窿，两个都不会报错（见 `spellcheck.ts` 的 {@link watchSpellcheck}）：
+   * 紧随其后的订阅补三个窟窿，三个都不会报错（见 `spellcheck.ts` 的 {@link watchSpellcheck}）：
    * 启动时内核**还没给出词典清单**的话，用户勾的那一组就没被交上去；词典**下载失败**时，
-   * 除了这里之外没有任何地方能看出来。
+   * 除了这里之外没有任何地方能看出来；而"正在下 / 下好了"这两种状态只有订阅了事件才存在
+   * —— 设置页上那一格据此显示进度（[ADR-0071]）。
    */
   applySpellcheck(ses, settings)
   watchSpellcheck(ses, getSettings, announceDictionaryFailure)
+
+  /**
+   * 把词典状态的每一次变化推给**设置窗口**（[ADR-0071]）。进度条长在设置页里（[ADR-0025]），
+   * 别的窗口没有它的宿主 —— 与 `ipc/index.ts` 推迁移进度时是同一条判断。
+   *
+   * 这里只订阅、不做别的：状态表本身归 `spellcheck.ts`（它只 `import type` electron），
+   * 而"推给谁"是这一层才知道的事。窗口还不存在（或已关掉）时**什么都不做** —— 状态留在
+   * 主进程里，等设置窗口打开时由 `settings:dictionary-status` 一次性读走。
+   */
+  onDictionaryStatusChange((statuses) => {
+    const window = getSettingsWindow()
+    if (window === null || window.isDestroyed()) return
+    window.webContents.send(CHANNELS.dictionaryStatusChanged, statuses)
+  })
 
   // --- 接管点 A：下载事件 -----------------------------------------------------
   // 这一层是"点击即开"的全部实现，也是 M1 的验收目标。

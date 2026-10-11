@@ -18,6 +18,7 @@
  *     只有记录 id（或什么都不送）。
  */
 
+import type { DictionaryStatusMap } from './dictionary-status'
 import type {
   AppIconInput,
   AppIconPickResult,
@@ -126,6 +127,28 @@ export interface WaaChatBridge {
    * 界面每次重新挂载都会多留一个监听器。
    */
   onArchiveMigration(listener: (progress: ArchiveMigrationProgress) => void): () => void
+
+  /**
+   * 拼写词典的下载状态（[ADR-0071]）。
+   *
+   * 只读、无参数。设置页上"每一门词典下到哪了"来自主进程：词典由内核按需从下载源取，
+   * 那些事件只有主进程订阅得到（内核也不给百分比 —— 请求由浏览器进程发出，不经过我们的
+   * 协议层与 `webRequest`，[ADR-0068]）。
+   *
+   * ⚠️ 它**不是**一个能力：渲染进程无法用它触发任何下载。词典的触发点是
+   * `setSpellCheckerLanguages()`，也就是 `setSettings()` 那条路。
+   */
+  getDictionaryStatuses(): Promise<DictionaryStatusMap>
+  /**
+   * 订阅拼写词典下载状态的变化。
+   *
+   * 推来的是一张**完整快照**（"用户勾了几门"这个规模），因此界面不需要维护增量。返回取消订阅
+   * 函数 —— 不返回的话，界面每次重新挂载都会多留一个监听器（与 {@link onArchiveMigration} 同）。
+   *
+   * 为什么是订阅而不是让界面去轮询：下载可能持续几十秒，而"开始 / 成功 / 失败"是**离散**的
+   * 几个点 —— 轮询要么错过它们，要么一直在没事的时候白问。
+   */
+  onDictionaryStatusChange(listener: (statuses: DictionaryStatusMap) => void): () => void
 
   /**
    * 切换密文磁盘缓存。
