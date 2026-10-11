@@ -285,89 +285,248 @@ ul.archive li:last-child {
 }
 
 /*
- * 拼写词典的**多选下拉**（[ADR-0067]）。它收起时只显示已选语言的标签，点开才露出那张复选框表。
+ * 拼写词典那一行（[ADR-0070]）：上面是**表头**（「添加语言」+ 说明），下面是一张已选语言的
+ * **清单** —— 一门一行、右侧一颗 `⋯`。照的是 Edge 的「首选语言」那一版。
  *
  * 为什么不是 `<select multiple>`：那个原生控件要按住 Ctrl 才能勾第二项，桌面用户不会去猜。
- * "下拉 + 复选框"没有这个缺点 —— 形态与可用性不是一回事（[ADR-0061] 当年把两者一起否掉了）。
- *
- * ⚠️ 面板是**绝对定位的浮层**：所有语言如果任其铺开，这一行会比设置页里任何一行都长。
- * 浮层因此需要 `z-index`（它是设置页里唯一会盖住后续行的元素）；`max-height` + 滚动是因为
- * 语言表随时会长（现在 24 门），而这里不想钉死一个与 `SPELLCHECK_LANGUAGES` 同步的数字。
+ * "清单 + 一颗按钮 + 一张可搜索的清单"没有这个缺点 —— 形态与可用性不是一回事（[ADR-0061] 当年
+ * 把两者一起否掉了）。
  */
-.setting .language-menu {
-  position: relative;
-  /* 收起时只是"标签 + 一个箭头"，展开时它仍然是那一行的左端。 */
-  flex: 0 0 auto;
+/*
+ * 两段式（[ADR-0070]）：表头（「添加语言」+ 说明）在上，清单在下。
+ *
+ * `flex: 1` 让它占满 `.setting` 这一行；`min-width: 0` 是给里面那段说明留的 —— flex 项默认
+ * `min-width: auto`，长文本会把整行撑宽（窗口只有 960px，撑出去就是横向滚动条）。
+ */
+.setting .language-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-/* 与数字框同一套外观（`input[type='number']` 那条规则）—— 两种控件不该长得像两个来源。 */
-.setting .language-trigger {
+/*
+ * 表头：说明与那颗按钮同一行。说明（`.meta`）是 `flex: 1` —— 它因此占满这一行、把按钮推到
+ * 右端（与参考图里那颗按钮同一个位置），而它自己是一整段可读的文字（不是被挤出来的细条）。
+ */
+.setting .language-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+/* 清单在表头下面，宽度**不**跟着窗口涨：一行一门，太长了反而难扫。 */
+.setting .language-items {
+  width: min(20rem, 100%);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/*
+ * 一行一门。`position: relative` 是给那一行的 `⋯` 菜单当定位参照的（菜单是它的子节点，
+ * 见 `views/settings.ts` 的 openLanguageMenu）。
+ */
+.setting .language-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 24rem;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+}
+
+.setting .language-item + .language-item {
+  border-top: 1px solid var(--border);
+}
+
+/* 长名字（"葡萄牙语（巴西）"）省略，而不是把语言码与 `⋯` 挤出这一行。 */
+.setting .language-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `⋯`：一颗不抢视线的按钮 —— 它打开的是"对这一门做什么"，不是行本身。 */
+.setting .language-menu-button {
+  flex: 0 0 auto;
+  padding: 0 6px;
   font: inherit;
-  color: inherit;
+  line-height: 18px;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.setting .language-menu-button:hover:enabled {
+  color: var(--text);
+  background: var(--bg);
+}
+
+/*
+ * 那一行的菜单（[ADR-0070]）：绝对定位挂在行下面。它**没有草稿**，因此不需要 `<dialog>` 那套
+ * 模态机制 —— 点别处 / `Esc` 由视图自己收起（`views/settings.ts` 的 dismissLanguageMenu）。
+ */
+.setting .language-menu {
+  position: absolute;
+  top: 100%;
+  right: 4px;
+  z-index: 1;
+  min-width: 8rem;
+  padding: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
+}
+
+.setting .language-menu-item {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.setting .language-menu-item:hover:enabled {
+  background: var(--bg);
+}
+
+/* 与 `button.action[disabled]` 同一套说法：灰掉 + 不可点。 */
+.setting .language-menu-button[disabled],
+.setting .language-menu-item[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/*
+ * 词典选择对话框（[ADR-0069]）。这是本项目**唯一**一处渲染进程内的模态框 —— 此前的确认框
+ * （删除归档）都是主进程的原生对话框（`dialog.showMessageBox`），而原生对话框装不下一张
+ * "带搜索的多选清单"。
+ *
+ * ⚠️ `padding: 0` 是刻意的：内边距交给里面那层 `.language-dialog-body`，于是遮罩上的点击
+ * 落在 `dialog` 自己身上而不是它的内边距上。（我们**没有**用这个来做"点遮罩即关" —— 见
+ * `views/settings.ts` 里那条理由。）
+ *
+ * ⚠️ 尺寸用 `min(…, 90vw)` / `max-height`：设置窗口是可缩放的小窗（[ADR-0025]），钉死宽度会
+ * 在小窗里溢出。
+ */
+.language-dialog {
+  padding: 0;
+  width: min(30rem, 90vw);
+  max-height: 80vh;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.language-dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.language-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+
+.language-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.language-dialog-title {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* 关闭（×）：一条不占地方的第二出口，与「取消」同一个动作。 */
+.language-close {
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.language-close:hover {
+  color: var(--text);
+}
+
+/*
+ * ⚠️ 必须覆盖 `flex: 1`（`input[type='search']` 那条规则是给归档页那条**横排**工具栏写的）；
+ * 对话框这一列里它会让搜索框把整列高度吃掉。
+ */
+.language-search {
+  flex: 0 0 auto;
+}
+
+.language-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 8rem;
+  max-height: 22rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.language-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   cursor: pointer;
 }
 
-.setting .language-trigger:hover:enabled {
-  border-color: var(--accent);
+.language-option:hover {
+  background: var(--bg);
 }
 
-/* 标签：一枚语言一枚。收起状态下"我勾了哪几门"只看这里，因此它必须换行而不是被裁掉。 */
-.setting .language-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+/* 对话框里的复选框不参与基线对齐（`.setting` 那条 `margin-top: 3px` 是给单行开关用的）。 */
+.language-option input[type='checkbox'] {
+  flex: 0 0 auto;
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
 }
 
-.setting .language-tag {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--border);
-  font-size: 12px;
-  line-height: 18px;
+.language-name {
+  flex: 1;
 }
 
-.setting .language-caret {
+.language-code {
   color: var(--muted);
-  font-size: 10px;
-}
-
-.setting .language-options {
-  position: absolute;
-  z-index: 1;
-  top: calc(100% + 4px);
-  left: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-  gap: 4px 10px;
-  width: 20rem;
-  max-height: 10rem;
-  overflow-y: auto;
-  /* 浮层要自己带底和边：它是贴在触发按钮下方的一块，而不是行内的一段。 */
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
-}
-
-.setting .language-options label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   font-size: 12px;
+  font-family: ui-monospace, 'Noto Sans Mono CJK SC', monospace;
 }
 
-/* 面板里的复选框不参与基线对齐（`margin-top: 3px` 是给单行开关用的）。 */
-.setting .language-options label input[type='checkbox'] {
-  margin-top: 0;
+.language-empty {
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.language-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* 归档位置这类"具体值"：等宽 + 可在任意处断行，长路径不能把整行撑破。 */

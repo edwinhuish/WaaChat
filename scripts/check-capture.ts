@@ -1342,18 +1342,47 @@ check(
 )
 
 /**
- * 词典那一行的**形态**（[ADR-0067]）：一个多选下拉 + 已选语言的标签。
+ * 词典那一块的**形态**（[ADR-0070] / [ADR-0069]）：行上是"表头（「添加语言」+ 说明）+ 一张
+ * 一门一行、每行一颗 `⋯` 的清单"，点开是一张带搜索的模态清单。
  *
  * 它坏起来是静默的 —— 类名改了却忘了改样式表，控件照样能勾、能存，只是**看不出是个控件**
- * （没有边框，点开的面板不是浮层而是把整行撑长）。因此把两边一起断言。
+ * （没有边框，对话框既没有遮罩也没有尺寸）。因此把两边一起断言。
  */
+const LANGUAGE_UI_CLASSES = [
+  'language-field',
+  'language-head',
+  'language-items',
+  'language-item',
+  'language-name',
+  'language-code',
+  'language-menu-button',
+  'language-menu',
+  'language-menu-item',
+  'language-dialog',
+  'language-search',
+  'language-list',
+  'language-option',
+]
 check(
-  '拼写词典是一个"下拉 + 标签"的控件，且它的样式在样式表里都有定义（[ADR-0067]）',
-  ['language-menu', 'language-trigger', 'language-tags', 'language-tag', 'language-options'].every(
-    (name) =>
-      settingsViewSource.includes(`'${name}'`) && stylesheet.includes(`.setting .${name} {`),
+  '拼写词典是"表头 + 一门一行的清单 + 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070]）',
+  LANGUAGE_UI_CLASSES.every(
+    (name) => settingsViewSource.includes(`'${name}'`) && stylesheet.includes(`.${name} {`),
   ),
   '类名与样式表对不上：控件会静默失去外观（或者那一整块根本没画出来）',
+)
+
+/**
+ * 「至少要留一门」在**清单那一侧**的闸门（[ADR-0070]）：只剩一门时 `⋯` 里那一项是禁用的。
+ *
+ * 它与对话框里那条（草稿为空时禁用「确定」）是两个必须同时在位的落点 —— 少了这一条，用户能
+ * 把清单删空，而空列表会被 `normalizeSpellcheckLanguages()` 收敛回默认值：看起来像"它自己变
+ * 回去了"。这里只能做文本扫描，因此它挡的是**被人顺手删掉**，不是"逻辑写错了"。
+ */
+check(
+  '「移除」在只剩一门时是禁用的（[ADR-0070]："至少要留一门"的另一处落点）',
+  settingsViewSource.includes('selected.length > 1') &&
+    settingsViewSource.includes('disabled: !removable'),
+  '「移除」的禁用条件不见了：删到一门都不剩时，设置会被悄悄收敛回默认值',
 )
 const restartSource = source('../src/main/restart.ts')
 

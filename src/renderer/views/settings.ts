@@ -52,7 +52,7 @@ import {
 import type { InstanceInfo } from '../../shared/bridge'
 import { APP_DISPLAY_NAME } from '../../shared/constants'
 import { bridge } from '../bridge'
-import { h } from '../dom'
+import { clear, h } from '../dom'
 import { cropToAppIcon } from '../icon'
 
 /** 只挑出 `Settings` 里的布尔字段，新增布尔项时编译器会在这里报错提醒补描述。 */
@@ -249,13 +249,22 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   let restartState: RestartState = { restart: [] }
 
   /**
-   * 「拼写检查的词典」那个多选下拉现在开着没有（[ADR-0067]）。
+   * 「拼写检查的词典」那个选择对话框，`null` = 没开（[ADR-0069]）。
    *
-   * ⚠️ 它**必须留在这里**，不能挂在行元素上：每次勾选都会 `patch()` → `render()` 把整棵树
-   * 重建一次（标签的值来自主进程回填的设置，这是"实时更新"的代价），元素上的打开状态随之
-   * 消失 —— 于是每勾一门词典，面板就会自己关上。
+   * ⚠️ 它**必须留在这里**，不能挂在行元素上：`patch()` 之后 `render()` 会把 `root` 的子树
+   * 整个换掉，状态挂在元素上就会随之消失。对话框元素本身则挂在 `document.body` 上（见
+   * {@link openLanguageDialog}）—— 那样它才活得过任意次重画。
    */
-  let languagesOpen = false
+  let languageDialog: HTMLDialogElement | null = null
+
+  /**
+   * 当前打开的 `⋯` 菜单（[ADR-0070]）；`null` = 没开。
+   *
+   * ⚠️ 与 {@link languageDialog} **不同**：对话框挂在 `document.body` 上、要活过任意次重画，
+   * 而这个菜单挂在**行元素里面**（行是它的定位参照），`render()` 一换子树它就没了 —— 因此
+   * 状态与那两条 `document` 监听器必须在 `render()` 里一起收掉（见 {@link closeLanguageMenu}）。
+   */
+  let languageMenu: HTMLElement | null = null
 
   /** 读待生效状态。失败退化为"没有"（见 {@link restartState} 的说明）。 */
   async function readRestartState(): Promise<RestartState> {
@@ -287,6 +296,12 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
   function render(): void {
     if (settings === null) return
+
+    /**
+     * ⚠️ 先收掉 `⋯` 菜单：它挂在行元素里面，下面这一句会把整棵子树换掉 —— 元素跟着消失，
+     * 但**状态与那两条 `document` 监听器不会自己消失**（[ADR-0070]）。
+     */
+    closeLanguageMenu()
 
     const current = settings
     const restartNotice = pendingRestartRow()
@@ -743,96 +758,317 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
-   * 拼写检查的词典那一行：一个**多选下拉** + 已选语言的标签（[ADR-0067]）。
+   * 拼写检查的词典那一行：已选语言列成一张**清单**（一门一行，右侧一颗 `⋯`），清单头上是
+   * 「添加语言」（[ADR-0070]，取代 [ADR-0069] 的决定 1 那条"只留一个触发器"）。
    *
-   * 收起时只显示标签（"我勾了哪几门"一眼可见），点开才露出那张复选框表。
-   * ⚠️ 用**我们自己的**下拉，不是 `<select multiple>` —— 后者要按住 Ctrl 才能勾第二项
-   * （[ADR-0061] 因此否决过它，本次仍然否决），而这里的每一门都是一次独立的点选。
+   * ⚠️ 清单显示的是**已保存**的那一组，不是对话框里的草稿 —— 本文件开头第 1 条：界面显示的
+   * 就是实际生效的（草稿不是）。
    *
-   * 两处禁用都是有话要说的（因此带 `title`，与"尚未生效"那个徽标同一个说法）：
-   *
-   *   - 拼写检查关着时整行禁用 —— 一份"给谁查"的清单离开了那个开关就读不懂；
-   *   - **只剩一门时那一门本身禁用** —— 一门都不勾等于"什么都不查"，而它与"功能坏了"在用户
-   *     看来没有区别。要停用整个功能，请用上面那个开关（它同时还意味着不去下载词典）。
+   * 拼写检查关着时整块禁用，提示语也换成"这一行跟着停用"：一份"给谁查"的清单离开了那个开关就
+   * 读不懂。要停用整个功能，请用上面那个开关（它同时还意味着不去下载词典）。
    */
   function spellcheckLanguagesRow(current: Settings): HTMLElement {
     const selected = parseLanguageList(current.spellcheckLanguages)
-    const checked = new Set(selected)
     const labelOf = new Map(SPELLCHECK_LANGUAGES.map((entry) => [entry.code, entry.label]))
     const off = !current.spellcheck
+    /**
+     * 只剩一门时不给移除 —— "至少要留一门"在**这一侧**的落点（另一侧在对话框里：草稿为空时
+     * 禁用「确定」）。两处都不重复：那一侧防的是"草稿被勾空"，这一侧删的是**已存下的**一组。
+     */
+    const removable = selected.length > 1
 
-    /** 写回时按**表**的顺序：勾选的先后不该改变存下来的值（同一组勾选只有一种写法）。 */
-    function commit(next: ReadonlySet<string>): void {
-      const codes = SPELLCHECK_LANGUAGES.filter((item) => next.has(item.code)).map(
-        (item) => item.code,
-      )
-      void patch({ spellcheckLanguages: formatLanguageList(codes) })
-    }
-
-    // 顺序同样取自**表**：标签的先后与写回值的先后是同一个来源，因此两者永远不会对不上。
-    const tags = selected.map((code) =>
-      h('span', { class: 'language-tag', text: labelOf.get(code) ?? code }),
-    )
-
-    const options = SPELLCHECK_LANGUAGES.map((entry) => {
-      const onlyOne = checked.has(entry.code) && checked.size === 1
-      const title = off ? '拼写检查已关闭' : onlyOne ? '至少要留一门词典' : null
+    const items = selected.map((code) => {
+      const menuButton = h('button', {
+        class: 'language-menu-button',
+        type: 'button',
+        title: '对这一门词典的操作',
+        text: '⋯',
+        dataRole: 'language-menu-button',
+        disabled: off,
+        // 菜单挂在**这一行**里（行是它的定位参照），因此把触发它的那颗按钮当锚点传进去。
+        onClick: () => openLanguageMenu(menuButton, code, removable),
+      })
 
       return h(
-        'label',
-        title === null ? {} : { title },
-        h('input', {
-          type: 'checkbox',
-          checked: checked.has(entry.code),
-          disabled: off || onlyOne,
-          onChange: (event) => {
-            const next = new Set(selected)
-            if ((event.target as HTMLInputElement).checked) next.add(entry.code)
-            else next.delete(entry.code)
-
-            // 一门都不勾等于"什么都不查"，与"功能坏了"看不出区别 —— 界面上挡掉它。
-            if (next.size === 0) return
-
-            commit(next)
-          },
-        }),
-        entry.label,
+        'div',
+        { class: 'language-item' },
+        h('span', { class: 'language-name', text: labelOf.get(code) ?? code }),
+        /**
+         * 语言码与名字并排，是因为**存下来的**就是它（`settings.json` 里是 `en-US,de`）——
+         * 与内核、日志、上游文档对得上的是这一串，而不是我们的中文名。
+         */
+        h('span', { class: 'language-code', text: code }),
+        menuButton,
       )
     })
 
     return h(
       'div',
       { class: 'setting' },
+      /**
+       * **两段式**：表头（说明 + 「添加语言」）在上，清单在下。
+       *
+       * 说明在前、按钮**贴右**：说明与那颗按钮说的是同一件事（这几门是怎么来的、怎么改），因此
+       * 它们同一行 —— 说明占满这一行（`.meta` 是 `flex: 1`），按钮被推到右端，与参考图里那颗
+       * 按钮同一个位置。
+       *
+       * 与其它行的"控件 + 说明"两栏不同：这里的右栏会被清单占掉，而说明有两三行字 —— 设置窗口
+       * 只有 960px 宽（`LOCAL_WINDOW_SIZE`），挤在右栏里就是一根细条，视线还得在左右两栏之间
+       * 来回跳。
+       */
       h(
         'div',
-        { class: 'language-menu', dataRole: 'language-menu' },
+        { class: 'language-field' },
         h(
-          'button',
-          {
-            class: 'language-trigger',
-            type: 'button',
+          'div',
+          { class: 'language-head' },
+          h(
+            'div',
+            { class: 'meta' },
+            h('div', { class: 'label', text: '拼写检查的词典' }),
+            h('div', {
+              class: 'hint',
+              text: off
+                ? '拼写检查关着，这一行跟着停用 —— 开着它才会去下载词典。'
+                : '列出的每一门都会被查（内核不会自己判断你在打哪种语言）。词典由内核按需下载，没列出的语言不参与标注。',
+            }),
+          ),
+          actionButton({
+            text: '添加语言',
             disabled: off,
-            title: off ? '拼写检查已关闭' : '选择和它一起查的语言',
-            onClick: () => {
-              languagesOpen = !languagesOpen
-              render()
-            },
-          },
-          h('span', { class: 'language-tags' }, ...tags),
-          h('span', { class: 'language-caret', text: languagesOpen ? '▴' : '▾' }),
+            onClick: () => openLanguageDialog(),
+          }),
         ),
-        languagesOpen ? h('div', { class: 'language-options' }, ...options) : null,
-      ),
-      h(
-        'div',
-        {},
-        h('div', { class: 'label', text: '拼写检查的词典' }),
-        h('div', {
-          class: 'hint',
-          text: '勾了哪几门就查哪几门。词典由内核按需下载，没勾的语言不参与标注。',
-        }),
+        h('div', { class: 'language-items' }, ...items),
       ),
     )
+  }
+
+  /**
+   * 打开某一行的 `⋯` 菜单（[ADR-0070]）。
+   *
+   * 今天只有一项「移除」—— 参考图 `⋯` 里的另外两项都不搬：「以这种语言显示」是 [ADR-0066] 撤掉的
+   * 界面语言，「移到顶部」对拼写检查没有意义（内核不按顺序查，排第一与排最后的一样会被查）。
+   * 仍然做成菜单而不是一颗裸按钮，是因为"这一行能对它自己做什么"是一个**位置**，不是一颗特定的
+   * 按钮（理由写在 ADR 里）。
+   *
+   * 三条收尾的路：点菜单之外、`Esc`、以及**任何一次重画** —— 菜单挂在行元素里面，而 `render()`
+   * 换掉的是整棵子树，因此它也必须在 `render()` 里被收掉（否则留下一个还挂在 `document` 上的
+   * 监听器）。菜单也没有草稿，收起即无副作用 —— 这正是它不必做成 `<dialog>` 的原因。
+   */
+  function openLanguageMenu(anchor: HTMLElement, code: string, removable: boolean): void {
+    closeLanguageMenu()
+
+    const menu = h(
+      'div',
+      { class: 'language-menu', dataRole: 'language-menu' },
+      /**
+       * 只剩一门时**禁用**而不是隐藏：藏起来会让"为什么没有这一项"无从解释，而灰掉的那一项
+       * 本身就是那句解释（悬停有 `title`）。
+       */
+      h('button', {
+        class: 'language-menu-item',
+        type: 'button',
+        title: removable ? '不再查这一门' : '至少要留一门',
+        text: '移除',
+        disabled: !removable,
+        onClick: () => removeDictionary(code),
+      }),
+    )
+
+    anchor.after(menu)
+    languageMenu = menu
+    document.addEventListener('click', dismissLanguageMenu)
+    document.addEventListener('keydown', onLanguageMenuKeydown)
+  }
+
+  /**
+   * 点菜单**之外**即关。
+   *
+   * 两处豁免都在同一句里：点菜单自己（由那一项自己收尾，别在这里抢）、点任意一颗 `⋯`（那一颗
+   * 会换成自己的菜单 —— 在这里先关掉会让它闪一下）。
+   */
+  function dismissLanguageMenu(event: Event): void {
+    const target = event.target
+
+    if (
+      target instanceof Element &&
+      target.closest('[data-role="language-menu"], [data-role="language-menu-button"]') !== null
+    ) {
+      return
+    }
+
+    closeLanguageMenu()
+  }
+
+  function onLanguageMenuKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') closeLanguageMenu()
+  }
+
+  /**
+   * 收掉菜单（幂等）。`render()` 与 `dispose()` 都要调 —— 那两处是它全部的清理时机。
+   */
+  function closeLanguageMenu(): void {
+    if (languageMenu === null) return
+
+    languageMenu.remove()
+    languageMenu = null
+    document.removeEventListener('click', dismissLanguageMenu)
+    document.removeEventListener('keydown', onLanguageMenuKeydown)
+  }
+
+  /**
+   * `⋯` 里的「移除」：把这一门从**已保存**的那一组里拿掉（[ADR-0070]）。
+   *
+   * 它**不走草稿**：作用对象是已保存的值，而对话框里那份草稿要保住的是"改到一半改主意"。
+   * 顺序仍然是勾选时的**表**序（`parseLanguageList` 原样过滤，因此不会因为删掉一门而重排）。
+   */
+  function removeDictionary(code: string): void {
+    closeLanguageMenu()
+
+    const kept = parseLanguageList(settings?.spellcheckLanguages ?? '').filter(
+      (item) => item !== code,
+    )
+
+    // 兜底：一门都不剩就不写（只剩一门时「移除」本来就是禁用的，走到这里说明状态已经不对）。
+    if (kept.length === 0) return
+
+    void patch({ spellcheckLanguages: formatLanguageList(kept) })
+  }
+
+  /**
+   * 打开「选择拼写检查的词典」对话框（[ADR-0069]）。
+   *
+   * 形态照 Edge 的「添加语言」：标题 + 搜索框 + 一张可滚动的清单 + 「取消 / 确定」。三处**刻意
+   * 的不同**（理由都在那条 ADR 里）：清单是**复选框**（我们本来就允许多门一起查）；勾选改的是
+   * **草稿**、按「确定」才写回；点遮罩**不**关 —— 那个手势会丢掉草稿，而退出的路子已经有取消 /
+   * × / Esc 三条。
+   *
+   * ⚠️ 对话框挂在 `document.body` 上，不是 `root` 里：`patch()` → `render()` 会把 `root` 的
+   * 子树整个换掉，而它要活过任意次重画。
+   */
+  function openLanguageDialog(): void {
+    if (languageDialog !== null || settings === null) return
+
+    const draft = new Set(parseLanguageList(settings.spellcheckLanguages))
+
+    const list = h('div', { class: 'language-list', dataRole: 'language-list' })
+    const search = h('input', {
+      class: 'language-search',
+      type: 'search',
+      placeholder: '搜索语言',
+      onInput: () => drawOptions(),
+    })
+
+    /**
+     * 只重画**清单**：搜索框自己不能被重建，否则每敲一个字就丢一次焦点。
+     *
+     * 「至少要留一门」在这里由「确定」的禁用态拦住，而**不是**禁用最后一门复选框：后者要在每次
+     * 勾选之后重画整张清单（否则那一门的禁用态不会跟着变），而重画会把用户刚点的那一项换成新节点、
+     * 焦点也跟着丢。落到设置里的值另有一道兜底 —— `normalizeSpellcheckLanguages()` 把空列表
+     * 收敛成默认。
+     */
+    function drawOptions(): void {
+      const query = search.value.trim().toLowerCase()
+      const matched = SPELLCHECK_LANGUAGES.filter(
+        (entry) =>
+          query === '' ||
+          entry.label.toLowerCase().includes(query) ||
+          entry.code.toLowerCase().includes(query),
+      )
+
+      clear(list)
+
+      if (matched.length === 0) {
+        list.append(h('div', { class: 'language-empty', text: '没有匹配的语言' }))
+        return
+      }
+
+      for (const entry of matched) {
+        list.append(
+          h(
+            'label',
+            { class: 'language-option' },
+            h('input', {
+              type: 'checkbox',
+              checked: draft.has(entry.code),
+              onChange: (event) => {
+                if ((event.target as HTMLInputElement).checked) draft.add(entry.code)
+                else draft.delete(entry.code)
+
+                confirm.disabled = draft.size === 0
+              },
+            }),
+            h('span', { class: 'language-name', text: entry.label }),
+            /**
+             * 语言码与名字并排，是因为**存下来的**就是它（`settings.json` 里是 `en-US,de`）——
+             * 与内核、日志、上游文档对得上的是这一串，而不是我们的中文名。
+             */
+            h('span', { class: 'language-code', text: entry.code }),
+          ),
+        )
+      }
+    }
+
+    const confirm = h('button', {
+      ...actionButtonAttrs('确定'),
+      onClick: () => {
+        // 写回时按**表**的顺序（与标签同一个来源）：勾选的先后不该改变存下来的值。
+        const codes = SPELLCHECK_LANGUAGES.filter((item) => draft.has(item.code)).map(
+          (item) => item.code,
+        )
+
+        dialog.close()
+        void patch({ spellcheckLanguages: formatLanguageList(codes) })
+      },
+    })
+
+    const dialog = h(
+      'dialog',
+      { class: 'language-dialog' },
+      h(
+        'div',
+        { class: 'language-dialog-body' },
+        h(
+          'div',
+          { class: 'language-dialog-head' },
+          h('h2', { class: 'language-dialog-title', text: '选择拼写检查的词典' }),
+          h('button', {
+            class: 'language-close',
+            type: 'button',
+            title: '关闭',
+            text: '✕',
+            onClick: () => dialog.close(),
+          }),
+        ),
+        search,
+        list,
+        h(
+          'div',
+          { class: 'language-dialog-foot' },
+          h('button', { ...actionButtonAttrs('取消'), onClick: () => dialog.close() }),
+          confirm,
+        ),
+      ),
+    )
+
+    languageDialog = dialog
+
+    /**
+     * `close` 是**唯一**的清理时机：取消、×、确定最后都走到它，Esc 由 `<dialog>` 自己处理
+     * （它会先发 `cancel`、再 `close`）—— 因此这里不需要再听一次键盘。
+     */
+    dialog.addEventListener('close', () => {
+      dialog.remove()
+      languageDialog = null
+    })
+
+    drawOptions()
+    confirm.disabled = draft.size === 0
+    document.body.append(dialog)
+    dialog.showModal()
+    // 打开就把焦点放进搜索框：这张清单存在的意义就是"找到某一门语言"（顺带能直接打码，如 `ko`）。
+    search.focus()
   }
 
   function toggleRow(spec: ToggleSpec, current: Settings): HTMLElement {
@@ -1062,27 +1298,6 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     render()
   })
 
-  /**
-   * 点下拉**之外**的地方就把它收起来（[ADR-0067]）。
-   *
-   * 监听器挂在 `document` 上，而且**只挂这一个** —— 行元素每次都是新建的，把监听器挂在那里
-   * 就成了"每重画一次就多一个"。判据是 `data-role` 锚点而不是类名：类名是给样式用的，
-   * 改样式不该弄坏行为（`renderer/dom.ts` 的 `part()` 出于同一个理由）。
-   *
-   * ⚠️ 勾选复选框时不必担心被顺手关掉：那一下点击的 `target` 在（旧的那棵树的）面板里，
-   * `closest()` 照样能沿它自己的祖先找到锚点。
-   */
-  const onDocumentClick = (event: Event): void => {
-    if (!languagesOpen) return
-
-    const target = event.target
-    if (target instanceof Element && target.closest('[data-role="language-menu"]') !== null) return
-
-    languagesOpen = false
-    render()
-  }
-  document.addEventListener('click', onDocumentClick)
-
   return {
     async refresh(): Promise<void> {
       /**
@@ -1123,7 +1338,15 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
     dispose(): void {
       disposeMigration()
-      document.removeEventListener('click', onDocumentClick)
+
+      /**
+       * 词典对话框挂在 `document.body` 上，不随 `root` 的重画消失 —— 窗口卸载时要自己收掉，
+       * 否则它会留在正在卸载的文档里（连同里面那份没人再看得见的草稿）。`⋯` 菜单同理，
+       * 而且它还挂着两条 `document` 监听器。
+       */
+      languageDialog?.remove()
+      languageDialog = null
+      closeLanguageMenu()
     },
   }
 }
