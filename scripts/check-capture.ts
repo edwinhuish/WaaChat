@@ -1282,6 +1282,28 @@ check(
 )
 
 /**
+ * 词典下载源（[ADR-0068]）。它坏起来**完全静默**：删掉那一行（或改回内核默认的 Google CDN）
+ * 之后，在目标网络里下载会**停在半路** —— 既不成功也不失败，日志与界面都没有一点异常。因此把
+ * "换过源、换的是哪一个（含结尾那个 `/`，内核会把文件名直接拼在它后面）"钉住。
+ */
+const spellcheckSource = source('../src/main/spellcheck.ts')
+check(
+  '词典下载源被显式换成 Edge 那个源，而不是内核默认的 Google CDN（[ADR-0068]）',
+  spellcheckSource.includes(
+    "DICTIONARY_DOWNLOAD_URL = 'https://edge.microsoft.com/redirectordictionaries/dict/'",
+  ) && spellcheckSource.includes('setSpellCheckerDictionaryDownloadURL('),
+  'spellcheck.ts 里找不到换源的那一行：默认源在目标网络里会静默挂死',
+)
+check(
+  '换源早于**每一个**分支：`setSpellCheckerLanguages()` 之前，也在"内核还没给出清单"那次早退之前',
+  spellcheckSource.indexOf('setSpellCheckerDictionaryDownloadURL(') <
+    spellcheckSource.lastIndexOf('setSpellCheckerLanguages(') &&
+    spellcheckSource.indexOf('setSpellCheckerDictionaryDownloadURL(') <
+      spellcheckSource.indexOf('available.length === 0'),
+  '顺序反了：有一批下载仍然会走默认源（内核默认值那一支尤其隐蔽）',
+)
+
+/**
  * 「立即重启」这条链（[ADR-0064]）与「界面语言已撤」的回归守卫（[ADR-0066]）。
  *
  * 它们有同一类**静默**的坏法，都靠下面的断言挡住：
