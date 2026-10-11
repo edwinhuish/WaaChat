@@ -3477,8 +3477,10 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
    默认（`settings.ts` 的 `coerce()`），因此不会出现"设置里显示 A、实际按 B 跑"；
 2. 落地方式是 `session.setUserAgent(userAgent, acceptLanguages)`。这是 Electron 里**唯一**能设
    `acceptLanguages` 的入口（webContents 版只有 UA 一个参数）；
-3. 提交设置之后主进程**重新加载**承载页面（`webContents.reload()`），并在设置页那一行写明
-   "未发送的文字会丢失"；
+3. 提交设置之后主进程**重新加载**承载页面（`webContents.reloadIgnoringCache()`，**不是** `reload()`
+   —— 普通重载可以命中 HTTP 缓存，那样这次导航根本不发请求，新设的 `Accept-Language` 就没有出去，
+   而日志里一切正常；下游响应不保证带 `Vary: Accept-Language`，因此不能指望缓存自己判断），
+   并在设置页那一行写明"未发送的文字会丢失"；
 4. `window.ts` 里的 `webContents.setUserAgent()` 随之**删除**：留着它会把会话那一份盖掉。
 
 **状态**：已生效
@@ -3603,6 +3605,15 @@ INV-1 / INV-2，为的是给那个库让路。此后项目在**原有路线**（
 - **内核的词典清单可能"还没有"**（`availableSpellCheckerLanguages` 返回空数组）。这一支**刻意不按**
   用户勾的清单处理，而是保持内核默认并记一条 warn：顺着"勾的都没有 ⇒ 关掉检查器"的推理走，会把一个
   本来默认开启的功能变成默认关闭 —— 那正是本项目最讨厌的一类失败（安静的、看起来像"功能没做"）。
+  ⚠️ 但**保持了内核默认就等于用户勾的那一组没有被交上去** —— 而首次装配正是在 `whenReady` 里、
+  紧挨着会话创建发生的（`session.ts`），很可能撞上这一支。因此 `spellcheck.ts` 记下这件事
+  （`awaitingDictionaries`），等内核把词典装好（`spellcheck-dictionary-initialized`）之后由
+  `watchSpellcheck()` 补交一次；没有这一步，那组设置在**整个运行期间**都不会生效，而日志里只有一条 warn。
+- **词典下载失败曾经是静默的**：设置页显示"已开启"、输入框里却没有红线，与"这个功能没做"在用户看来
+  一模一样。现在订阅 `spellcheck-dictionary-download-failure`（`watchSpellcheck()`）：记一条 warn，
+  并按**语言码**提示一次系统通知（判据在 `shared/notice.ts` 的 `trackDictionaryFailure`）。与接管失效
+  不同，这一组**不重新武装** —— 内核会在每次输入时重试下载、成功之前一直失败，重新武装等于刷屏，而刷屏
+  会让人把通知关掉（那之后真正需要它的提示也看不到了）。
 - **上游若给自己的输入框设了 `spellcheck="false"`，红线就不会出现** —— 而"改回去"需要注入（INV-1），
   因此那种情况下这个功能没有实现路径。需要真机确认一次。
 - **词典下载也会经过会话协议层。** 开启密文缓存时 `protocol.handle('https')` 接住该分区的**所有** https
