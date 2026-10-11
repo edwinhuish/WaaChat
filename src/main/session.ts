@@ -17,10 +17,10 @@ import { attachDownloadCapture } from './capture/download'
 import { onHealthChange } from './capture/health'
 import { attachCiphertextCache } from './capture/protocol'
 import { applyUserAgentAndLanguages } from './language'
-import { announceCaptureFailure, markCaptureHealthy } from './notice'
+import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
-import { applySpellcheck } from './spellcheck'
+import { applySpellcheck, watchSpellcheck } from './spellcheck'
 
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
@@ -81,8 +81,13 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   /**
    * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效
    * （拼写检查是每一次输入时向内核要素材的，不是页面自己渲染的），因此它不需要重载页面。
+   *
+   * 紧随其后的订阅补两个窟窿，两个都不会报错（见 `spellcheck.ts` 的 {@link watchSpellcheck}）：
+   * 启动时内核**还没给出词典清单**的话，用户勾的那一组就没被交上去；词典**下载失败**时，
+   * 除了这里之外没有任何地方能看出来。
    */
   applySpellcheck(ses, settings)
+  watchSpellcheck(ses, getSettings, announceDictionaryFailure)
 
   // --- 接管点 A：下载事件 -----------------------------------------------------
   // 这一层是"点击即开"的全部实现，也是 M1 的验收目标。

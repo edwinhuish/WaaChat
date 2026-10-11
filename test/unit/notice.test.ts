@@ -16,8 +16,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   CAPTURE_FAILED_TITLE,
+  SPELLCHECK_DICTIONARY_FAILED_TITLE,
   captureFailureBody,
+  spellcheckDictionaryFailureBody,
   trackCaptureFailure,
+  trackDictionaryFailure,
 } from '../../src/shared/notice'
 import type { CaptureFailure } from '../../src/shared/types'
 
@@ -59,5 +62,34 @@ describe('失效提示的内容', () => {
     // `describeCaptureFailure()` 的输出本身就是一句可独立阅读的话。
     expect(captureFailureBody(WRITE_FAILED)).toContain('ENOSPC')
     expect(captureFailureBody(TOO_LARGE)).toContain('上限')
+  })
+})
+
+describe('拼写词典下载失败的提示簿记（trackDictionaryFailure）', () => {
+  it('从没提示过的语言要提示', () => {
+    expect(trackDictionaryFailure(new Set(), 'en-US')).toEqual({
+      announce: true,
+      announced: new Set(['en-US']),
+    })
+  })
+
+  it('同一门词典不再重复（内核会在每次输入时重试下载）', () => {
+    const first = trackDictionaryFailure(new Set(), 'en-US')
+
+    expect(trackDictionaryFailure(first.announced, 'en-US').announce).toBe(false)
+  })
+
+  it('另一门词典仍然提示（勾了多门时，一门下不下来不该让别的沉默）', () => {
+    const first = trackDictionaryFailure(new Set(), 'en-US')
+
+    expect(trackDictionaryFailure(first.announced, 'fr').announce).toBe(true)
+  })
+})
+
+describe('词典下载失败的内容', () => {
+  it('正文说出是哪一门词典，并给出下一步动作', () => {
+    expect(SPELLCHECK_DICTIONARY_FAILED_TITLE).not.toBe('')
+    expect(spellcheckDictionaryFailureBody('en-US')).toContain('en-US')
+    expect(spellcheckDictionaryFailureBody('en-US')).toContain('设置')
   })
 })

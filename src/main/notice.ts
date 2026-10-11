@@ -16,7 +16,14 @@
 
 import { Notification } from 'electron'
 
-import { CAPTURE_FAILED_TITLE, captureFailureBody, trackCaptureFailure } from '../shared/notice'
+import {
+  CAPTURE_FAILED_TITLE,
+  SPELLCHECK_DICTIONARY_FAILED_TITLE,
+  captureFailureBody,
+  spellcheckDictionaryFailureBody,
+  trackCaptureFailure,
+  trackDictionaryFailure,
+} from '../shared/notice'
 import type { CaptureFailure } from '../shared/types'
 import { logger } from './logger'
 
@@ -63,4 +70,36 @@ export function announceCaptureFailure(failure: CaptureFailure): void {
 /** 接管恢复正常（`markCaptured`）：把"已经提示过"清空，下次失效会重新提示。 */
 export function markCaptureHealthy(): void {
   announcedFailures = trackCaptureFailure(announcedFailures, null).announced
+}
+
+/**
+ * 已经提示过的**词典语言码**。
+ *
+ * 与 {@link announcedFailures} 不同，这一组**不重新武装**，理由在 `shared/notice.ts` 的
+ * {@link trackDictionaryFailure} 里：词典下载失败会被内核在每次输入时重试，成功之前一直失败。
+ */
+let announcedDictionaryFailures: ReadonlySet<string> = new Set()
+
+/**
+ * 提示"某门拼写词典没能下载"。
+ *
+ * 由 `main/session.ts` 在 `spellcheck-dictionary-download-failure` 上调用 —— 事件订阅在
+ * `spellcheck.ts`（它只 `import type` electron，见那里的说明），通知**回调注入**进来。
+ *
+ * 它与接管失效同源（**允许失效，不允许静默失效**），但更难自己发现：接管失效至少还能在
+ * `~/Downloads` 里看到那个文件，而词典没下来时设置页一切正常，只是输入框里少了那几条红线。
+ *
+ * 日志那一半由调用方记（那里知道事件的上下文），这里只负责"要不要打扰用户"。
+ */
+export function announceDictionaryFailure(languageCode: string): void {
+  const tracking = trackDictionaryFailure(announcedDictionaryFailures, languageCode)
+  announcedDictionaryFailures = tracking.announced
+
+  if (!tracking.announce) return
+
+  if (show(SPELLCHECK_DICTIONARY_FAILED_TITLE, spellcheckDictionaryFailureBody(languageCode))) {
+    logger.info('notice: told the user that a spellcheck dictionary could not be downloaded', {
+      language: languageCode,
+    })
+  }
 }

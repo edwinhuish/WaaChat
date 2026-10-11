@@ -1,8 +1,8 @@
 /**
  * 主动提示用户的那几条消息：**文案与"该不该弹"的判据**（纯函数，可单测）。
  *
- * 目前只有一条，都是"用户看不见就会以为应用坏了"的事：**接管失效**
- * （`architecture.md` 第 5 节：允许失效，不允许静默失效）。以前这条靠设置窗口顶栏那几颗标签，
+ * 目前有两条，都是"用户看不见就会以为应用坏了"的事：**接管失效**与**拼写词典没下载下来**
+ * （`architecture.md` 第 5 节：允许失效，不允许静默失效）。前者以前靠设置窗口顶栏那几颗标签，
  * 其中"尚无接管记录"既没有信息量又占地方，整个顶栏因此被去掉（[ADR-0042]）—— 换成**只在真的
  * 失效时**说一次。
  *
@@ -55,5 +55,55 @@ export function trackCaptureFailure(
   return {
     announce: !announced.has(failure.kind),
     announced: new Set([...announced, failure.kind]),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 拼写词典没能下载
+// ---------------------------------------------------------------------------
+
+/**
+ * 词典下载失败的标题。**说出是哪件事**，而不是"出错了"（同 {@link CAPTURE_FAILED_TITLE}）。
+ *
+ * 它凭什么值一条通知：这一支**没有别的症状**。设置里写着「拼写检查：开启、词典：英语（美国）」，
+ * 日志里除了我们故意加的那一条 warn 之外什么都没有，而输入框里一条红线都没有 —— 用户只会
+ * 以为这个功能没做。词典来自第三方 CDN（`docs/security.md` 第 2 节），取不回来是**真实可能**
+ * 的（[ADR-0061] 的已知限制里写着它）。
+ */
+export const SPELLCHECK_DICTIONARY_FAILED_TITLE = '拼写检查的词典没能下载'
+
+/**
+ * 正文。**给出下一步动作**，而不是"出错了"：用户能做的只有两件事 ——
+ * 换一门词典，或者干脆关掉这个功能（关掉它同时也是"不要再去下载词典"的开关）。
+ */
+export function spellcheckDictionaryFailureBody(languageCode: string): string {
+  return `「${languageCode}」这门词典没能从下载源取回来，这门语言的拼写不会被标注。可以在设置里换一门词典，或者关掉拼写检查。`
+}
+
+/** {@link trackDictionaryFailure} 的结果。与 {@link CaptureFailureTracking} 同形。 */
+export interface DictionaryFailureTracking {
+  readonly announce: boolean
+  /** 新的"已经提示过的词典语言码"集合。 */
+  readonly announced: ReadonlySet<string>
+}
+
+/**
+ * 词典下载失败的簿记（纯函数）。规则：**同一门词典只提示一次**。
+ *
+ * ⚠️ 与 {@link trackCaptureFailure} 的关键差别是**没有"重新武装"**（那个函数有 `null` 那一支）。
+ * 原因在内核那一侧：词典下载失败会被**每次输入时重试**，成功之前会一直失败 —— 若每次失败都
+ * 弹一次通知，用户会在半分钟内把通知关掉，而那之后真正需要它的提示也看不到了。接管失效可以
+ * "恢复正常后重新武装"，是因为它有一种明确的、由我们自己观测的成功事件；词典这边只有"这门
+ * 语言的词典装好了"，而那是**另一门语言不会触发**的信号，做不成对称的样子。
+ *
+ * 键取**语言码**而不是布尔：勾了多门词典时，其中一门下不下来不该让另外几门的提示一起沉默。
+ */
+export function trackDictionaryFailure(
+  announced: ReadonlySet<string>,
+  languageCode: string,
+): DictionaryFailureTracking {
+  return {
+    announce: !announced.has(languageCode),
+    announced: new Set([...announced, languageCode]),
   }
 }

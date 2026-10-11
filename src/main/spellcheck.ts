@@ -20,6 +20,15 @@ import type { Settings } from '../shared/types'
 import { logger } from './logger'
 
 /**
+ * "用户勾的那一组词典还没能交上去"。
+ *
+ * 只有一种情况会置位：启动时内核还没给出词典清单（见 {@link applySpellcheck} 的第一支）。
+ * 它存在的唯一目的是让 {@link watchSpellcheck} 知道"要不要在内核就绪后补交一次" —— 没有它，
+ * 补交会在内核每次装载词典时都白跑一遍（那会被日志放大成噪音，而噪音会把真正的那几条埋掉）。
+ */
+let awaitingDictionaries = false
+
+/**
  * 把「拼写检查」这一组设置写到会话上。
  *
  * 与 {@link applyUserAgentAndLanguages} 一样有两个调用点：启动时（早于任何窗口）与设置被改动
@@ -28,6 +37,7 @@ import { logger } from './logger'
  */
 export function applySpellcheck(ses: Session, settings: Settings): void {
   if (!settings.spellcheck) {
+    awaitingDictionaries = false
     ses.setSpellCheckerEnabled(false)
     logger.info('spellcheck: disabled')
     return
@@ -41,12 +51,20 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
    *
    * 此时**保持内核默认**，而不是顺着下面的逻辑把检查器关掉 —— 后者会把一个本来是默认开启的功能
    * 变成默认关闭，而那正是本项目最讨厌的一类失败：安静的、看起来像"功能没做"。
+   *
+   * ⚠️ 但"保持内核默认"意味着**用户勾的那一组没有被交上去**（`session.ts` 在 `whenReady` 里
+   * 调本函数，紧挨着会话创建）。只返回就会让那组设置在**整个运行期间**都不生效，而日志里只留
+   * 一条 warn —— 因此这里记下 {@link awaitingDictionaries}，等内核把词典装好之后由
+   * {@link watchSpellcheck} 补交一次。
    */
   if (available.length === 0) {
+    awaitingDictionaries = true
     ses.setSpellCheckerEnabled(true)
     logger.warn('spellcheck: the kernel reported no dictionaries yet; keeping its defaults')
     return
   }
+
+  awaitingDictionaries = false
 
   const { applied, rejected } = resolveSpellcheckLanguages(settings.spellcheckLanguages, available)
 
@@ -77,5 +95,47 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
   logger.info('spellcheck: enabled', {
     languages: applied.join(','),
     availableCount: available.length,
+  })
+}
+
+/**
+ * 订阅与词典有关的两类事件。**必须在 {@link applySpellcheck} 之后调用**（调用点见 `session.ts`）。
+ *
+ * 两条都是"静默失效"的入口，因此都在这里补上可见性 —— 与 `capture/health.ts` 那条
+ * "允许失效，不允许静默失效"（`architecture.md` 第 5 节）是同一条纪律：
+ *
+ *   1. `spellcheck-dictionary-initialized` —— 内核把一门词典装好了。启动时若它还没给出清单
+ *      （{@link applySpellcheck} 的第一支），这时才是那次补交的时机；不补的话，用户勾的词典在
+ *      **整个运行期间**都不会生效，而设置页与日志都看不出异常。
+ *   2. `spellcheck-dictionary-download-failure` —— 词典没能从下载源取回来（默认源是 Google
+ *      托管的 CDN，见 `docs/security.md` 第 2 节）。它**没有别的症状**：设置页一切正常、
+ *      输入框里却没有红线，因此日志与通知两样都要有。
+ *
+ * 接的是 `getSettings` 而不是一份快照：补交发生在启动之后的某个时刻，那时用户可能已经改过设置
+ * （`settings.ts` 里"读当前值而不是注册时的那一份"是同一条理由）。
+ *
+ * 通知由调用方**注入**（`session.ts` 传 `announceDictionaryFailure`），而不是在这里 import
+ * `notice.ts` —— 后者 import 了 `Notification` 的**运行时**代码，那样本模块就不再是"只
+ * `import type` electron"（见文件头），而那是它能在离线自检/脚本里被引用的前提。这也与
+ * `capture/health.ts` → `session.ts` → `notice.ts` 那条链路同形：判据留在这里，IO 只在装配处。
+ *
+ * 不订阅 `…-download-begin` / `…-download-success`：它们不改变任何决定，只会把日志撑大，
+ * 而"哪一门词典最终可用"由 `initialized` 与 `availableSpellCheckerLanguages` 一起给出。
+ */
+export function watchSpellcheck(
+  ses: Session,
+  getSettings: () => Settings,
+  onDictionaryFailure: (languageCode: string) => void,
+): void {
+  ses.on('spellcheck-dictionary-initialized', (_event, languageCode) => {
+    logger.info('spellcheck: the kernel has a dictionary ready', { language: languageCode })
+
+    if (!awaitingDictionaries) return
+    applySpellcheck(ses, getSettings())
+  })
+
+  ses.on('spellcheck-dictionary-download-failure', (_event, languageCode) => {
+    logger.warn('spellcheck: could not download a dictionary', { language: languageCode })
+    onDictionaryFailure(languageCode)
   })
 }
