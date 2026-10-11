@@ -1400,6 +1400,37 @@ check(
 )
 
 /**
+ * 主进程入口。这一节要读它两处：词典源写得够不够早（[ADR-0072]），以及下面那节"实例隔离"里的
+ * 启动顺序（[ADR-0062]）。
+ */
+const entrySource = source('../src/main/index.ts')
+
+/**
+ * 词典下载源必须写在**任何会话被创建之前**（[ADR-0072]）。
+ *
+ * 这是一条实测出来的时序：已启用的语言持久化在 profile 的 `Preferences` 里，
+ * 而内核在**会话被创建**的那一刻就用那个列表开始取词典。晚一步写源，第一次请求就落到内核默认的
+ * Google CDN（在本网络里挂死），而之后再设一遍同一个语言列表**什么都不做**（实测）—— 于是那一门
+ * **永远**下不下来。顺序错了不会报错，只会让一门词典一直在"下载中"然后失败。
+ */
+const atDictionarySource = entrySource.indexOf('applyDictionaryDownloadSource(')
+const atFirstSession = entrySource.indexOf('session.fromPartition(')
+check(
+  '词典下载源写在**任何**会话被创建之前（写晚了 = 持久化的那几门永远下不下来）',
+  atDictionarySource > -1 && atFirstSession > -1 && atDictionarySource < atFirstSession,
+  atDictionarySource === -1
+    ? 'src/main/index.ts 里找不到 applyDictionaryDownloadSource('
+    : `第一处会话创建在第 ${atFirstSession} 个字符处，写源却在第 ${atDictionarySource} 个`,
+)
+check(
+  '词典下载失败会安排一次重试（内核自己不会再来一次：[ADR-0072]）',
+  spellcheckSource.includes('scheduleDictionaryRetry(ses, getSettings, languageCode)') &&
+    spellcheckSource.includes('dictionaryRetryDelay(') &&
+    spellcheckSource.includes('retryDictionaryDownload('),
+  '失败只剩一条通知了：一次抖动就等于那一门永远缺着',
+)
+
+/**
  * 「至少要留一门」在**清单那一侧**的闸门（[ADR-0070]）：只剩一门时 `⋯` 里那一项是禁用的。
  *
  * 它与对话框里那条（草稿为空时禁用「确定」）是两个必须同时在位的落点 —— 少了这一条，用户能
@@ -1517,7 +1548,7 @@ check(
   '有一个非法输入被当成了合法实例',
 )
 
-const entrySource = source('../src/main/index.ts')
+// `entrySource` 复用上面"拼写检查与 UA"那一节读到的同一份文本（词典源写得够不够早就出自它）。
 
 /**
  * 指针都带上调用形状（`app.setPath('userData',` 而不是 `setPath`）—— 上面那几段注释里就写着

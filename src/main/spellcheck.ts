@@ -22,6 +22,7 @@ import type { Session } from 'electron'
 
 import {
   dictionaryKey,
+  dictionaryRetryDelay,
   nextDictionaryStatus,
   type DictionaryEvent,
   type DictionaryStatus,
@@ -48,6 +49,30 @@ import { logger } from './logger'
  * 随时可能变。要改它，先读那条 ADR。
  */
 const DICTIONARY_DOWNLOAD_URL = 'https://edge.microsoft.com/redirectordictionaries/dict/'
+
+/**
+ * 把词典下载源写到会话上。
+ *
+ * ⚠️ **它必须早于任何会话被创建**（调用点见 `main/index.ts` 里 `whenReady` 的第一件事）。
+ * 理由是一件实测出来的时序（[ADR-0072]）：
+ *
+ *   1. 已启用的语言是**持久化在 profile 里**的（`spellcheck.dictionaries`，
+ *      即 `<sessionData>/Partitions/<分区>/Preferences`）；
+ *   2. 内核在**会话被创建**的那一刻就会用那个列表开始取词典 —— 那时 {@link applySpellcheck}
+ *      还没跑，于是请求落到**内核默认**的 Google CDN（在本网络里挂死，实测有 profile 里留下
+ *      302 到 `*.gvt1-cn.com/edgedl/chrome/dict/…` 的记录）；
+ *   3. 之后再调 `setSpellCheckerLanguages()`（同一个列表）**什么都不做**（实测），
+ *      于是那一门**永远**下不下来 —— 用户看到的就是"词典一直下载不下来"。
+ *
+ * 因此装配处会用**最早能拿到的那个会话**（`session.defaultSession`）先写一次：实测那个地址是
+ * **进程级共享**的，写在哪个会话上不影响结果，重要的是"在分区会话被创建之前"。
+ *
+ * 这个函数因此有两个调用点：装配处的**第一件事**（真正管用的那一次），以及
+ * {@link applySpellcheck}（让"改设置"这条路也把源再钉一遍，并覆盖将来可能出现的别的会话）。
+ */
+export function applyDictionaryDownloadSource(ses: Session): void {
+  ses.setSpellCheckerDictionaryDownloadURL(DICTIONARY_DOWNLOAD_URL)
+}
 
 /**
  * "用户勾的那一组词典还没能交上去"。
@@ -115,6 +140,90 @@ function recordDictionaryStatus(languageCode: string, event: DictionaryEvent): v
 }
 
 /**
+ * 每一门失败过几次（键同 {@link dictionaryStatuses}）：用来决定"还值得再来一次吗"。
+ *
+ * 只在**成功/装载好**时清零 —— 重试自己发起的那次下载也会失败，若在 `…-download-begin`
+ * 上清零，重试就成了一个永不停止的循环。
+ */
+const dictionaryFailures = new Map<string, number>()
+
+/**
+ * 已经排着的那一次重试（**进程里只允许有一次**）。
+ *
+ * 为什么必须合并成一次：重试的动作是"把**整组**语言清空再设回去"（那是实测唯一有效的杠杆，
+ * 见 {@link retryDictionaryDownload}），两门同时失败时若各排一次，第二次会在第一次的下载
+ * 还没跑完时把整组再清一遍 —— 于是谁也别想下完。
+ */
+let dictionaryRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 一门词典下载失败之后，安排一次重试。
+ *
+ * 为什么非做不可：实测"下载失败"在**这一层不可恢复** —— 把同一个列表再设一遍，内核什么都不做。
+ * 没有这次重试，一次瞬时抖动（或者上面那条"源设晚了"的时序）就等于那一门**永远**缺着
+ * （[ADR-0072]）。重试上限与退避见 `shared/dictionary-status.ts` 的
+ * {@link dictionaryRetryDelay}。
+ */
+function scheduleDictionaryRetry(
+  ses: Session,
+  getSettings: () => Settings,
+  languageCode: string,
+): void {
+  const key = dictionaryKey(languageCode)
+  const attempt = (dictionaryFailures.get(key) ?? 0) + 1
+  dictionaryFailures.set(key, attempt)
+
+  const delay = dictionaryRetryDelay(attempt)
+  if (delay === null) {
+    logger.warn('spellcheck: giving up on a dictionary', {
+      language: languageCode,
+      retries: attempt - 1,
+    })
+    return
+  }
+
+  // 已经排着一次了就等着：它会把**所有**语言一起重来，再来一个只会互相打断。
+  if (dictionaryRetryTimer !== null) return
+
+  dictionaryRetryTimer = setTimeout(() => {
+    dictionaryRetryTimer = null
+    logger.info('spellcheck: retrying the dictionary download', {
+      language: languageCode,
+      attempt,
+    })
+    retryDictionaryDownload(ses, getSettings)
+  }, delay)
+
+  /**
+   * 挂着的一次重试不该成为"进程还活着"的理由（应用常驻托盘，这一行只是别让定时器拖住退出）。
+   */
+  dictionaryRetryTimer.unref()
+}
+
+/**
+ * 让内核**重新**去取一遍词典（[ADR-0072]）。
+ *
+ * 杠杆是"先清空再设回去"。实测三件事：
+ *
+ *   - 把**同一个**列表再设一遍，内核什么都不做（它认为那一门已经有了，哪怕上一次是失败的）；
+ *   - 清空之后它会把每一门都当成新的一门，重新走一遍"磁盘上有吗 → 没有就去取"；
+ *   - 即使上一次的下载**还在路上**，这一手也会让它重新开始 —— 因此它同时也修好了"源设晚了、
+ *     第一次请求用的是内核默认那个源"这种情况。
+ *
+ * ⚠️ 代价是那一瞬间没有任何语言在被检查（清空与设回之间没有别的动作，因此只在同一轮事件循环里）。
+ * 这是唯一能用的杠杆，因此接受。
+ */
+export function retryDictionaryDownload(ses: Session, getSettings: () => Settings): void {
+  ses.setSpellCheckerLanguages([])
+  applySpellcheck(ses, getSettings())
+}
+
+/** 这一门已经好了（拿到字节或者装载完成）—— 把它的失败计数清掉。 */
+function clearDictionaryFailures(languageCode: string): void {
+  dictionaryFailures.delete(dictionaryKey(languageCode))
+}
+
+/**
  * 把「拼写检查」这一组设置写到会话上。
  *
  * 与 {@link applyUserAgentAndLanguages} 一样有两个调用点：启动时（早于任何窗口）与设置被改动
@@ -133,8 +242,11 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
    * 换源（[ADR-0068]）。它必须在 `setSpellCheckerLanguages()` **之前** —— 后者就是发起下载的
    * 那一个调用。放在这里（早于下面**每一个**分支）是为了让内核接下来自己发起的任何下载都用这个源，
    * 包括"内核还没给出清单"那一支里它按自己的默认值去取的那些。
+   *
+   * ⚠️ 但**这一次不够**：真正的判决时刻早得多，见 {@link applyDictionaryDownloadSource}（[ADR-0072]）。
+   * 这里再钉一遍是为了覆盖"改设置"这条路与将来可能出现的别的会话。
    */
-  ses.setSpellCheckerDictionaryDownloadURL(DICTIONARY_DOWNLOAD_URL)
+  applyDictionaryDownloadSource(ses)
 
   const available = ses.availableSpellCheckerLanguages
 
@@ -208,6 +320,8 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
  *   3. `…-download-begin` —— 内核开始取某一门。它**不记录任何决定**，但设置页上那一格要
  *      从"还没听到消息"翻成"下载中"（[ADR-0071]）—— 那正是"过了好久才显示失败"这件事的
  *      另一半：等待期间要看得见它在动。
+ *   4. `…-download-failure` 之后还要**自己重试**（见 {@link scheduleDictionaryRetry}）：内核
+ *      不会自己再来一次，而"通知用户"不等于"把那门词典取回来"（[ADR-0072]）。
  *
  * 四个事件都就地记进 {@link dictionaryStatuses}（映射见 `shared/dictionary-status.ts`），
  * 状态表变化时由 {@link onDictionaryStatusChange} 推给界面。`…-download-success` 与
@@ -231,6 +345,7 @@ export function watchSpellcheck(
   ses.on('spellcheck-dictionary-initialized', (_event, languageCode) => {
     logger.info('spellcheck: the kernel has a dictionary ready', { language: languageCode })
     recordDictionaryStatus(languageCode, 'initialized')
+    clearDictionaryFailures(languageCode)
 
     if (!awaitingDictionaries) return
     applySpellcheck(ses, getSettings())
@@ -240,6 +355,12 @@ export function watchSpellcheck(
     logger.warn('spellcheck: could not download a dictionary', { language: languageCode })
     recordDictionaryStatus(languageCode, 'download-failure')
     onDictionaryFailure(languageCode)
+
+    /**
+     * 失败是**不可恢复**的（见 {@link scheduleDictionaryRetry}），因此这里必须自己安排一次重试
+     * —— 通知只是让用户知道，重试才是让那一门真的下下来的那一步。
+     */
+    scheduleDictionaryRetry(ses, getSettings, languageCode)
   })
 
   /**
@@ -252,5 +373,6 @@ export function watchSpellcheck(
 
   ses.on('spellcheck-dictionary-download-success', (_event, languageCode) => {
     recordDictionaryStatus(languageCode, 'download-success')
+    clearDictionaryFailures(languageCode)
   })
 }

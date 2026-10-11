@@ -23,6 +23,7 @@ import { applyLinuxGpuSwitches } from './linux-gpu'
 import { configureLogger, logger, redactPath } from './logger'
 import { configureSession } from './session'
 import { getSettings } from './settings'
+import { applyDictionaryDownloadSource } from './spellcheck'
 import {
   beginQuit,
   createFilesWindow,
@@ -205,6 +206,21 @@ app.on('will-quit', () => {
 })
 
 app.whenReady().then(async () => {
+  /**
+   * **第一件事**：把词典下载源写上去，早于**任何**会话被创建（下面 `resolveAccountKey` 那一步
+   * 就会碰到承载页面的那个分区会话）。
+   *
+   * 为什么非这么早不可（实测，[ADR-0072]）：已启用的词典持久化在 profile 的 `Preferences` 里，
+   * **会话一被创建**，内核就用那个列表开始取词典 —— 那时 `configureSession()`（以及它里面的
+   * `applySpellcheck()`）还没跑，请求于是落到内核默认的 Google CDN。那个源在本网络里会**挂死**
+   * （profile 里留下的是 302 到 `*.gvt1-cn.com/edgedl/chrome/dict/…` 的记录），而之后再设一遍
+   * 同一个语言列表**什么都不做** —— 于是那一门**永远**下不下来。用户看到的就是"词典一直下载不下来"。
+   *
+   * 写在默认会话上是因为那个地址是**进程级共享**的（实测：写在哪个会话上都一样），而
+   * `session.defaultSession` 是最早能拿到的那个会话。
+   */
+  applyDictionaryDownloadSource(session.defaultSession)
+
   const settings = getSettings()
 
   /**

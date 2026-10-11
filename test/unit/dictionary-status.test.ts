@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   dictionaryKey,
+  dictionaryRetryDelay,
   nextDictionaryStatus,
   type DictionaryEvent,
   type DictionaryStatus,
@@ -63,6 +64,27 @@ describe('nextDictionaryStatus', () => {
         )
       }
     }
+  })
+})
+
+describe('dictionaryRetryDelay', () => {
+  it('第一次重试快、第二次慢', () => {
+    expect(dictionaryRetryDelay(1)).toBe(5000)
+    expect(dictionaryRetryDelay(2)).toBe(30_000)
+  })
+
+  it('之后**放弃**（返回 null，而不是一个极大的延时 —— 放弃了就要留一条日志）', () => {
+    expect(dictionaryRetryDelay(3)).toBeNull()
+    expect(dictionaryRetryDelay(99)).toBeNull()
+  })
+
+  it('退避是递增的（不该越重试越急）', () => {
+    const first = dictionaryRetryDelay(1)
+    const second = dictionaryRetryDelay(2)
+
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(second ?? 0).toBeGreaterThan(first ?? 0)
   })
 })
 

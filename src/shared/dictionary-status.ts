@@ -70,6 +70,28 @@ export function nextDictionaryStatus(
 }
 
 /**
+ * 一次失败之后隔多久重来，以及最多重来几次（[ADR-0072]）。
+ *
+ * 为什么必须有重试：实测"下载失败"在**这一层是不可恢复的** —— 把同一个列表再设一遍，内核
+ * 什么都不做（它认为那一门已经有了，哪怕上一次是失败的）。能被重试的杠杆只有"先清空再设回去"
+ * （见 `main/spellcheck.ts` 的 `retryDictionaryDownload()`）。没有它，一次网络抖动就等于那一门
+ * **永远**缺着 —— 用户看到的就是"词典一直下载不下来"。
+ *
+ * 两次、5 秒与 30 秒：第一次快（多半是瞬时抖动），第二次慢（上游慢或连接被掐）。再往后就放弃
+ * —— 一直重试只会把日志与流量变成噪音，而失败本身在设置页上是**看得见**的（[ADR-0071]）。
+ */
+const DICTIONARY_RETRY_DELAYS_MS: readonly number[] = [5000, 30_000]
+
+/**
+ * 第 `attempt` 次重试应当等多久；`null` = **不再重试**（调用方据此放弃并留一条日志）。
+ *
+ * @param attempt 从 1 起数（第一次失败之后的第一次重试是 1）
+ */
+export function dictionaryRetryDelay(attempt: number): number | null {
+  return DICTIONARY_RETRY_DELAYS_MS[attempt - 1] ?? null
+}
+
+/**
  * 状态表与查询用的键：**大小写归一**。
  *
  * 为什么需要它：内核事件里的语言码用的是**我们交给它的那个形状**（实测磁盘上落下来的是
