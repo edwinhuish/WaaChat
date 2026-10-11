@@ -47,6 +47,10 @@ const bridge: WaaChatBridge = {
 
   setSettings: (patch: Partial<Settings>) => ipcRenderer.invoke(CHANNELS.settingsSet, patch),
 
+  getRestartState: () => ipcRenderer.invoke(CHANNELS.restartState),
+
+  restart: () => ipcRenderer.invoke(CHANNELS.restart),
+
   pickArchiveDir: () => ipcRenderer.invoke(CHANNELS.archiveDirPick),
 
   getAppIcon: () => ipcRenderer.invoke(CHANNELS.appIconGet),

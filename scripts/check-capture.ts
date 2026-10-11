@@ -1324,6 +1324,68 @@ check(
 )
 
 /**
+ * 「立即重启」（[ADR-0064]）：让"重启后生效"的那些项不必让用户自己去关再开。
+ *
+ * 这一条路有两类**静默**的坏法，都靠下面的断言挡住：
+ *
+ *   - **顺序**：`relaunch()` 必须在 `quit()` **之前**；反了就是"点了重启、应用没了"。
+ *     同理必须是 `quit()` 而不是 `exit()` —— `exit()` 不发 `before-quit` / `will-quit`，
+ *     于是"退出时清除归档"（隐私承诺）与 SQLite 收尾一起被跳过，而日志里什么都看不出来。
+ *   - **三处一致**："新增一个能力 = 新增一个具名方法 + 一条通道"（`shared/bridge.ts` 开头），
+ *     桥、preload、通道表与处理器四处漏掉任何一处，症状都是"点了没反应"。
+ */
+const restartSource = source('../src/main/restart.ts')
+
+/**
+ * 去掉注释之后的源码。
+ *
+ * 下面两条断言问的是"**代码里**有没有这么写"，而这个文件的注释里**必须**写着
+ * `app.exit()` 与 `app.quit()` —— 那是给下一个改它的人看的理由。裸文本扫描会把说明当成
+ * 违规（本自检第一次跑就是这么红的），于是这类断言要么去掉注释再找，要么就只能改成
+ * 一句谁都不敢解释的话。
+ */
+const restartCode = restartSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+const atRelaunch = restartCode.indexOf('app.relaunch(')
+const atQuit = restartCode.indexOf('app.quit(')
+
+check(
+  '「立即重启」先 relaunch 再 quit（顺序反了 = 点了重启、应用没了）',
+  atRelaunch > -1 && atQuit > atRelaunch,
+  atRelaunch === -1
+    ? 'restart.ts 的代码里找不到 app.relaunch()'
+    : `app.quit() 出现在 app.relaunch() 之前（${atQuit} < ${atRelaunch}）`,
+)
+check(
+  '「立即重启」走 app.quit()（app.exit() 会跳过退出清理：清除归档与关库）',
+  !restartCode.includes('app.exit('),
+  'restart.ts 的代码里用了 app.exit()：before-quit / will-quit 不会发出',
+)
+
+const bridgeSource = source('../src/shared/bridge.ts')
+const preloadSource = source('../src/preload/index.ts')
+const channelsSource = source('../src/main/ipc/channels.ts')
+const ipcSource = source('../src/main/ipc/index.ts')
+const settingsViewSource = source('../src/renderer/views/settings.ts')
+
+check(
+  '「立即重启」这条能力四处齐全：桥 / preload / 通道表 / 处理器',
+  bridgeSource.includes('getRestartState()') &&
+    bridgeSource.includes('restart(): Promise<void>') &&
+    preloadSource.includes('CHANNELS.restartState') &&
+    preloadSource.includes('CHANNELS.restart)') &&
+    channelsSource.includes("restartState: 'app:restart-state'") &&
+    channelsSource.includes("restart: 'app:restart'") &&
+    ipcSource.includes('CHANNELS.restartState') &&
+    ipcSource.includes('CHANNELS.restart,'),
+  '有一处漏了：调用会静默失败（没有反应也没有报错）',
+)
+check(
+  '「立即重启」按钮的显示判据来自主进程的 pending，而不是写死成常驻按钮',
+  settingsViewSource.includes("restart.pending.includes('uiLanguage')"),
+  'views/settings.ts 里找不到基于 restart.pending 的判据',
+)
+
+/**
  * 右键菜单里**每一个** `role` 项都必须带 `label`。
  *
  * `role` 的默认文案取自 Chromium 自己的 locale，而「界面语言」那一项会把那个 locale 一起切走

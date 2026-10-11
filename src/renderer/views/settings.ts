@@ -52,6 +52,7 @@ import {
   type CacheSwitchFailure,
   type CacheSwitchResult,
   type MigrationFailure,
+  type RestartState,
   type Settings,
 } from '../../shared/types'
 import type { InstanceInfo } from '../../shared/bridge'
@@ -246,6 +247,21 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   let cacheSwitch: CacheSwitchState = { kind: 'idle' }
 
   /**
+   * 「重启后生效」的状态（[ADR-0064]）。
+   *
+   * 取不到时按"没有待重启的改动"处理：那只是少一颗按钮（与本改动之前的行为一致），而反过来
+   * 会把一颗按下去就能重启整个应用的按钮摆在一个我们并不确定的判断上。
+   */
+  let restart: RestartState = { pending: [] }
+
+  /** 读「待重启」状态。失败退化为"没有"（见 {@link restart} 的说明）。 */
+  async function readRestartState(): Promise<RestartState> {
+    return bridge()
+      .getRestartState()
+      .catch(() => ({ pending: [] }))
+  }
+
+  /**
    * 刚裁剪出来、主进程还没确认的那张图的预览。
    *
    * 它让"实时预览"成为可能：用户选完图立刻看到结果，而不是先等一次 IPC 往返。
@@ -256,6 +272,13 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   /** 提交一次部分更新，并把返回的完整设置重新渲染。 */
   async function patch(change: Partial<Settings>): Promise<void> {
     settings = await bridge().setSettings(change)
+
+    /**
+     * 紧接着重读「待重启」：改一个需要重启的项正是那颗按钮**唯一**会出现（或消失）的途径，
+     * 而它的判据在主进程（"进程启动时读到的是什么"）。留在这里不问，界面就会一直显示改动
+     * 之前的状态 —— 用户改完语言看不到任何变化，正是这一项最容易被误解的地方。
+     */
+    restart = await readRestartState()
     render()
   }
 
@@ -636,6 +659,18 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * ⚠️ 提示语必须说清"要重启"。曾经它写的是"切换后会重新加载页面"，而那条路**根本改不动**
    * `navigator.language` —— 用户照着做只会得到"改了没反应"，然后以为是我们或者上游的 bug。
    *
+   * **改过之后才给「立即重启」**（[ADR-0064]）。判据由主进程给（`pending` 里有没有
+   * `uiLanguage`），界面只负责照它显示：
+   *
+   *   - 没改过 ⇒ 什么都不多显示。常驻一个按钮是噪音，而且会让"这一项已经改过了"这件事
+   *     失去信号；
+   *   - 改过 ⇒ 多一句"已改，重启后生效" + 一个按钮。用户不必自己去关掉再打开，也**不必**
+   *     猜自己刚才到底有没有改成功。
+   *
+   * 结构与应用图标 / 文件保存位置那两行**同构**：文字列在前（`.meta` 撑开剩余宽度），
+   * 操作列在最后（`.actions`，因此下拉框与按钮贴右边缘）。按钮换个位置就会让几行的对齐规则
+   * 各说各话。
+   *
    * 选中项取设置值；设置值不在表里时（手工改坏的配置文件）**显示默认项**而不是"什么都不选"。
    * 后者会得到一行"界面说 A、实际按 B 跑"，而 `main/settings.ts` 的 `coerce()` 本来就会把这种
    * 值收敛掉 —— 这里只是不让界面在收敛之前显示成自相矛盾的样子。
@@ -647,6 +682,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
     // 与开关那一行同一个口径：徽标来自那个列表，不在这里写死。
     const needsRestart = RESTART_REQUIRED_SETTINGS.includes('uiLanguage')
+    const restartPending = restart.pending.includes('uiLanguage')
 
     const select = h(
       'select',
@@ -668,10 +704,9 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     return h(
       'div',
       { class: 'setting' },
-      select,
       h(
         'div',
-        {},
+        { class: 'meta' },
         h(
           'div',
           { class: 'label' },
@@ -682,6 +717,34 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
           class: 'hint',
           text: '内嵌页面的显示语言。网页版按浏览器的语言偏好挑自己的语言包，因此改完要重新启动应用才生效（我们一个字都不往页面里写）。',
         }),
+        ...(restartPending
+          ? [
+              h('div', {
+                class: 'hint',
+                text: '已改，重启后生效 —— 点右边那颗按钮就行，不必自己退出再打开。',
+              }),
+            ]
+          : []),
+      ),
+      h(
+        'div',
+        { class: 'actions' },
+        select,
+        ...(restartPending
+          ? [
+              actionButton({
+                text: '立即重启',
+                onClick: () => {
+                  /**
+                   * ⚠️ **不 await、也不在之后做任何事**：这一步会让进程退出，回调落在空处
+                   * （[ADR-0064]）。失败也没有可展示的余地 —— 那意味着连退出都没发生，
+                   * 用户再点一次即可。
+                   */
+                  void bridge().restart()
+                },
+              }),
+            ]
+          : []),
       ),
     )
   }
@@ -985,7 +1048,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
        * 后两者取不到时各自退化为"没有自定义图标"与"版本未知"：某一行的问题不该把**别的**
        * 行也带走 —— 让整个设置页空掉，用户连保存位置都看不到。
        */
-      const [nextSettings, nextIcon, nextVersion, nextInstance] = await Promise.all([
+      const [nextSettings, nextIcon, nextVersion, nextInstance, nextRestart] = await Promise.all([
         bridge().getSettings(),
         bridge()
           .getAppIcon()
@@ -1000,12 +1063,14 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         bridge()
           .getInstanceInfo()
           .catch(() => null),
+        readRestartState(),
       ])
 
       settings = nextSettings
       appIcon = nextIcon
       appVersion = nextVersion
       instanceInfo = nextInstance
+      restart = nextRestart
       render()
     },
 

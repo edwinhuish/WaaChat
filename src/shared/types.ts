@@ -167,6 +167,35 @@ export const DEFAULT_SETTINGS: Settings = {
  */
 export const RESTART_REQUIRED_SETTINGS: readonly (keyof Settings)[] = ['uiLanguage']
 
+/** `Settings` 的键。跨 IPC 传"哪些设置项变了"时用它，而不是传裸字符串。 */
+export type SettingsKey = keyof Settings
+
+/**
+ * 两个设置快照之间，**需要重启才生效**且真的变了的那些键。
+ *
+ * 这是"要不要给出「立即重启」"的唯一判据（[ADR-0064]），因此它必须是**纯函数**、能被单测：
+ * 判错了的两个方向都很难看 —— 多显示一个按钮是噪音，少显示一次会让用户以为"改完就算生效了"，
+ * 而那一项要等到他下次自己重启才生效。
+ *
+ * ⚠️ 比的是**值与键都相同**的项，因此"改过去又改回来"不算待重启（与用户看到的界面一致：
+ * 值回到原样，就没有任何东西等着重启）。
+ */
+export function changedRestartKeys(initial: Settings, current: Settings): SettingsKey[] {
+  return RESTART_REQUIRED_SETTINGS.filter((key) => initial[key] !== current[key])
+}
+
+/**
+ * 「重启后生效」的状态（读给界面看的，[ADR-0064]）。
+ *
+ * 它归**主进程**所有：只有它知道"进程启动时读到的设置是什么"（`main/settings.ts` 的快照）。
+ * 让界面自己记一份启动值也能算，但那就成了"界面维护我改过什么"——`shared/bridge.ts` 的
+ * `setSettings` 刻意返回完整设置，为的就是不出现这种两份状态互相打架的局面。
+ */
+export interface RestartState {
+  /** 本次运行改过、但**还没生效**的那些键。空数组 = 没有待重启的改动。 */
+  readonly pending: readonly SettingsKey[]
+}
+
 // ---------------------------------------------------------------------------
 // 归档迁移（更换保存位置）
 // ---------------------------------------------------------------------------

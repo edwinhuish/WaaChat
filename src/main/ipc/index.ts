@@ -43,6 +43,7 @@ import type {
   ArchiveRecord,
   CacheSwitchFailure,
   CacheSwitchResult,
+  RestartState,
   Settings,
 } from '../../shared/types'
 import { pruneEmptyFolders, removeStoredFile } from '../archive/blobs'
@@ -66,7 +67,8 @@ import { openPath, revealPath } from '../integration/open'
 import { getTray } from '../integration/tray'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
-import { getSettings, updateSettings } from '../settings'
+import { relaunchApp } from '../restart'
+import { getSettings, pendingRestart, updateSettings } from '../settings'
 import { applySpellcheck } from '../spellcheck'
 import { getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
@@ -783,6 +785,24 @@ export function registerIpcHandlers(): void {
     label: instanceLabel(),
     isDefault: usingDefaultInstance(),
   }))
+
+  /**
+   * 「重启后生效」的状态（[ADR-0064]）。
+   *
+   * 返回的是**键的清单**而不是一个布尔值：界面得知道是哪一项在等重启 —— 将来第二个
+   * "重启后生效"的项出现时，这一条通道不用改。
+   */
+  guard(CHANNELS.restartState, (): RestartState => ({ pending: pendingRestart() }))
+
+  /**
+   * 重启应用（[ADR-0064]）。
+   *
+   * 这里**没有返回值**，而且这是刻意的：`relaunchApp()` 之后本进程正在退出，任何回包都落在
+   * 一个刚刚消失的窗口上。界面那边因此也不该 `await` 之后再做别的事 —— 它点击完就该什么都不做。
+   */
+  guard(CHANNELS.restart, () => {
+    relaunchApp()
+  })
 
   logger.info('ipc: handlers registered')
 }

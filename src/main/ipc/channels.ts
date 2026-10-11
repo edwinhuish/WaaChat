@@ -88,6 +88,26 @@ export const CHANNELS = {
    * 开机自启开关，而那个开关实际上是另一个实例管的。
    */
   instanceInfo: 'app:instance',
+
+  /**
+   * 哪些设置**改了但还没生效**（[ADR-0064]）。
+   *
+   * 只读、无参数、无副作用。界面据此决定要不要显示「立即重启」按钮 —— 常驻一个按钮是噪音，
+   * 而在改过之后什么都不说会让用户以为这一项已经生效了（[ADR-0063] 的"重启后生效"正是
+   * 最容易被忽略的那一类）。事实源在主进程：只有它知道"进程启动时读到的是什么"。
+   */
+  restartState: 'app:restart-state',
+
+  /**
+   * 重启应用（[ADR-0064]）。
+   *
+   * **不接受任何参数**：它一个字节的输入都不需要，"重启"这个动作本身也没有可调之处。
+   * 与 `appIconSet` 之类一样，界面能表达的只有"我要这个"。
+   *
+   * ⚠️ 这是**唯一**会让应用自己退出的界面动作，因此它的配套要求写在 `main/restart.ts`：
+   * 必须走 `app.quit()`（不是 `exit()`），否则退出清理会被跳过。
+   */
+  restart: 'app:restart',
 } as const
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS]
