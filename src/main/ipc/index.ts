@@ -281,10 +281,15 @@ function applySettings(value: unknown): Settings {
    *
    * 重载不是注入（[INV-1] 与此无关，我们一个字节都没往页面里写）：它只是让页面重新装载一次，
    * 上游据此重新挑语言包。代价是页面里**未发送**的输入会丢，因此设置页那一行写着这句话。
+   *
+   * ⚠️ 必须是 `reloadIgnoringCache()` 而不是 `reload()`：普通重载**可以命中 HTTP 缓存**，
+   * 而缓存命中意味着这次导航根本不发请求 —— 新设的 `Accept-Language` 于是没有出去，用户看到
+   * 的就是"改了没反应"，而日志里一切正常（连"没生效"都无从判断）。上游的文档响应并不保证带
+   * `Vary: Accept-Language`，因此这里不能指望缓存自己判断。
    */
   if ('uiLanguage' in patch) {
     applyUserAgentAndLanguages(session.fromPartition(sessionPartition()), next)
-    getMainWindow()?.webContents.reload()
+    getMainWindow()?.webContents.reloadIgnoringCache()
   }
 
   /**
