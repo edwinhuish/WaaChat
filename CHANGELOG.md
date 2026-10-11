@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-10-11
+
 ### 变更
 
 - **「界面语言」这一项现在真的会换语言了 —— 代价是改完要重启应用。** 之前它只把 `Accept-Language`
@@ -19,6 +21,10 @@
   静默** —— 设置里显示"拼写检查：开启、词典：英语（美国）"，输入框里却一条红线都没有，与"这个功能没做"
   看不出区别。现在会记一条日志并**每种语言弹一次**系统通知（不重复打扰）。顺带修掉一个同类问题：内核
   还没给出词典清单时启动，你勾的那几门词典此前会**整场运行都不生效**，现在等内核就绪后会自动补上。
+## [1.0.8] - 2026-10-11
+
+### 变更
+
 - **可以同时使用多个账号了**：`waachat --instance work` 会启动一个**完全独立**的实例 —— 它有自己的登录态、
   设置、归档与缓存，与其它实例互不可见，可以同时运行。不带参数的 `waachat` 仍是原来的那份数据，**一个字节
   都不变**（升级后不需要做任何事）。每个实例都要单独扫码；同一个账号在两个实例里各登录一次会被上游当成两台
@@ -36,6 +42,21 @@
   也不是遗漏 —— Hunspell 是为词形语言做的。词典由内核按需从第三方下载，所以「拼写检查」那个开关关掉之后
   这个请求也不会发生（见 [security.md](docs/security.md) 第 2 节）。理由见
   [ADR-0061](docs/decisions.md#adr-0061)。
+## [1.0.7] - 2026-10-10
+
+### 修复
+
+- **某些文档取不回来**：直通重发（`ses.fetch`）时原请求的 fetch 元数据没带上，内核把重发当成一次
+  形态不对的请求拒掉。现在按 `method + url` 记下 `resourceType` 与原 `referrer` 再换算回去
+  （[ADR-0058](docs/decisions.md#adr-0058)）。
+- **开发模式下「显示聊天」毫无反应**：「关闭窗口 = 隐藏」此前在未打包的运行里有个例外，关掉窗口
+  就是真的销毁，而托盘持有的是创建时捕获的引用。那个例外删掉了
+  （[ADR-0059](docs/decisions.md#adr-0059)）。
+
+## [1.0.6] - 2026-10-10
+
+### 变更
+
 - **托盘菜单用分隔线分成了三组**：`显示聊天` ｜ `文件列表`、`设置` ｜ `退出` —— 分别是
   "应用主体"、"我们自己的两扇本地界面"与"结束整个应用"。此前四项连成一串，看不出「设置」
   与「文件列表」是一类、而「显示聊天」不是。设置窗口末尾另加了一个只读的「关于」区域，
@@ -312,7 +333,11 @@
 - `Taskfile.yml`：任务全部下沉到 `package.json` 的 `scripts`，只留一个入口。
 - `package-lock.json`：由 `pnpm-lock.yaml` 取代。
 
-[Unreleased]: https://github.com/edwinhuish/waachat/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/edwinhuish/waachat/compare/v1.0.9...HEAD
+[1.0.9]: https://github.com/edwinhuish/waachat/compare/v1.0.8...v1.0.9
+[1.0.8]: https://github.com/edwinhuish/waachat/compare/v1.0.7...v1.0.8
+[1.0.7]: https://github.com/edwinhuish/waachat/compare/v1.0.6...v1.0.7
+[1.0.6]: https://github.com/edwinhuish/waachat/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/edwinhuish/waachat/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/edwinhuish/waachat/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/edwinhuish/waachat/compare/v1.0.2...v1.0.3
