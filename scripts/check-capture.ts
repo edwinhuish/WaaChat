@@ -1273,6 +1273,21 @@ check(
     : 'language.ts 里找不到会话级的 setUserAgent',
 )
 
+/**
+ * 「拼写检查」那一项的全部依赖就是承载页面的那扇窗口的一个 `webPreferences` 布尔值
+ * （内核默认 `true`）。它坏起来完全静默：没有日志、设置页显示"已开启"，而输入框里一条红线都
+ * 没有 —— 与"词典没下载下来"在用户看来一模一样。因此断言**那个函数体里**写着它，而不是全文件
+ * 搜一次（两扇本地窗口也有 `webPreferences`，搜全文会在主窗口那一处被删掉之后依然变绿）。
+ */
+const mainWindowBody = /export function createMainWindow[\s\S]*?\n}/.exec(windowSource)?.[0] ?? ''
+check(
+  '承载上游页面的窗口显式声明 spellcheck: true（否则"某处顺手设成 false"是静默的）',
+  /spellcheck:\s*true/.test(mainWindowBody),
+  mainWindowBody === ''
+    ? 'window.ts 里找不到 createMainWindow()'
+    : 'createMainWindow() 的 webPreferences 里没有 spellcheck: true',
+)
+
 const mainSourceFiles = sourceFiles(join(srcRoot, 'main'))
 check(
   '三个新设置项在主进程里都有读者（能改的就一定真的会被执行）',

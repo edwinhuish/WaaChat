@@ -93,6 +93,7 @@ function hideOnClose(window: BrowserWindow): void {
  *  - `sandbox: true`        → 渲染进程在受限沙箱中运行
  *  - `nodeIntegration: false` → 页面拿不到 Node
  *  - `partition`            → 登录态持久化；改了它等于让所有用户重新扫码
+ *  - `spellcheck: true`     → 「拼写检查」那一项的全部依赖（内核默认就是 true，显式写出来见下）
  *
  * `icon` 只在 **X11** 下决定窗口图标（`_NET_WM_ICON`）；Wayland 下由合成器按 `app_id`
  * 从 `.desktop` 取，这里的值会被忽略。改动自定义图标要同时照顾这两条路，见 ADR-0022。
@@ -113,6 +114,16 @@ export function createMainWindow(): BrowserWindow {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      /**
+       * ⚠️ 显式写出来，尽管内核的默认值就是 `true`。
+       *
+       * 它是「拼写检查」那一整项功能的**唯一依赖**（[ADR-0061]）：会话那边再怎么
+       * `setSpellCheckerLanguages()`，这里一旦是 `false` 就一条红线都不会出现。而它坏掉的方式
+       * 是本项目最不能接受的那一类 —— **完全静默**：没有日志、设置页显示"已开启"、与"词典没下载
+       * 下来"在用户看来一模一样。显式声明之后，"某处顺手设成 false"会是一次改动而不可能是一次
+       * 遗漏，`pnpm run selfcheck` 也据此断言（第 19 节）。
+       */
+      spellcheck: true,
       // 刻意不设置 preload。
     },
   })
