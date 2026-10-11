@@ -285,43 +285,88 @@ ul.archive li:last-child {
 }
 
 /*
- * 界面语言的下拉框。与数字框同一套外观（`input[type='number']` 那条规则）—— 两种控件在
- * 同一页里不该长得像两个来源。
+ * 拼写词典的**多选下拉**（[ADR-0067]）。它收起时只显示已选语言的标签，点开才露出那张复选框表。
+ *
+ * 为什么不是 `<select multiple>`：那个原生控件要按住 Ctrl 才能勾第二项，桌面用户不会去猜。
+ * "下拉 + 复选框"没有这个缺点 —— 形态与可用性不是一回事（[ADR-0061] 当年把两者一起否掉了）。
+ *
+ * ⚠️ 面板是**绝对定位的浮层**：所有语言如果任其铺开，这一行会比设置页里任何一行都长。
+ * 浮层因此需要 `z-index`（它是设置页里唯一会盖住后续行的元素）；`max-height` + 滚动是因为
+ * 语言表随时会长（现在 24 门），而这里不想钉死一个与 `SPELLCHECK_LANGUAGES` 同步的数字。
  */
-.setting .language-select {
+.setting .language-menu {
+  position: relative;
+  /* 收起时只是"标签 + 一个箭头"，展开时它仍然是那一行的左端。 */
+  flex: 0 0 auto;
+}
+
+/* 与数字框同一套外观（`input[type='number']` 那条规则）—— 两种控件不该长得像两个来源。 */
+.setting .language-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 24rem;
   font: inherit;
   color: inherit;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 6px 10px;
-  flex: 0 0 auto;
+  cursor: pointer;
 }
 
-/*
- * 拼写词典是一张可换行的复选框表，而不是 `<select multiple>`：多选下拉要按住 Ctrl 才能勾
- * 第二项，而 Desktop 用户不会去猜这件事。固定宽度 + 限高滚动，是因为 18 门语言如果任其铺开，
- * 这一行会比设置页里的任何一行都长。
- */
-.setting .languages {
+.setting .language-trigger:hover:enabled {
+  border-color: var(--accent);
+}
+
+/* 标签：一枚语言一枚。收起状态下"我勾了哪几门"只看这里，因此它必须换行而不是被裁掉。 */
+.setting .language-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.setting .language-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--border);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.setting .language-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.setting .language-options {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 4px);
+  left: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
   gap: 4px 10px;
-  flex: 0 0 auto;
   width: 20rem;
   max-height: 10rem;
   overflow-y: auto;
+  /* 浮层要自己带底和边：它是贴在触发按钮下方的一块，而不是行内的一段。 */
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
 }
 
-.setting .languages label {
+.setting .language-options label {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
 }
 
-/* 表格里的复选框不参与基线对齐（`margin-top: 3px` 是给单行开关用的）。 */
-.setting .languages label input[type='checkbox'] {
+/* 面板里的复选框不参与基线对齐（`margin-top: 3px` 是给单行开关用的）。 */
+.setting .language-options label input[type='checkbox'] {
   margin-top: 0;
 }
 

@@ -1318,6 +1318,21 @@ check(
     !settingsViewSource.includes('uiLanguage'),
   '设置页里那句话不在，或者语言选择器又回来了 —— 后者是一个改不动页面的开关',
 )
+
+/**
+ * 词典那一行的**形态**（[ADR-0067]）：一个多选下拉 + 已选语言的标签。
+ *
+ * 它坏起来是静默的 —— 类名改了却忘了改样式表，控件照样能勾、能存，只是**看不出是个控件**
+ * （没有边框，点开的面板不是浮层而是把整行撑长）。因此把两边一起断言。
+ */
+check(
+  '拼写词典是一个"下拉 + 标签"的控件，且它的样式在样式表里都有定义（[ADR-0067]）',
+  ['language-menu', 'language-trigger', 'language-tags', 'language-tag', 'language-options'].every(
+    (name) =>
+      settingsViewSource.includes(`'${name}'`) && stylesheet.includes(`.setting .${name} {`),
+  ),
+  '类名与样式表对不上：控件会静默失去外观（或者那一整块根本没画出来）',
+)
 const restartSource = source('../src/main/restart.ts')
 
 /**

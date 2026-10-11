@@ -248,6 +248,15 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    */
   let restartState: RestartState = { restart: [] }
 
+  /**
+   * 「拼写检查的词典」那个多选下拉现在开着没有（[ADR-0067]）。
+   *
+   * ⚠️ 它**必须留在这里**，不能挂在行元素上：每次勾选都会 `patch()` → `render()` 把整棵树
+   * 重建一次（标签的值来自主进程回填的设置，这是"实时更新"的代价），元素上的打开状态随之
+   * 消失 —— 于是每勾一门词典，面板就会自己关上。
+   */
+  let languagesOpen = false
+
   /** 读待生效状态。失败退化为"没有"（见 {@link restartState} 的说明）。 */
   async function readRestartState(): Promise<RestartState> {
     return bridge()
@@ -734,10 +743,11 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
-   * 拼写检查的词典那一行。
+   * 拼写检查的词典那一行：一个**多选下拉** + 已选语言的标签（[ADR-0067]）。
    *
-   * 做成**复选框表**而不是 `<select multiple>`：多选下拉要按住 Ctrl 才能勾第二项，而这是一件
-   * 没人会去猜的事。
+   * 收起时只显示标签（"我勾了哪几门"一眼可见），点开才露出那张复选框表。
+   * ⚠️ 用**我们自己的**下拉，不是 `<select multiple>` —— 后者要按住 Ctrl 才能勾第二项
+   * （[ADR-0061] 因此否决过它，本次仍然否决），而这里的每一门都是一次独立的点选。
    *
    * 两处禁用都是有话要说的（因此带 `title`，与"尚未生效"那个徽标同一个说法）：
    *
@@ -746,10 +756,25 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    *     看来没有区别。要停用整个功能，请用上面那个开关（它同时还意味着不去下载词典）。
    */
   function spellcheckLanguagesRow(current: Settings): HTMLElement {
-    const checked = new Set(parseLanguageList(current.spellcheckLanguages))
+    const selected = parseLanguageList(current.spellcheckLanguages)
+    const checked = new Set(selected)
+    const labelOf = new Map(SPELLCHECK_LANGUAGES.map((entry) => [entry.code, entry.label]))
     const off = !current.spellcheck
 
-    const boxes = SPELLCHECK_LANGUAGES.map((entry) => {
+    /** 写回时按**表**的顺序：勾选的先后不该改变存下来的值（同一组勾选只有一种写法）。 */
+    function commit(next: ReadonlySet<string>): void {
+      const codes = SPELLCHECK_LANGUAGES.filter((item) => next.has(item.code)).map(
+        (item) => item.code,
+      )
+      void patch({ spellcheckLanguages: formatLanguageList(codes) })
+    }
+
+    // 顺序同样取自**表**：标签的先后与写回值的先后是同一个来源，因此两者永远不会对不上。
+    const tags = selected.map((code) =>
+      h('span', { class: 'language-tag', text: labelOf.get(code) ?? code }),
+    )
+
+    const options = SPELLCHECK_LANGUAGES.map((entry) => {
       const onlyOne = checked.has(entry.code) && checked.size === 1
       const title = off ? '拼写检查已关闭' : onlyOne ? '至少要留一门词典' : null
 
@@ -761,17 +786,14 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
           checked: checked.has(entry.code),
           disabled: off || onlyOne,
           onChange: (event) => {
-            const next = new Set(checked)
+            const next = new Set(selected)
             if ((event.target as HTMLInputElement).checked) next.add(entry.code)
             else next.delete(entry.code)
 
-            // 按**表**的顺序写回：勾选的先后不该改变存下来的值，否则同一组勾选会有多种写法，
-            // 而"设置没变、值却变了"会让将来每一次比较都不可靠。
-            const codes = SPELLCHECK_LANGUAGES.filter((item) => next.has(item.code)).map(
-              (item) => item.code,
-            )
+            // 一门都不勾等于"什么都不查"，与"功能坏了"看不出区别 —— 界面上挡掉它。
+            if (next.size === 0) return
 
-            void patch({ spellcheckLanguages: formatLanguageList(codes) })
+            commit(next)
           },
         }),
         entry.label,
@@ -781,7 +803,26 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     return h(
       'div',
       { class: 'setting' },
-      h('div', { class: 'languages' }, ...boxes),
+      h(
+        'div',
+        { class: 'language-menu', dataRole: 'language-menu' },
+        h(
+          'button',
+          {
+            class: 'language-trigger',
+            type: 'button',
+            disabled: off,
+            title: off ? '拼写检查已关闭' : '选择和它一起查的语言',
+            onClick: () => {
+              languagesOpen = !languagesOpen
+              render()
+            },
+          },
+          h('span', { class: 'language-tags' }, ...tags),
+          h('span', { class: 'language-caret', text: languagesOpen ? '▴' : '▾' }),
+        ),
+        languagesOpen ? h('div', { class: 'language-options' }, ...options) : null,
+      ),
       h(
         'div',
         {},
@@ -1021,6 +1062,27 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     render()
   })
 
+  /**
+   * 点下拉**之外**的地方就把它收起来（[ADR-0067]）。
+   *
+   * 监听器挂在 `document` 上，而且**只挂这一个** —— 行元素每次都是新建的，把监听器挂在那里
+   * 就成了"每重画一次就多一个"。判据是 `data-role` 锚点而不是类名：类名是给样式用的，
+   * 改样式不该弄坏行为（`renderer/dom.ts` 的 `part()` 出于同一个理由）。
+   *
+   * ⚠️ 勾选复选框时不必担心被顺手关掉：那一下点击的 `target` 在（旧的那棵树的）面板里，
+   * `closest()` 照样能沿它自己的祖先找到锚点。
+   */
+  const onDocumentClick = (event: Event): void => {
+    if (!languagesOpen) return
+
+    const target = event.target
+    if (target instanceof Element && target.closest('[data-role="language-menu"]') !== null) return
+
+    languagesOpen = false
+    render()
+  }
+  document.addEventListener('click', onDocumentClick)
+
   return {
     async refresh(): Promise<void> {
       /**
@@ -1061,6 +1123,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
 
     dispose(): void {
       disposeMigration()
+      document.removeEventListener('click', onDocumentClick)
     },
   }
 }
