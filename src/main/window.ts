@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { BrowserWindow, app, shell } from 'electron'
 
 import { UPSTREAM_URL } from '../shared/constants'
+import { chatUrl, isChatLink, normalizeChatTarget } from '../shared/deep-link'
 import { isUpstreamPage } from '../shared/upstream'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { instanceLabel, sessionPartition } from './instance'
@@ -133,7 +134,14 @@ export function applyZoomToAllWindows(): void {
  * `icon` 只在 **X11** 下决定窗口图标（`_NET_WM_ICON`）；Wayland 下由合成器按 `app_id`
  * 从 `.desktop` 取，这里的值会被忽略。改动自定义图标要同时照顾这两条路，见 ADR-0022。
  */
-export function createMainWindow(): BrowserWindow {
+/**
+ * `chatPhone` 只用于**启动时**的深链接（[ADR-0083]）：命令行里带了"要打开哪个对话"时，直接
+ * 用那个对话开窗口，而不是先加载首页再导航一次 —— 后者会让用户看到一次多余的跳转。
+ *
+ * ⚠️ 它收的是**号码**（E.164 的数字部分）而不是 URL，URL 在下面由 `chatUrl()` 拼。这样这个
+ * 参数**结构上**就不可能变成"任意 URL 的入口"：能传进来的只有数字。
+ */
+export function createMainWindow(chatPhone: string | null = null): BrowserWindow {
   const window = new BrowserWindow({
     ...DEFAULT_SIZE,
     show: false,
@@ -191,11 +199,51 @@ export function createMainWindow(): BrowserWindow {
    * 那边根本没有登录态。
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
+    /**
+     * 深链接（[ADR-0083]）：`wa.me` / `whatsapp:` 的链接**不开新窗口、也不交给系统浏览器**，
+     * 而是在这扇主窗口里打开那个对话。别人发来的 `wa.me` 链接（以及"链接设备"页里手输的那一条）
+     * 因此会直接落到聊天界面，而不是落到一张"请打开应用"的网页上。
+     *
+     * ⚠️ 必须排在站内判断之前：`wa.me` 不在上游域里，掉到下面那一支就会被 `openExternal`
+     * 交给系统浏览器 —— 而那正是我们要修的行为。
+     */
+    const chatPhone = isChatLink(url) ? normalizeChatTarget(url) : null
+    if (chatPhone !== null) {
+      openChat(window, chatPhone)
+      return { action: 'deny' }
+    }
+
     if (isUpstreamPage(url)) {
       return { action: 'allow' }
     }
     void shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  /**
+   * 深链接（[ADR-0083]）：页面里点的 `wa.me` 链接如果在**本窗口**里导航，就把目标换成上游自己
+   * 的"给某个号码发消息"那条路由。
+   *
+   * 不这样做的话，点一个 `wa.me` 链接会把整扇窗口导航到那个**站外**落地页，用户看到的是一张
+   * "打开应用"的网页 —— 一次"点一个链接把聊天界面弄没了"，而登录态还在原地。
+   *
+   * ⚠️ 这里**只**拦这一类链接。顺手在 `will-navigate` 上挂一套"站外一律交给系统浏览器"是另一个
+   * 改动（上游自己的跳转、文档预览页都在那条路上），要另一条 ADR —— 没认出来的链接因此仍按
+   * **从前**的行为走：本函数一个字节都不动它。
+   */
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isChatLink(url)) return
+
+    event.preventDefault()
+
+    const chatPhone = normalizeChatTarget(url)
+    if (chatPhone === null) {
+      // 只记"没认出来"，**不记那个 URL**：`wa.me` 链接里带着别人的手机号。
+      logger.warn('deep link: a chat link we cannot use')
+      return
+    }
+
+    openChat(window, chatPhone)
   })
 
   window.once('ready-to-show', () => window.show())
@@ -209,11 +257,29 @@ export function createMainWindow(): BrowserWindow {
     if (mainWindow === window) mainWindow = null
   })
 
-  void window.loadURL(UPSTREAM_URL)
+  void window.loadURL(chatPhone === null ? UPSTREAM_URL : chatUrl(chatPhone))
 
-  logger.info('main window created')
+  logger.info('main window created', { deepLink: chatPhone !== null })
 
   return window
+}
+
+/**
+ * 把主窗口导航到"给某个号码发消息"那个对话（[ADR-0083]）。
+ *
+ * ⚠️ 目标永远是**我们自己拼**的上游 URL（`chatUrl()` 只取数字），命令行或链接里的原始字符串
+ * 从不被直接交给窗口。因此这条路径不需要额外的白名单 —— 能被拼进去的形状只有数字。
+ *
+ * ⚠️ 这条路径**会重新加载页面**（`loadURL`）：那是"直接进某个对话"的应有代价，也是唯一不碰
+ * 页面就能做到它的办法（要"就地切对话"就得驱动页面，那是 INV-1 的红线）。
+ *
+ * `digits` 只记长度：那是别人（或用户自己）的手机号，日志里不该有它。
+ */
+export function openChat(window: BrowserWindow, phone: string): void {
+  presentWindow(window)
+  void window.loadURL(chatUrl(phone))
+
+  logger.info('deep link: opening a chat', { digits: phone.length })
 }
 
 /**

@@ -11,6 +11,7 @@
  * 本文件不得导入 electron、不得访问文件系统（`ai/CONVENTIONS.md` 第 2 节）。
  */
 
+import { CHAT_PROTOCOL } from './deep-link'
 import type { AppIconFailure } from './types'
 
 /**
@@ -167,6 +168,15 @@ export interface DesktopEntryInput {
  * 为什么不直接拷贝安装时那份（`/usr/share/applications/<appId>.desktop`）：AppImage 根本
  * 没有那一份，开发模式下也没有。从零拼一份的代价很小 —— 决定"窗口能否与条目合并"的键只有
  * `StartupWMClass`，再加上 INV-4 要求的 `Comment`。
+ *
+ * ⚠️ **这一份会盖掉安装的那一份**（同名条目在用户目录里优先，[ADR-0022]）。因此安装产物里
+ * 有、而这里漏掉的每一个键，都会在"用户换过一次图标"之后**静默**失效：
+ *
+ *   - `MimeType` 漏掉 ⇒ 深链接不再归我们（[ADR-0083]）。用户点一个 `wa.me` 链接，系统不认识
+ *     它，什么都不会发生 —— 而他不会把这件事与"上周换了个图标"联系起来；
+ *   - `Exec` 末尾那个 `%U` 同理：关联还在，但 URL 不会被当参数传进来（应用被拉起来，停在首页）。
+ *
+ * 因此这两个键在这里是**必须**的，而不是"顺手带上"。自检对它们都有断言。
  */
 export function buildDesktopEntry(input: DesktopEntryInput): string {
   return [
@@ -179,6 +189,7 @@ export function buildDesktopEntry(input: DesktopEntryInput): string {
     'Terminal=false',
     `Categories=${DESKTOP_ENTRY_CATEGORIES}`,
     `Keywords=${DESKTOP_ENTRY_KEYWORDS}`,
+    `MimeType=x-scheme-handler/${CHAT_PROTOCOL};`,
     `StartupWMClass=${input.startupWMClass}`,
     DESKTOP_ENTRY_MARKER,
     '',

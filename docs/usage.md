@@ -111,6 +111,19 @@ sudo apt install gnome-shell-extension-appindicator
 
 设备槽位是有限的（通常在 4 个左右），注意别把槽位占满。
 
+**从外面直接进某个对话**（[ADR-0083](decisions.md#adr-0083)）：三种输入都行 ——
+
+```bash
+waachat --new-chat +86 138-0000-0000        # 国际格式（含国家码，7–15 位）
+waachat --new-chat 'https://wa.me/8613800000000'
+xdg-open 'whatsapp://send?phone=8613800000000'
+```
+
+应用**页面里**点的 `wa.me` 链接也会在本窗口里打开那个对话（不再丢给系统浏览器 —— 那边没有
+登录态）。⚠️ 两点代价：它会**重新加载页面**（这是我们唯一不碰页面的做法），因此正在通话或正在
+编辑一条还没发出去的消息时，那些状态会没；号码必须是**国际格式**，本地写法（`07700900123`）
+我们不认 —— 点下去没反应时先看日志里的 `deep link: not a usable chat target`。
+
 ## 3. 核心行为：点击文件直接打开
 
 这是本应用与网页版的主要差别。
@@ -515,6 +528,38 @@ WARN permission denied {"permission":"geolocation","fromUpstream":true}
 其余全拒，包括 `clipboard-read`（静默读剪贴板）、`geolocation`（位置）、`display-capture`（屏幕捕获）、`midi*`、`openExternal` 等等。
 
 **如果某个上游功能因此不可用**（例如通话里的"共享屏幕"点了没反应），把日志里那条 `permission denied` 贴出来就行 —— 那正是我们需要的证据，ADR-0035 里列了每一项的取证方式。**不要**为了"先跑起来"去改白名单：那一行是安全边界（`docs/security.md` T5），加它需要一次决策。
+
+### 点了 `whatsapp:` / `wa.me` 链接没反应，或者只打开了首页
+
+（`wa.me` 链接在**应用页面里**点击是另一回事：那种走的是应用自己那条路，见第 2 节。）
+
+先确认系统把那个 scheme 交给了谁：
+
+```bash
+xdg-mime query default x-scheme-handler/whatsapp
+# 期望：io.github.edwinhuish.waachat.desktop
+```
+
+不是它、或者什么都没有 ⇒ 桌面数据库没认出我们。deb 用户先刷新一次：
+
+```bash
+sudo update-desktop-database /usr/share/applications
+```
+
+还不行就直接指定（AppImage 用户通常需要这一步 —— 自解包目录里那份 `.desktop` 不会被系统自动
+收录）：
+
+```bash
+xdg-settings set default-url-scheme-handler whatsapp io.github.edwinhuish.waachat.desktop
+```
+
+**应用被拉起来了、但停在首页** ⇒ 关联是通的、URL 没传进来。产物里的 `Exec` 必须带 `%U`
+（`pnpm run verify` 对 deb 与 AppImage 各断言一次）；另外，**换过应用图标**之后生效的是我们写在
+`~/.local/share/applications/` 的那份同名条目（[ADR-0022](decisions.md#adr-0022)），它同样带着
+那两条声明 —— 若你手工改过它，`MimeType` 与 `%U` 都可能被改掉。
+
+**日志里那条 `deep link: not a usable chat target`** 会跟着你写的原样值：常见原因是号码没带
+国家码，或者用了本地写法（`0` 开头）。号码请用国际格式。
 
 ### 怎么彻底卸载
 

@@ -111,6 +111,27 @@ check_desktop_entry() {
   fi
 
   grep -qE '^Exec=' "$desktop" && ok "$label：Exec 存在" || bad "$label：缺 Exec"
+
+  # 深链接（ADR-0083）需要**两条**都在，而且都只在产物里看得见：
+  #
+  #   MimeType  声明“whatsapp: 这个 scheme 归我们”
+  #   Exec %U   让桌面环境把那个 URL 当**参数**传给我们
+  #
+  # 只断言 MimeType 会漏掉“关联建立了、但 URL 没传进来”这一半 —— 用户点链接之后
+  # 应用会被拉起来、然后停在首页，看起来像“没反应”。反过来只断言 Exec 也一样。
+  if grep -qE '^MimeType=.*x-scheme-handler/whatsapp' "$desktop"; then
+    ok "$label：声明了 x-scheme-handler/whatsapp"
+  else
+    bad "$label：.desktop 里没有 x-scheme-handler/whatsapp —— 系统点 whatsapp: 链接不会找到我们（检查 electron-builder.yml 的 linux.desktop.entry.MimeType）"
+  fi
+
+  local exec_line
+  exec_line="$(grep -E '^Exec=' "$desktop" | head -1 || true)"
+  case "$exec_line" in
+    *'%U'*) ok "$label：Exec 带 %U（链接会作为参数传进来）" ;;
+    *) bad "$label：Exec 是 '${exec_line:-（缺失）}'，缺 %U —— 链接就算找到了我们，URL 也不会传进来（症状是“点了链接、应用开在首页”）" ;;
+  esac
+
   grep -qE '^Icon=' "$desktop" && ok "$label：Icon 存在" || bad "$label：缺 Icon"
 }
 

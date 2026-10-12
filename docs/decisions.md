@@ -90,6 +90,7 @@
 | [0080](#adr-0080) | **未读条数**显示在两处：托盘图标右下角的红色数字徽标（上限 `99+`）与聊天窗口标题（`WaaChat — 3 条未读`）；数据源**只有**一个 —— `page-title-updated`（上游把未读数写在 `document.title` 里，标题是浏览器层的事实，不碰页面）；只认最前面的 `(N)` 前缀，**读不到就是 `null` 而不是 0**；徽标用**手写点阵字模**画进 `nativeImage` 的原始位图（零新依赖）；托盘图标从此是合成的，设它只剩 `syncTrayIcon()` 一处；**顺带**把窗口标题的归属权拿回来（页面标题不再覆盖实例名） | 已生效（同时修掉"页面标题覆盖窗口标题"这个既有问题；三处"未实测"写在正文里） |
 | [0081](#adr-0081) | 加一项设置「**平滑滚动**」（默认**开启**），实现方式就是**启动期的一个内核开关**：关掉时写 `--disable-smooth-scrolling`，开着时一个开关都不写（内核默认就是它）；用户自己传了同名开关就一个字节都不动；它**要重启才生效**，因此是 [ADR-0066](#adr-0066) 之后 `RESTART_REQUIRED_SETTINGS` 的第一个成员（那条「重启后生效」提示与「立即重启」按钮重新可达） | 已生效（开关名在 Electron 44.7.0 的二进制里核对过；两处"未实测"写在正文里） |
 | [0082](#adr-0082) | 托盘菜单新增一组两项：**「静音应用声音」**（落到 `webContents.setAudioMuted()`，内核真的静掉那扇页面的音频）与**「免打扰（暂停通知）」**（落到**权限层**：`notifications` 一律拒绝，判据与白名单同在 `permissions.ts`，两个处理器共用）；两者都是**运行期状态**（不落盘、重启复位），状态只有一个源、改它的入口只有托盘一处（自检断言） | 已生效（免打扰对**已加载**的页面是否即时生效待验证 —— 页面的通知授权由页面自己缓存；见正文） |
+| [0083](#adr-0083) | **深链接**：`--new-chat <号码或链接>`、系统交来的 `whatsapp:` 协议链接、以及**页面里点的** `wa.me` / `whatsapp:` 链接，都归一化成 E.164 的数字（`shared/deep-link.ts`），由 `chatUrl()` 拼成上游的 `/send?phone=` 再 `loadURL()` 过去（**不注入**；代价是会重新加载页面）；三条入口共用 `openChat()`，URL 只有一处拼；打包里 `MimeType=x-scheme-handler/whatsapp;` 与 `Exec` 的 `%U` **缺一不可**（`pnpm run verify` 对两个产物断言） | 已生效（`verify` 断言过产物里的两条声明；系统关联与 `second-instance` 的 argv 待实测，见正文） |
 
 ---
 
@@ -5650,3 +5651,125 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
 2. **重启复位。** 两个开关都不落盘（理由 4），因此重启之后回到"都不静音"。
 3. **没有托盘就没有这两个开关。** 桌面环境不显示托盘图标时（[ADR-0034]：GNOME 缺
    AppIndicator 扩展），用户拿不到这两个入口 —— 与「退出」「文件列表」是同一件事。
+
+---
+
+## ADR-0083
+
+**决定**：让三类"要打开某个对话"的输入都落到聊天界面：
+
+1. 命令行 `--new-chat <号码或链接>`（`--new-chat=<值>` 也认）；
+2. **系统交给我们的**链接：`whatsapp:` 协议（`xdg-open`、协议处理器、文件管理器里的
+   "用 WaaChat 打开"）—— 它作为命令行参数到达；
+3. **页面里点的** `wa.me` / `whatsapp:` 链接。
+
+实现方式只有一种：把这些输入归一化成 **E.164 的数字**，由 `chatUrl()` 拼出上游自己的路由
+`https://web.whatsapp.com/send?phone=<数字>`，再让主窗口 `loadURL()` 过去（INV-1：不注入、
+不驱动页面）。
+
+1. 判据在 `shared/deep-link.ts`（纯函数）：`parseChatTarget()` / `chatValueFromArgv()` /
+   `normalizeChatTarget()` / `isChatLink()` / `chatUrl()`。只认 `whatsapp:` scheme 与 `wa.me`
+   主机这两种链接形状，其余返回 `null`。
+2. 主进程那一半在 `main/deep-link.ts`：注册 scheme（`setAsDefaultProtocolClient`，**只在打包后**）
+   与"把一份 argv 变成号码"。
+3. 导航只有一处：`window.ts` 的 `openChat()`。三条入口都走它。
+4. 打包：`.desktop` 里 `MimeType=x-scheme-handler/whatsapp;`，而 `Exec` 自带 `%U`
+   （实测：electron-builder 26.15.3 对 deb 与 AppImage 都生成 `Exec=… %U`）。
+
+**状态**：已生效（`pnpm run verify` 对两个产物都断言了那两条声明）
+
+**背景**：这一项同样来自同类客户端的特性对照（"`whatsapp:` / `wa.me` 链接与 `--new-chat`
+直接进对话"）。在此之前我们这边**两条路都没有**：
+
+- 命令行不认这个参数（`--new-chat` 会被 `parseInstanceArg` 那套"只认自己那两种写法"的姿势
+  忽略掉，于是静默地开首页）；
+- 页面里点一个 `wa.me` 链接会被 `setWindowOpenHandler` 判成**站外链接**交给系统浏览器 ——
+  那边没有登录态，用户看到的是一张"请打开应用"的网页；如果那个链接是在**本窗口**里导航的，
+  整扇窗口会被导航走，聊天界面直接消失（登录态还在原地）。
+
+**理由**：
+
+1. **只有一种合法落点：`loadURL()`。** 想"就地切到某个对话"就得去驱动页面
+   （`executeJavaScript`），那是 INV-1 的红线。因此"**会重新加载页面**"是这条功能的**代价**，
+   不是实现细节 —— 它写在"已知限制"里。
+2. **目标 URL 必须由我们拼，而且只由一处拼。** 它能被拼进去的形状只有数字
+   （`chatUrl()` 自己再滤一遍，不信任调用方），因此**结构上**不可注入 —— 这也是这条路径不需要
+   第二个白名单的原因（与 [ADR-0035](#adr-0035) 那套"只对上游源放行"是两件事）。
+3. **判据必须是"认不出来就 `null`"。** `argv` 里塞满 Chromium 自己的开关与启动路径
+   （`--disable-gpu`、安装路径、`%U` 展开后的值…），猜错的后果是"启动时莫名其妙打开一个对话"。
+4. **只认 `wa.me` 与 `whatsapp:`。** 刻意**不**顺手支持 `api.whatsapp.com/send?phone=…`：
+   那个 host 不在我们的上游域里（`shared/upstream.ts`），把它当成"可以导航过去的东西"等于让一个
+   第三方可控的跳转页获得"在应用里导航"的资格。
+5. **号码形状要严。** 7–15 位（E.164 的数字部分）、**不**以 `0` 开头。本地写法
+   （`07700900123`）是最常见的误输入，收下它只会把用户送进一个"号码无效"的页面 —— 而那个页面
+   看起来像我们坏了。认不出来时我们**记下用户写的原样值**（那是他自己输入的东西），不猜。
+6. **三条入口共用同一句话。** 分两处实现（或只接其中两条）的症状是"命令行能开、点链接不能开"
+   这类半截状态 —— 而它只在用户换了入口时才暴露。
+7. **打包里那两条声明缺一不可。** `MimeType` 是"这个 scheme 归我们处理"；`Exec` 的 `%U` 才是
+   "URL 会被当参数传进来"。只做到前者的表现是：用户点链接 → 我们被拉起来 → 停在首页。
+   用户会把它读成"没反应"，而构建是全绿的 —— 这正是本项目最想拦住的那类问题，因此断言写在
+   **产物**上（`scripts/verify-package.sh`）。
+
+**被否决的替代方案**：
+
+- **注入脚本去"点"出某个对话**（在页面里找搜索框、模拟输入与点击）：INV-1，而且与上游的 DOM
+  结构绑死。
+- **在 `will-navigate` 上顺手加一套"站外一律交给系统浏览器"**：那是另一个改动（上游自己的跳转、
+  文档预览页都在这条路上），要另一条 ADR。这一次**只**拦 `wa.me` / `whatsapp:` 这一类，其余
+  仍然按 `will-navigate` 从前的行为走（这个函数此前根本没挂 `will-navigate`）。
+- **把 `wa.me` 链接继续交给系统浏览器**：那就是今天的行为，也正是这一项要修的一半问题。
+- **从任意 URL 里"抠"数字**（`https://example.com/8613…`）：那等于"点了某个链接，应用开始给一个
+  陌生号码发消息"。
+- **支持 `api.whatsapp.com/send?phone=…`**：见理由 4。
+- **在 `electron-builder.yml` 里覆盖 `Exec`**：那是构建器按 `executableName` 算出来的值，覆盖它
+  会让"改了可执行名、Exec 还是旧名字"变成一次安静的桌面集成失效。改为在产物层面断言 ——
+  实测它本来就带 `%U`，因此这里一行都不用写。
+- **开发模式下也注册 scheme**：此时 `execPath` 指向 `node_modules` 里那个 Electron 二进制，
+  把系统关联指向它的后果是"用户下次点链接会起一个没有我们代码的 Electron"，而且要等他点链接
+  才发现，不会与"昨天跑过 dev"联系起来。
+- **`--new-chat` 接受本地号码格式并自动补国家码**：我们不知道用户在哪个国家，猜错的后果是给
+  **另一个国家的陌生人**发消息。
+- **把目标存起来、等页面加载完再导航**（省掉 `createMainWindow` 那个参数）：那需要一个
+  "页面已经就绪"的判据，而上游页面是 SPA（`did-finish-load` 之后它还会自己导航）—— 猜错的后果
+  是深链接被页面自己的跳转覆盖，表现为"有时候不生效"。宁可多一次加载。
+
+**影响**：
+
+- 新增 `shared/deep-link.ts`（判据、归一化、唯一的 URL 拼接）与 `main/deep-link.ts`（注册 scheme、
+  argv → 号码）。
+- `main/window.ts`：`createMainWindow(chatPhone = null)` 多一个可选参数（收**号码**而不是 URL，
+  因此这个参数结构上不可能变成"任意 URL 的入口"）；`setWindowOpenHandler` 与新的
+  `will-navigate` 各多一条分支；新增 `openChat()`（三条入口共用）。
+- `main/index.ts`：启动时 `createMainWindow(chatTargetFromArgv(process.argv))`；`second-instance`
+  先看有没有目标（有就 `openChat()`，它自己会把窗口调到前台），没有再走原来的 `presentWindow()`。
+- `electron-builder.yml`：`linux.desktop.entry.MimeType: x-scheme-handler/whatsapp;`。
+- `shared/appicon.ts`：`buildDesktopEntry()` 补上 `MimeType=x-scheme-handler/whatsapp;`（scheme 名
+  从 `shared/deep-link.ts` 的 `CHAT_PROTOCOL` 派生，因此三处声明同源）。**这不是"顺手带上"**：
+  那份用户级条目**同名、优先**，会盖掉安装的那份 —— 漏掉它的症状是"换过一次图标的用户，点
+  链接什么都不发生"，而它既不在构建期报错、也不在运行期报错。`%U` 它本来就有。
+- `scripts/verify-package.sh`：桌面条目那一段多两条断言（`MimeType` 与 `Exec` 的 `%U`），对 deb
+  与 AppImage 各跑一次。
+- `scripts/check-capture.ts` 新增「深链接」一节（六条断言：URL 只有一处拼、走的是 `loadURL`、
+  判据不放松、三条入口共用同一个动作、打包那两条声明、用户级那份也带着它们）；单测
+  `test/unit/deep-link.test.ts`（11 例）与 `test/unit/appicon.test.ts` 新的一条。
+- 文档：`docs/usage.md` 第 2 节与第 6 节、`docs/packaging.md` 第 2 节、`ai/CONTEXT.md` 的术语表；
+  `CHANGELOG.md` 记一条。
+
+**待验证**（本机**没有在一台装好包、配好桌面数据库的机器上点过链接**）：
+
+1. **系统关联本身。** `MimeType` 确实进了产物（`pnpm run verify` 断言过），但"双击一个
+   `whatsapp:` 链接时桌面环境是否真的选我们"还取决于桌面数据库（`update-desktop-database`）与
+   用户手上有几个候选程序。判定步骤（`xdg-mime query default x-scheme-handler/whatsapp`）写在
+   `docs/usage.md` 的常见问题里。
+2. **`second-instance` 那份 argv 里到底有没有那个 URL。** Linux 上第二个进程的 argv 由 Chromium
+   的 `ProcessSingleton` 转交；本机只能确认"窗口被调出来"这条老路径仍工作（`pnpm run check` 的
+   单测覆盖了 argv 的解析），"argv 里带着 URL"这一步要一次真实的链接点击。
+
+**已知限制**：
+
+1. **会重新加载页面**（`loadURL`）：正在通话、或者正在编辑一条还没发出去的消息时点深链接，那些
+   状态会没。这是"不注入"的直接代价（理由 1）。
+2. **认不出来的参数只记一条 warn**，然后照常开首页（不给用户弹窗，也不猜）。
+3. **只认 `wa.me` 与 `whatsapp:`**：`api.whatsapp.com/send?phone=…` 这类链接仍然交给系统浏览器。
+4. **深链接归默认实例**：`.desktop` 的 `Exec` 里没有 `--profile`，因此系统级链接总是进默认实例。
+   要用工作实例打开，得自己写 `waachat --profile work --new-chat <号码>`（[ADR-0062](#adr-0062)）。

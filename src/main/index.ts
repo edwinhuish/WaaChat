@@ -19,6 +19,7 @@ import { registerIpcHandlers } from './ipc'
 import { applyLaunchAtLogin } from './integration/login'
 import { applyTrayUnread, createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
+import { chatTargetFromArgv, registerChatProtocol } from './deep-link'
 import { applyLinuxGpuSwitches } from './linux-gpu'
 import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
@@ -35,6 +36,7 @@ import {
   createSettingsWindow,
   getMainWindow,
   isQuitting,
+  openChat,
   presentWindow,
 } from './window'
 
@@ -184,9 +186,26 @@ app.setAppUserModelId(APP_ID)
  * 允许此时窗口还不存在（第二个实例可能比 `whenReady` 更早到达）—— 那就什么都不做，
  * 反正主窗口正在创建的路上。
  */
-app.on('second-instance', () => {
+app.on('second-instance', (_event, argv) => {
   const window = getMainWindow()
   if (window === null) return
+
+  /**
+   * 第二个进程可能是被一个**链接**拉起来的（`xdg-open 'whatsapp://send?phone=…'`、系统的协议
+   * 处理器、文件管理器里的"用 WaaChat 打开"）。单实例锁让它把参数转交给我们，于是"从已经运行的
+   * 实例里点链接"这条路才走得通（[ADR-0083]）。
+   *
+   * ⚠️ 必须在 `presentWindow()` **之前**判断：`openChat()` 自己会把窗口调到前台，而"先把窗口
+   * 调出来、再换成另一个对话"会让用户看到一次多余的跳转。
+   *
+   * 没有目标时仍然是老行为：只是把窗口调出来 —— 用户看得见的只有这一步的结果。
+   */
+  const chatTarget = chatTargetFromArgv(argv)
+  if (chatTarget !== null) {
+    openChat(window, chatTarget)
+    return
+  }
+
   presentWindow(window)
 })
 
@@ -303,6 +322,16 @@ app.whenReady().then(async () => {
   applyLaunchAtLogin(settings.launchAtLogin)
 
   /**
+   * 深链接（[ADR-0083]）：告诉系统"`whatsapp:` 归我们"。
+   *
+   * Linux 上真正建立关联的是安装包里那条 `.desktop` 的 `MimeType=x-scheme-handler/whatsapp;`
+   * （electron-builder.yml 的 `linux.desktop.entry`，`pnpm run verify` 断言它在产物里）；
+   * 这一行是给 Windows / macOS 与"用户自己指定过默认程序"的情况兜底的，失败只记一条 warn
+   * （理由见 main/deep-link.ts）。
+   */
+  registerChatProtocol()
+
+  /**
    * 主题：**必须在任何窗口被创建之前**（[ADR-0078]）。
    *
    * 窗口的 `backgroundColor` 在构造时就取当前主题的底色，而"跟随系统"时那个值取决于
@@ -317,8 +346,13 @@ app.whenReady().then(async () => {
   const filesWindow = createFilesWindow()
   const settingsWindow = createSettingsWindow()
 
-  // 承载上游页面的窗口：**不挂 preload**，见 window.ts 的说明。
-  const mainWindow = createMainWindow()
+  /**
+   * 承载上游页面的窗口：**不挂 preload**，见 window.ts 的说明。
+   *
+   * 深链接（[ADR-0083]）：命令行里带了"要打开哪个对话"时**直接用它开窗口** —— 先开首页再导航
+   * 一次会让用户看到首页闪一下。认不出来时 `chatTargetFromArgv()` 已经记过日志，这里照常开首页。
+   */
+  const mainWindow = createMainWindow(chatTargetFromArgv(process.argv))
 
   // 开发模式：把只读探针装进这扇窗口的控制台（未打包时才生效，见 dev-probe.ts）。
   attachDevProbe(mainWindow)

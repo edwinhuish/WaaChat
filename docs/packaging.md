@@ -84,6 +84,28 @@ getDesktopFileName(fallback = this.packager.executableName) {
 
 开发模式下**不写**这份覆盖：那时的 `Exec` 只能指向 `node_modules` 里的 Electron。
 
+### 深链接：`MimeType` 与 `Exec` 的 `%U` 必须同时在
+
+系统里点一个 `whatsapp:` 链接时能不能落到我们的对话上，取决于**两条**声明，而它们**缺一不可**
+（[ADR-0083](decisions.md#adr-0083)）：
+
+| 键 | 少了它的症状 |
+|---|---|
+| `MimeType=x-scheme-handler/whatsapp;` | 系统不认识这个 scheme ⇒ 点链接**什么都不会发生** |
+| `Exec=… %U` | 关联是通的，但 URL 不会被当参数传进来 ⇒ 应用被拉起来、**停在首页** |
+
+两处都要写：
+
+- **安装产物那份**在 `electron-builder.yml` 的 `linux.desktop.entry`（`MimeType` 显式给了；
+  `%U` 是 electron-builder 自己按 `executableName` 生成的 —— 实测 26.15.3 对 deb 与 AppImage
+  都带上它，因此**不要**手写 `Exec` 去覆盖那个计算值）。
+- **用户级那份**在 `shared/appicon.ts` 的 `buildDesktopEntry()`（用户换过图标之后它生效，
+  同名条目在用户目录里优先）。那份必须**自带**这两个键，否则"换过一次图标"就等于**静默**丢掉
+  深链接 —— 而这恰好不会在构建期或运行期报错。
+
+`scripts/verify-package.sh` 因此对**产物**断言 `MimeType` 与 `Exec` 的 `%U`（deb 与 AppImage
+各一次），`pnpm run selfcheck` 另外断言 `buildDesktopEntry()` 那一份也带着它们。
+
 ## 3. 关键点二：AppImage 不再需要 FUSE2
 
 ```

@@ -5,11 +5,13 @@
  *   - 扩展名判错 → 用户选中一个必然失败的文件，却收到一句看不出问题的报错；
  *   - 裁剪几何算错 → 图标被拉伸变形，或者偏到只剩一角；
  *   - `Exec=` 不引号化 → AppImage 放在带空格的路径下时，从启动器点开没反应；
- *   - 桌面条目漏掉非官方声明 → INV-4 的义务随"用户换了一次图标"一起消失。
+ *   - 桌面条目漏掉非官方声明 → INV-4 的义务随"用户换了一次图标"一起消失；
+ *   - 桌面条目漏掉 `MimeType` / `%U` → 深链接随"用户换了一次图标"一起消失（同样是安静的）。
  */
 
 import { describe, expect, it } from 'vitest'
 
+import { CHAT_PROTOCOL } from '../../src/shared/deep-link'
 import {
   ACCEPTED_ICON_EXTENSIONS,
   APP_ICON_SIZE,
@@ -155,6 +157,14 @@ describe('buildDesktopEntry', () => {
   it('带着 INV-4 要求的非官方声明', () => {
     // 这份覆盖会取代安装时那份条目，因此声明义务要跟着一起走。
     expect(entry.toLowerCase()).toContain('unofficial')
+  })
+
+  it('带着深链接的两条声明（MimeType 与 Exec 的 %U）', () => {
+    // ⚠️ 这两条是"这份覆盖会取代安装时那份条目"的直接后果：漏掉 MimeType 时，**换过图标的**
+    // 用户点一个 wa.me 链接会什么都不发生；漏掉 %U 时应用会被拉起来、停在首页。
+    // 两种都不会报错，也不会在构建期暴露（[ADR-0083]）。
+    expect(entry).toContain(`MimeType=x-scheme-handler/${CHAT_PROTOCOL};\n`)
+    expect(entry).toContain(' %U\n')
   })
 
   it('带着标记行（用于区分"我们写的"与"用户自己写的"）', () => {

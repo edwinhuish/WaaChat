@@ -115,6 +115,15 @@ linux:
       Comment: Unofficial personal-use chat shell with a local media vault
       Categories: Network;InstantMessaging;
       Keywords: chat;messenger;media;archive;
+      # 深链接（[ADR-0083]）。这两处**都要在**，少一个的症状都是"点了链接没反应"：
+      #
+      #   MimeType  声明"`whatsapp:` 这个 scheme 归我们处理"
+      #   Exec %U   让桌面环境把那个 URL 当成**参数**传给我们（argv 里就是它）
+      #
+      # ⚠️ Exec 由 electron-builder 自己生成，这里不覆盖它 —— 覆盖一个由构建器计算的值
+      # 会让 "executableName 改了、Exec 还是旧名字" 变成一次**安静**的桌面集成失效。
+      # scripts/verify-package.sh 因此断言**产物里**这两条都在（而不是断言这份配置）。
+      MimeType: x-scheme-handler/whatsapp;
       # MUST match the value handed to app.setDesktopName() in src/main/index.ts.
       # If these drift, GNOME shows a generic placeholder icon in the dock and the
       # launcher never merges with the running window. scripts/verify-package.sh

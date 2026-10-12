@@ -118,6 +118,7 @@ import {
 import { UNREAD_BADGE_LIMIT, parseUnreadCount, unreadBadgeLabel } from '../src/shared/unread'
 import { drawUnreadBadge } from '../src/shared/tray-badge'
 import { NO_SMOOTH_SCROLLING_SWITCH, applySmoothScrolling } from '../src/main/smooth-scroll'
+import { CHAT_PROTOCOL, parseChatTarget } from '../src/shared/deep-link'
 import {
   accountKey,
   archiveDir,
@@ -1626,7 +1627,7 @@ check(
   '主题在**任何窗口被创建之前**应用，且底色跟着系统主题刷新',
   entrySource.includes('applyTheme(settings.theme)') &&
     entrySource.indexOf('applyTheme(settings.theme)') <
-      entrySource.indexOf('= createMainWindow()') &&
+      entrySource.indexOf('= createMainWindow(') &&
     themeMainSource.includes("nativeTheme.on('updated'"),
   '主题要么排在建窗口之后（启动瞬间的底色是上一次的答案），要么没有订阅系统主题的变化',
 )
@@ -1949,6 +1950,76 @@ check(
     !('notificationsMuted' in DEFAULT_SETTINGS) &&
     !quietCode.includes('saveSettings'),
   '它被写进设置文件了 —— 用户会在几周后才发现自己一直在免打扰里',
+)
+
+/**
+ * 深链接（[ADR-0083]）。
+ *
+ * 这一项的风险全在"**把什么拼进了 URL**"与"**哪几条路共用同一句话**"上：
+ *
+ *   1. 那个 URL 是拿登录态去请求的地址，因此它只能由**一处**拼出来，而且拼进去的形状只能是
+ *      数字。第二个拼接点（或一处直接拼接原样字符串）的症状是"命令行里的值被直接交给了窗口"；
+ *   2. 认不出来必须返回 `null` —— `argv` 里塞满 Chromium 自己的开关与启动路径，猜错的后果是
+ *      "启动时莫名其妙打开了一个对话"；
+ *   3. **三条入口共用同一句话**：启动、再次启动（`second-instance`）、页面里点的链接。少接一条
+ *      的症状是"命令行能开、点链接不能开"这类半截状态；
+ *   4. 打包里那两条声明**缺一不可**：`MimeType` 声明"归我们处理"，`Exec` 的 `%U` 才会把 URL
+ *      当参数传进来。"关联建立了、URL 没传进来"的症状正是"点了链接、应用开在首页"。
+ */
+
+section('深链接')
+
+const deepLinkSource = source('../src/shared/deep-link.ts')
+const deepLinkCode = stripComments(deepLinkSource)
+const mainDeepLinkSource = source('../src/main/deep-link.ts')
+// `windowSource` 与 `builderConfig` 在上面几节已经读过（同一批文件），这里只补一份去注释的。
+const windowCode = stripComments(windowSource)
+const packageChecker = source('./verify-package.sh')
+
+check(
+  '对话 URL 只有一处拼（`chatUrl()`），而且拼进去的只能是数字',
+  deepLinkCode.includes('?phone=${digitOnly(target)}') &&
+    !windowCode.includes('?phone=') &&
+    !stripComments(mainDeepLinkSource).includes('?phone=') &&
+    !stripComments(entrySource).includes('?phone='),
+  '有第二处在拼那个 URL，或者拼进去的不是"只取数字"的值 —— 那是把用户输入直接交给窗口',
+)
+check(
+  'URL 是导航出来的，不是注入出来的（`loadURL`，页面一个字节都不碰）',
+  windowCode.includes('void window.loadURL(chatUrl(') && !windowCode.includes('executeJavaScript'),
+  '深链接绕过了 loadURL —— 那就只剩驱动页面这一条路（INV-1）',
+)
+check(
+  '认不出来就返回 null（号码形状：7–15 位、不以 0 开头；不从任意 URL 里抠数字）',
+  parseChatTarget(['--new-chat', '+86 138-0000-0000']) === '8613800000000' &&
+    parseChatTarget([`whatsapp://send?phone=8613800000000`]) === '8613800000000' &&
+    parseChatTarget([`https://wa.me/8613800000000`]) === '8613800000000' &&
+    parseChatTarget(['--new-chat', '07700900123']) === null &&
+    parseChatTarget(['--new-chat', '--disable-gpu']) === null &&
+    parseChatTarget(['https://example.com/8613800000000']) === null &&
+    parseChatTarget(['--profile', 'work']) === null,
+  '判据被放宽了 —— 放宽的方向是"启动时打开一个谁也没要求的对话"',
+)
+check(
+  '三条入口共用同一个动作：创建窗口时带目标、second-instance、页面里点的链接',
+  entrySource.includes('createMainWindow(chatTargetFromArgv(process.argv))') &&
+    entrySource.includes('openChat(window, chatTarget)') &&
+    (windowCode.match(/openChat\(window, /g) ?? []).length === 2 &&
+    (windowCode.match(/isChatLink\(/g) ?? []).length === 2,
+  '有一条路没接上，或者有一处自己拼了 URL —— 症状是"命令行能开、点链接不能开"',
+)
+check(
+  '打包里那两条声明都在（.desktop 的 MimeType 与 Exec 的 %U）',
+  builderConfig.includes('x-scheme-handler/whatsapp;') &&
+    packageChecker.includes('x-scheme-handler/whatsapp') &&
+    packageChecker.includes("'%U'"),
+  '少一条的症状都是"点了链接没反应" —— 而它在构建期不可见，只能靠产物断言（pnpm run verify）',
+)
+check(
+  '用户换过图标之后生效的那份 `.desktop` 声明了同一个 scheme（它会盖掉安装的那份）',
+  launcherEntry.includes(`MimeType=x-scheme-handler/${CHAT_PROTOCOL};`) &&
+    launcherEntry.includes(' %U'),
+  '那份同名条目在用户目录里优先 —— 漏了 MimeType 的症状是"换过一次图标之后，点链接什么都不发生"',
 )
 
 /**
