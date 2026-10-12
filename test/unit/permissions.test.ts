@@ -84,4 +84,29 @@ describe('isPermissionAllowed', () => {
     // origin 比较是大小写不敏感的（host 部分），这条钉住我们不自己做字符串处理。
     expect(isPermissionAllowed('media', 'https://WEB.WHATSAPP.COM/')).toBe(true)
   })
+
+  describe('免打扰（[ADR-0082]）', () => {
+    const muted = { notificationsMuted: true }
+
+    it('开着时只拒通知，别的权限一个都不受影响', () => {
+      // 只拒通知：顺手把 `media` 也拒掉的后果是通话直接连不上，那是另一件事。
+      expect(isPermissionAllowed('notifications', UPSTREAM, muted)).toBe(false)
+      for (const permission of ['media', 'fullscreen', 'persistent-storage']) {
+        expect(isPermissionAllowed(permission, UPSTREAM, muted)).toBe(true)
+      }
+    })
+
+    it('来源不对时依然是拒绝（免打扰不能把"来源判据"放宽）', () => {
+      expect(isPermissionAllowed('notifications', 'https://example.com/', muted)).toBe(false)
+    })
+
+    it('不传这一份覆盖时行为与从前逐字相同', () => {
+      // 默认值是空对象，因此单测、离线自检这些只看白名单的调用点一行都不用改。
+      expect(isPermissionAllowed('notifications', UPSTREAM)).toBe(true)
+      expect(isPermissionAllowed('notifications', UPSTREAM, {})).toBe(true)
+      expect(isPermissionAllowed('notifications', UPSTREAM, { notificationsMuted: false })).toBe(
+        true,
+      )
+    })
+  })
 })

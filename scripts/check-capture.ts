@@ -1890,6 +1890,68 @@ check(
 )
 
 /**
+ * 「减少打扰」：托盘里的静音与免打扰（[ADR-0082]）。
+ *
+ * 两条断言各自钉住一种**安静**的坏法：
+ *
+ *   1. **免打扰绕过权限层** —— 想"少弹通知"，最顺手的写法是去页面里做点什么（注入、伪造
+ *      Notification、拦系统的通知守护进程）。这里断言它走的正是权限判据，而且**两个处理器
+ *      （请求 / 检查）都传了同一份覆盖**：只接一边的症状是"检查通过、请求被拒"（或反过来），
+ *      而那只在通话那种场合才暴露。
+ *   2. **状态有第二个入口** —— 勾选态是 `Menu.buildFromTemplate` 时读一次的**快照**。
+ *      第二个入口只改状态而不重建菜单时，界面上那个勾会与真实状态不一致，且不报错。
+ *      因此这里断言"改它的只有托盘那一处"。
+ */
+
+section('静音与免打扰')
+
+const quietSource = source('../src/main/quiet.ts')
+const permissionsSource = source('../src/main/permissions.ts')
+
+/** 只在**代码**里找（下面那条否则会把注释里那句"不要覆盖 media"当成违规）。 */
+const quietCode = quietSource.replace(/\/\*[\s\S]*?\*\//g, '')
+
+check(
+  '托盘菜单里有这两项（checkbox，勾选态来自运行期状态）',
+  traySource.includes("label: '静音应用声音'") &&
+    traySource.includes("label: '免打扰（暂停通知）'") &&
+    traySource.includes("type: 'checkbox'") &&
+    traySource.includes('checked: quiet.audioMuted') &&
+    traySource.includes('checked: quiet.notificationsMuted'),
+  '托盘里少了一项 —— 用户就再没有"临时不想被打断"的入口',
+)
+check(
+  '免打扰走的是权限判据，而且两个处理器都传了同一份覆盖（不注入、不伪造通知）',
+  permissionsSource.includes("permission === 'notifications'") &&
+    sessionSource.includes('isPermissionAllowed(permission, contents.getURL(), quietOverride())') &&
+    sessionSource.includes('isPermissionAllowed(permission, requestingOrigin, quietOverride())') &&
+    (sessionSource.match(/quietOverride\(\)/g) ?? []).length >= 2,
+  '有一处权限处理器没带上免打扰，或者它绕开了权限层 —— 症状是"检查通过、请求被拒"',
+)
+check(
+  '只覆盖 notifications：media（麦克风 / 摄像头）必须照旧放行，否则通话连不上',
+  permissionsSource.includes(
+    "options.notificationsMuted === true && permission === 'notifications'",
+  ),
+  '免打扰顺手把别的权限也拒了 —— 通话会因为拿不到麦克风而直接失败',
+)
+check(
+  '改状态的入口只有托盘那一处（勾选态是快照：第二个入口会让"勾"与真实状态不一致）',
+  (traySource.match(/setAudioMuted\(|setNotificationsMuted\(/g) ?? []).length === 2 &&
+    !entrySource.includes('setAudioMuted(') &&
+    !ipcSource.includes('setAudioMuted(') &&
+    !ipcSource.includes('setNotificationsMuted('),
+  '有别的文件在改这两个运行期状态 —— 托盘上那个勾会变得不可信，而且不报错',
+)
+check(
+  '是运行期状态、不落盘（重启复位；一个"静默开着的不打扰开关"比复位更难发现）',
+  !('audioMuted' in DEFAULT_SETTINGS) &&
+    !('notificationsMuted' in DEFAULT_SETTINGS) &&
+    !quietCode.includes('saveSettings'),
+  '它被写进设置文件了 —— 用户会在几周后才发现自己一直在免打扰里',
+)
+
+/**
  * 应用菜单（`src/main/menu.ts`）。
  *
  * 我们不调用 `Menu.setApplicationMenu()` 时，Electron 会装**它自己**那份默认菜单：文案是英文、

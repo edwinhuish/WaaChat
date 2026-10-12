@@ -65,9 +65,25 @@ export const ALLOWED_PERMISSIONS: ReadonlySet<PermissionType> = new Set<Permissi
  * @param permission 请求的权限类型。Electron 会给字符串；上游将来引入的新类型也会原样传进来 ——
  *   不在白名单里的一律拒绝（这正是白名单的意义）
  * @param requestingOrigin 发起方的 origin。空串、非法值、以及非上游源一律拒绝
+ * @param options 运行期的用户覆盖（见下）。**默认空对象**，因此"只看白名单"的调用点与断言
+ *   （单测、离线自检）一行都不用改。
  */
-export function isPermissionAllowed(permission: string, requestingOrigin: string): boolean {
+export function isPermissionAllowed(
+  permission: string,
+  requestingOrigin: string,
+  options: { readonly notificationsMuted?: boolean } = {},
+): boolean {
   if (!isUpstreamOrigin(requestingOrigin)) return false
+
+  /**
+   * **免打扰**（[ADR-0082]）是**运行期**的用户覆盖，与白名单是两件事 —— 但它必须与白名单在
+   * **同一处**判：让两个处理器（请求 / 检查）各自拼一遍"白名单 + 免打扰"，症状就是那一对
+   * 相反的不一致（"检查通过、请求被拒"或反过来），而它恰好只在通话那种场合才暴露出来。
+   *
+   * ⚠️ 只覆盖 `notifications` 一项：免打扰要的是"别弹通知"，而 `media`（麦克风 / 摄像头）
+   * 被顺手拒掉的后果是通话直接连不上 —— 那是另一件事。
+   */
+  if (options.notificationsMuted === true && permission === 'notifications') return false
 
   // 断言只在这里出现，而且只是为了查表：调用方传来的可能是 Electron 不认识的新值，
   // `has()` 对它会自然返回 false。

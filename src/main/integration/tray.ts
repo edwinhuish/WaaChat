@@ -21,6 +21,7 @@ import type { BrowserWindow, MenuItemConstructorOptions, NativeImage } from 'ele
 import { formatWindowTitle, unreadBadgeLabel } from '../../shared/unread'
 import { instanceLabel, usingDefaultInstance } from '../instance'
 import { logger } from '../logger'
+import { quietState, setAudioMuted, setNotificationsMuted } from '../quiet'
 import { presentWindow } from '../window'
 import { effectiveAppIcon } from './appicon'
 import { trayIconWithBadge } from './badge'
@@ -118,6 +119,9 @@ export function createTray(windows: TrayWindows): Tray | null {
 
     const template: MenuItemConstructorOptions[] = []
 
+    // 两个勾选项的初始状态（运行期状态，因此建托盘这一刻读到什么就是什么）。
+    const quiet = quietState()
+
     /**
      * 命名实例在菜单第一行自报家门。
      *
@@ -132,9 +136,35 @@ export function createTray(windows: TrayWindows): Tray | null {
     template.push(
       { label: '显示聊天', click: () => presentWindow(windows.main) },
       /**
-       * 分隔线在这里分的是**两类东西**：上面是应用的主体（那扇承载聊天的窗口），下面是
-       * **我们的本地界面**（两扇窗口，[ADR-0025]）。不分组时三项是同一串，用户看不出
-       * 「设置」是跟着「文件列表」的一类 —— 而它确实不是"另一个聊天入口"。
+       * 「减少打扰」自成一组（[ADR-0082]）。它与上下两组都**不是同类**：那几项说的是
+       * "打开哪扇窗口"，这两项改的是"应用此刻怎么表现"。混在一起时用户会以为「静音」
+       * 也是一个入口。
+       *
+       * 两项都是**运行期**状态（`quiet.ts`，重启复位），因此这里既不落盘、也没有第二条同步
+       * 路径：勾选态就是那个模块里的两个布尔。⚠️ 也正因如此，**改状态的入口只能在这里**
+       * —— 第二个入口若不重建这份菜单，界面上那个勾就会与真实状态不一致（自检断言了这一点）。
+       */
+      { type: 'separator' },
+      {
+        label: '静音应用声音',
+        type: 'checkbox',
+        checked: quiet.audioMuted,
+        click: (item) => {
+          setAudioMuted(windows.main, item.checked === true)
+        },
+      },
+      {
+        label: '免打扰（暂停通知）',
+        type: 'checkbox',
+        checked: quiet.notificationsMuted,
+        click: (item) => {
+          setNotificationsMuted(item.checked === true)
+        },
+      },
+      /**
+       * 分隔线在这里分的是**两类东西**：上面是应用的主体与它的表现，下面是
+       * **我们的本地界面**（两扇窗口，[ADR-0025]）。不分组时它们看起来是同一串，
+       * 用户看不出「设置」是跟着「文件列表」的一类 —— 而它确实不是"另一个聊天入口"。
        */
       { type: 'separator' },
       // 两项各开一扇窗口：本地界面拆开之后，托盘不再需要"打开某一扇再自己找"。

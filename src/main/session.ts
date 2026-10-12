@@ -21,6 +21,7 @@ import { CHANNELS } from './ipc/channels'
 import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
+import { quietState } from './quiet'
 import {
   applySpellcheck,
   onDictionaryStatusChange,
@@ -72,6 +73,17 @@ export function attachDictionaryWatch(ses: Session, getSettings: () => Settings)
   watchSpellcheck(ses, getSettings, announceDictionaryFailure)
 }
 
+/**
+ * 「免打扰」（[ADR-0082]）交给权限判据的那一份运行期覆盖。
+ *
+ * **每次调用都重新读**，而不是在装配时取一份快照：托盘里那个勾随时可以变，而权限判据是
+ * **每一次请求**都要过的一道闸。取快照的症状是"勾了免打扰，通知照旧弹"，且只有在重启之后
+ * 才会"自己好了"—— 那是最难查的一类。
+ */
+function quietOverride(): { readonly notificationsMuted: boolean } {
+  return { notificationsMuted: quietState().notificationsMuted }
+}
+
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
   // 就固定了，运行期改不了 —— 见 shared/types.ts 的 RESTART_REQUIRED_SETTINGS。
@@ -90,7 +102,7 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 一条 `permission denied` 日志是用户能自己判断"这个功能没反应是不是被我们拒了"的唯一线索。
   ses.setPermissionRequestHandler((contents, permission, callback) => {
     const fromUpstream = isUpstreamOrigin(contents.getURL())
-    const allowed = isPermissionAllowed(permission, contents.getURL())
+    const allowed = isPermissionAllowed(permission, contents.getURL(), quietOverride())
 
     if (!allowed) {
       logger.warn('permission denied', { permission, fromUpstream })
@@ -100,9 +112,9 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   })
 
   // 有些 Web API 只做权限**检查**（不发起请求），因此两个处理器必须用同一套判据 ——
-  // 只接一边的症状是"检查通过、请求被拒"或反过来。
+  // 只接一边的症状是"检查通过、请求被拒"或反过来。托盘的「免打扰」也在这套判据里（[ADR-0082]）。
   ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) =>
-    isPermissionAllowed(permission, requestingOrigin),
+    isPermissionAllowed(permission, requestingOrigin, quietOverride()),
   )
 
   /**
