@@ -71,7 +71,7 @@ import { relaunchApp } from '../restart'
 import { getSettings, pendingRestart, updateSettings } from '../settings'
 import { applySpellcheck, dictionaryStatusSnapshot } from '../spellcheck'
 import { applyTheme } from '../theme'
-import { getFilesWindow, getSettingsWindow } from '../window'
+import { applyZoomToAllWindows, getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
 /**
@@ -301,6 +301,15 @@ function applySettings(value: unknown): Settings {
    * 内核不会替我们更新的地方。
    */
   if ('theme' in patch) applyTheme(next.theme)
+
+  /**
+   * 缩放（[ADR-0079]）与前两项同类：**立刻生效、不需要重启**。
+   *
+   * 界面这一侧只知道"用户选了这个倍数"，"怎么落到窗口上"是 `window.ts` 的事（它同时负责建窗口
+   * 时设一次、以及每次页面加载之后再设一次）。这里是另一个入口 —— 菜单里那三项在 `main/zoom.ts`
+   * 里走的是同一条出口。
+   */
+  if ('zoomFactor' in patch) applyZoomToAllWindows()
 
   logger.info('settings updated', { keys: Object.keys(patch).join(',') })
   return presentSettings(next)

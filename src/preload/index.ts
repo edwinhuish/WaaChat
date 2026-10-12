@@ -92,6 +92,17 @@ const bridge: WaaChatBridge = {
     }
   },
 
+  onSettingsChanged: (listener: (settings: Settings) => void) => {
+    // 与上面两条推送同一个理由：不包一层就会把 Electron 的 `event` 交给渲染侧代码。
+    const wrapped = (_event: unknown, settings: Settings): void => listener(settings)
+
+    ipcRenderer.on(CHANNELS.settingsChanged, wrapped)
+
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.settingsChanged, wrapped)
+    }
+  },
+
   getAppVersion: () => ipcRenderer.invoke(CHANNELS.appVersion),
 
   getInstanceInfo: () => ipcRenderer.invoke(CHANNELS.instanceInfo),

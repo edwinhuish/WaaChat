@@ -14,6 +14,7 @@ import { app } from 'electron'
 
 import { normalizeSpellcheckLanguages } from '../shared/language'
 import { normalizeTheme } from '../shared/theme'
+import { normalizeZoomFactor } from '../shared/zoom'
 import {
   DEFAULT_SETTINGS,
   changedRestartKeys,
@@ -82,6 +83,16 @@ function coerce(raw: unknown): Settings {
     logger.warn('settings: adjusted the theme to the known list')
   }
   result['theme'] = theme
+
+  /**
+   * 缩放同一条纪律（[ADR-0079]）：它是个数字，因此 `typeof` 那圈校验放得过 `99` / `0` / `-2`
+   * —— 而内核会把超范围的值**夹到它自己的边界**，症状变成"界面显示 300%、实际 500%"。
+   */
+  const zoomFactor = normalizeZoomFactor(result['zoomFactor'])
+  if (zoomFactor !== result['zoomFactor']) {
+    logger.warn('settings: adjusted the zoom factor to the nearest step', { zoomFactor })
+  }
+  result['zoomFactor'] = zoomFactor
 
   return result as unknown as Settings
 }

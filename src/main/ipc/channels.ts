@@ -57,6 +57,17 @@ export const CHANNELS = {
    * 没有配套的进度推送通道：切换是瞬时的、界面也不再有进度屏（[ADR-0028]）。
    */
   cacheSwitch: 'settings:switch-ciphertext-cache',
+  /**
+   * 设置被**主进程自己**改掉了（[ADR-0079]）。
+   *
+   * 只读、无参数、无副作用的单向推送。目前唯一的来源是应用菜单里的放大 / 缩小 / 实际大小 ——
+   * 那三个动作不经过界面，而设置页上「界面缩放」那一行必须跟着变，否则它会显示一个**陈旧的值**
+   * （界面说的与实际生效的不是同一件事，正是 `setSettings` 返回完整设置要避免的那一档）。
+   *
+   * 推的是整份设置，与 {@link dictionaryStatusChanged} 同一条理由：渲染进程不需要任何增量逻辑。
+   * ⚠️ 界面自己发起的 `settings:set` **不走这条通道** —— 它的返回值里就是完整设置。
+   */
+  settingsChanged: 'settings:changed',
 
   /**
    * 拼写词典的下载状态（[ADR-0071]）。

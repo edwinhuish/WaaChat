@@ -31,6 +31,7 @@ import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
 
 import { logger } from './logger'
 import { presentWindow } from './window'
+import { resetZoom, stepZoom } from './zoom'
 
 /**
  * 菜单要打开的三扇窗口。
@@ -94,6 +95,20 @@ export function installApplicationMenu(windows: AppMenuWindows): void {
     {
       label: '视图',
       submenu: [
+        /**
+         * 缩放三项（[ADR-0079]）。
+         *
+         * **不是** `role: 'zoomIn'` 那一组：role 版直接改内核的缩放级别（每扇窗口各记一份、
+         * 我们既不知道也存不下来），而这里要的是"三扇窗口共用一个设置、并且重启之后还在"。
+         * 点击走 `main/zoom.ts`：算下一档 → 落盘 → 三扇窗口跟上 → 通知设置窗口。
+         *
+         * 快捷键与自带的那份默认菜单**逐字相同**（`CmdOrCtrl+Plus` / `-` / `0`）—— 这套组合
+         * 在浏览器里就是这个意思，换一套反而是我们自己的发明。
+         */
+        { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: () => stepZoom(1) },
+        { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => stepZoom(-1) },
+        { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: () => resetZoom() },
+        { type: 'separator' },
         /**
          * 重新加载页面（Ctrl+R）。
          *

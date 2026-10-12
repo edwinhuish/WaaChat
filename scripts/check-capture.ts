@@ -106,6 +106,16 @@ import {
   normalizeTheme,
 } from '../src/shared/theme'
 import {
+  DEFAULT_ZOOM_FACTOR,
+  MAX_ZOOM_FACTOR,
+  MIN_ZOOM_FACTOR,
+  ZOOM_OPTIONS,
+  ZOOM_STEPS,
+  normalizeZoomFactor,
+  zoomStepDown,
+  zoomStepUp,
+} from '../src/shared/zoom'
+import {
   accountKey,
   archiveDir,
   ciphertextCacheDir,
@@ -1651,6 +1661,83 @@ check(
     settingsViewSource.includes('THEME_OPTIONS') &&
     themeSource.includes('WINDOW_BACKGROUND'),
   '主题那一行不在「外观与启动」，或者视图没有照着共享的选项清单渲染',
+)
+
+/**
+ * 界面缩放（[ADR-0079]：菜单里的放大 / 缩小 / 实际大小 + 设置页那一行）。
+ *
+ * 它比主题多一条**结构性**的风险：缩放有两个入口（设置页走 `settings:set`，菜单走
+ * `main/zoom.ts`），而两条路都要把"三扇窗口跟上"与"设置页那一行不是陈旧的"做完。少任何一半的
+ * 症状都是安静的：菜单按了没反应、或者设置页显示着 100% 而界面明明已经放大。
+ */
+
+section('缩放')
+
+const zoomSource = source('../src/shared/zoom.ts')
+const zoomMainSource = source('../src/main/zoom.ts')
+const appMenuTemplateSource = source('../src/main/menu.ts')
+check(
+  '归一化：认不出的值与超范围的值都收敛到合法档位（内核会把超范围的值静默夹到它自己的边界）',
+  normalizeZoomFactor('1.5') === DEFAULT_ZOOM_FACTOR &&
+    normalizeZoomFactor(Number.NaN) === DEFAULT_ZOOM_FACTOR &&
+    normalizeZoomFactor(99) === MAX_ZOOM_FACTOR &&
+    normalizeZoomFactor(0) === MIN_ZOOM_FACTOR &&
+    normalizeZoomFactor(1.3) === 1.25,
+  '有一个坏值会在界面与内核之间产生分歧（界面显示一个数、内核执行另一个数）',
+)
+check(
+  '设置页的档位由菜单用的那张表派生（两张表不一致的症状是"菜单走到某档、下拉框里没有它"）',
+  ZOOM_OPTIONS.length === ZOOM_STEPS.length &&
+    ZOOM_OPTIONS.every((option, index) => option.value === ZOOM_STEPS[index]) &&
+    zoomSource.includes('ZOOM_STEPS.map(') &&
+    settingsViewSource.includes('ZOOM_OPTIONS'),
+  '设置页的选项与菜单的档位不是同一张表',
+)
+check(
+  '走一档不会原地踏步，到顶 / 到底就停在原位（调用方因此能靠"没变"判断该不该落盘）',
+  zoomStepUp(1) === 1.1 &&
+    zoomStepDown(1) === 0.9 &&
+    zoomStepUp(MAX_ZOOM_FACTOR) === MAX_ZOOM_FACTOR &&
+    zoomStepDown(MIN_ZOOM_FACTOR) === MIN_ZOOM_FACTOR,
+  '档位推进的判据不对 —— 菜单会点一下没反应，或者写出一个表里没有的值',
+)
+check(
+  '应用菜单里有三个缩放项，快捷键与自带默认菜单逐字相同（这套组合在浏览器里就是这个意思）',
+  appMenuTemplateSource.includes("accelerator: 'CmdOrCtrl+Plus'") &&
+    appMenuTemplateSource.includes("accelerator: 'CmdOrCtrl+-'") &&
+    appMenuTemplateSource.includes("accelerator: 'CmdOrCtrl+0'") &&
+    appMenuTemplateSource.includes('stepZoom(1)') &&
+    appMenuTemplateSource.includes('stepZoom(-1)') &&
+    appMenuTemplateSource.includes('resetZoom()'),
+  '缩放三项从菜单里消失了 —— 而菜单是"字太小"的人第一件会去按的东西',
+)
+check(
+  '两扇窗口构造都按设置设缩放，并在每次加载之后再设一次（缩放级别在内核里是按 host 记的）',
+  (windowSource.match(/followZoomSetting\(window\)/g) ?? []).length >= 2 &&
+    windowSource.includes("on('did-finish-load'") &&
+    windowSource.includes('export function applyZoomToAllWindows'),
+  '有窗口没跟上缩放，或者只在建窗口时设过一次（页面一导航就回到 100%）',
+)
+check(
+  '两个入口都让三扇窗口跟上，且都不在"重启后生效"名单里',
+  ipcSource.includes("if ('zoomFactor' in patch) applyZoomToAllWindows()") &&
+    zoomMainSource.includes('applyZoomToAllWindows()') &&
+    !RESTART_REQUIRED_SETTINGS.includes('zoomFactor'),
+  '有一个入口只改了设置值而没有落到窗口上 —— 那正是"改了没反应"',
+)
+check(
+  '菜单改完设置会推给设置窗口（否则那一行显示的是陈旧的值）—— 推送三处齐全',
+  channelsSource.includes("settingsChanged: 'settings:changed'") &&
+    bridgeSource.includes('onSettingsChanged(') &&
+    preloadSource.includes('CHANNELS.settingsChanged') &&
+    zoomMainSource.includes('CHANNELS.settingsChanged'),
+  '桥 / preload / 通道表 / 主进程发送方这一条链少了某一处（症状是设置页那一行永远停在旧值）',
+)
+check(
+  '缩放那一行在「外观与启动」区域，且主进程在读设置的那一刻收敛它',
+  sectionOfRow('zoomFactor')?.title === '外观与启动' &&
+    mainSettingsSource.includes('normalizeZoomFactor('),
+  '这一行不在「外观与启动」，或者读设置时没有收敛',
 )
 
 /**

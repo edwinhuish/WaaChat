@@ -45,6 +45,7 @@ import {
   type SizeLimitKey,
 } from '../../shared/size-limit'
 import { THEME_OPTIONS, type ThemeSource } from '../../shared/theme'
+import { ZOOM_OPTIONS } from '../../shared/zoom'
 import {
   RESTART_REQUIRED_SETTINGS,
   type AppIconState,
@@ -370,6 +371,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (key === 'languageNotice') return languageNoticeRow()
     if (key === 'spellcheckLanguages') return spellcheckLanguagesRow(current)
     if (key === 'theme') return themeRow(current)
+    if (key === 'zoomFactor') return zoomRow(current)
 
     const toggle = TOGGLES.find((spec) => spec.key === key)
     if (toggle !== undefined) return toggleRow(toggle, current)
@@ -425,6 +427,52 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         h('div', {
           class: 'hint',
           text: '改的是 WaaChat 自己的窗口（立即生效）。内嵌的网页版另有一处自己的主题设置，它在"跟随系统"时才会跟着这里变 —— 我们不去碰页面里的那个选择。',
+        }),
+      ),
+    )
+  }
+
+  /**
+   * 界面缩放那一行（[ADR-0079]）。
+   *
+   * 与主题同一形状（原生单选下拉框），选项与**应用菜单里的档位**是同一张表
+   * （`shared/zoom.ts` 的 `ZOOM_OPTIONS`）—— 两处各写一张表的症状是"菜单走到 110% 时下拉框里
+   * 没有这一项"，于是它显示成表里的第一项：一个安静的谎（界面说 50%、实际是 110%）。
+   *
+   * 提示里要把快捷键写出来：菜单栏默认隐藏（`autoHideMenuBar`），而"字太小"的人常常是先按
+   * `Ctrl` + `+` 试一下，找不到才会来设置里翻。
+   */
+  function zoomRow(current: Settings): HTMLElement {
+    const select = h('select', {
+      title: '界面缩放',
+      dataRole: 'zoom-select',
+      onChange: (event) => {
+        const value = Number((event.target as HTMLSelectElement).value)
+        void patch({ zoomFactor: value })
+      },
+    })
+
+    for (const option of ZOOM_OPTIONS) {
+      select.append(
+        h('option', {
+          value: String(option.value),
+          text: option.label,
+          selected: option.value === current.zoomFactor,
+        }),
+      )
+    }
+
+    return h(
+      'div',
+      { class: 'setting' },
+      select,
+      h(
+        'div',
+        { class: 'meta' },
+        h('div', { class: 'label', text: '界面缩放' }),
+        h('div', {
+          class: 'hint',
+          text: '三扇窗口一起放大或缩小（立即生效，不用重启）。也可以直接用 Ctrl + +（Ctrl + =）、Ctrl + -、Ctrl + 0 —— 在任何一扇窗口里都生效，与这里选的是同一个值。',
         }),
       ),
     )
@@ -1438,6 +1486,18 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     render()
   })
 
+  /**
+   * 设置也可能被**主进程自己**改掉（[ADR-0079]）：菜单里的放大 / 缩小 / 实际大小不经过这一页，
+   * 而「界面缩放」那一行必须跟着变 —— 否则它会显示一个陈旧的值，用户再看它一眼只会更糊涂
+   * （"我明明按住 `Ctrl` 放大了三次"）。
+   *
+   * 推来的是整份设置，因此直接换掉就够（与词典状态那一条同样的处理）。
+   */
+  const disposeSettingsChanged = bridge().onSettingsChanged((next) => {
+    settings = next
+    render()
+  })
+
   return {
     async refresh(): Promise<void> {
       /**
@@ -1487,6 +1547,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     dispose(): void {
       disposeMigration()
       disposeDictionaryStatus()
+      disposeSettingsChanged()
 
       /**
        * 词典对话框挂在 `document.body` 上，不随 `root` 的重画消失 —— 窗口卸载时要自己收掉，

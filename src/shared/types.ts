@@ -11,6 +11,7 @@
 
 import { DEFAULT_SPELLCHECK_LANGUAGES } from './language'
 import { DEFAULT_THEME, type ThemeSource } from './theme'
+import { DEFAULT_ZOOM_FACTOR } from './zoom'
 
 // ---------------------------------------------------------------------------
 // 归档
@@ -118,6 +119,13 @@ export interface Settings {
    */
   readonly theme: ThemeSource
   /**
+   * 界面缩放倍数（`1` = 100%，[ADR-0079]）。
+   *
+   * 一个倍数而不是"第几档"：设置文件是给人看、给人改的。合法档位与范围在 `shared/zoom.ts`
+   * （读设置时按那里收敛）。三扇窗口都按它缩放 —— 它是"界面缩放"，不是"那个页面的缩放"。
+   */
+  readonly zoomFactor: number
+  /**
    * 是否启用内核自带的拼写检查（[ADR-0061]）。
    *
    * 关掉它是一个**真实的**选择，而不只是偏好：词典由内核按需从第三方下载（默认是 Google
@@ -144,6 +152,7 @@ export const DEFAULT_SETTINGS: Settings = {
   enableCiphertextCache: true,
   launchAtLogin: false,
   theme: DEFAULT_THEME,
+  zoomFactor: DEFAULT_ZOOM_FACTOR,
   spellcheck: true,
   spellcheckLanguages: DEFAULT_SPELLCHECK_LANGUAGES,
 }

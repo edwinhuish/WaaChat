@@ -108,6 +108,7 @@ waachat/
 │   │   ├── context-menu.ts         承载页面的右键菜单：拼写建议 + 编辑动作（ADR-0061）
 │   │   ├── menu.ts                 应用菜单：替换 Electron 的默认菜单（ADR-0077）
 │   │   ├── theme.ts                主题落到 Electron 上：themeSource + 窗口底色跟着系统变（ADR-0078）
+│   │   ├── zoom.ts                 菜单里的缩放动作：算下一档 → 落盘 → 窗口跟上 → 通知设置窗口（ADR-0079）
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
 │   │   ├── errors.ts               失败原因取 errno（fs 错误的 name 恒为 `Error`，说不清处境）
@@ -182,6 +183,7 @@ waachat/
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
 │       ├── theme.ts                主题的取值与窗口底色（纯函数，可单测；与 styles.css 的 --bg 同源）
+│       ├── zoom.ts                 界面缩放的档位、收敛与百分比文案（纯函数，可单测；菜单与设置页共用）
 │       ├── upstream.ts             "上游域"判据：站内/站外与权限来源（解析 URL 后比 host / origin）
 │       ├── user-agent.ts           UA 构造（纯函数，可单测）
 │       └── vite-assets.d.ts        `?raw` 导入的类型声明

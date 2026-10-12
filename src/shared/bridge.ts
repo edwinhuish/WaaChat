@@ -151,6 +151,18 @@ export interface WaaChatBridge {
   onDictionaryStatusChange(listener: (statuses: DictionaryStatusMap) => void): () => void
 
   /**
+   * 订阅"设置被主进程自己改掉了"（[ADR-0079]）。
+   *
+   * 目前唯一的来源是应用菜单里的放大 / 缩小 / 实际大小：那三个动作不经过界面，而设置页上
+   * 「界面缩放」那一行必须跟着变 —— 否则它会显示一个**陈旧的值**，那正是
+   * {@link setSettings} 返回完整设置要避免的那件事（界面说的与实际生效的必须是同一件事）。
+   *
+   * 推的是**整份设置**，与 {@link onDictionaryStatusChange} 同一条理由：渲染进程因此不需要
+   * 任何增量合并，也就不会出现"两边各记一半"。返回取消订阅函数。
+   */
+  onSettingsChanged(listener: (settings: Settings) => void): () => void
+
+  /**
    * 切换密文磁盘缓存。
    *
    * `target` 是用户拨向的那一边。主进程会在一次事务里转换缓存文件，全部成功之后才提交

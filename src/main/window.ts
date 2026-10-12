@@ -22,6 +22,7 @@ import { isUpstreamPage } from '../shared/upstream'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { instanceLabel, sessionPartition } from './instance'
 import { logger } from './logger'
+import { getSettings } from './settings'
 import { currentWindowBackground } from './theme'
 
 /** 左上角符合 GNOME 习惯的默认尺寸；上游页面是双栏布局，窄了会很难用。 */
@@ -83,6 +84,39 @@ function hideOnClose(window: BrowserWindow): void {
     event.preventDefault()
     window.hide()
   })
+}
+
+/**
+ * 让这一扇窗口的缩放跟着设置走（[ADR-0079]）。
+ *
+ * 两件事，缺一不可：
+ *
+ *  1. **建窗口时立刻设一次**。页面还没有 host，这一次落在会话分区的"默认缩放级别"上 ——
+ *     于是**第一帧**就是对的，而不是先按 100% 画出来再跳一下（那一次跳动在深色大页面上很显眼）。
+ *  2. **每次页面加载完之后再设一次**。缩放级别在内核里是**按 host** 记的，也随文档重新提交而
+ *     重算；我们的设置必须是**最后说话**的那一个（它是唯一的事实源），因此每一次导航都补一次。
+ *
+ * ⚠️ 只在这里设，别在窗口里各处再设一遍：同一件事两处各写一份，症状是"改了设置但只有一扇窗口
+ * 跟上"（与 UA 那条纪律同形，见 `createMainWindow()` 里那段说明）。
+ */
+function followZoomSetting(window: BrowserWindow): void {
+  setZoomNow(window)
+  window.webContents.on('did-finish-load', () => setZoomNow(window))
+}
+
+function setZoomNow(window: BrowserWindow): void {
+  if (window.isDestroyed()) return
+  window.webContents.setZoomFactor(getSettings().zoomFactor)
+}
+
+/**
+ * 三扇窗口一起跟上（改设置时、或菜单里按了放大 / 缩小 / 实际大小）。
+ *
+ * 遍历 `getAllWindows()` 而不是持有三份引用：这个函数在任何时刻都可能被调用，而"当前有哪些
+ * 窗口"不该由这里再维护一份（引用归 `mainWindow` / `filesWindow` / `settingsWindow` 那三个变量）。
+ */
+export function applyZoomToAllWindows(): void {
+  for (const window of BrowserWindow.getAllWindows()) setZoomNow(window)
 }
 
 /**
@@ -168,6 +202,8 @@ export function createMainWindow(): BrowserWindow {
 
   hideOnClose(window)
 
+  followZoomSetting(window)
+
   mainWindow = window
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
@@ -230,6 +266,8 @@ function createLocalWindow(options: {
 
   hideOnClose(window)
 
+  followZoomSetting(window)
+
   return window
 }
 
@@ -254,7 +292,8 @@ export function createFilesWindow(): BrowserWindow {
  * 设置窗口：偏好设置。
  *
  * 它原来还挂着顶栏的"接管状态"标签（[ADR-0025] 理由 5），那条顶栏已经去掉（[ADR-0042]）——
- * 接管失效改由系统通知告知，于是这一扇窗口不再接收任何推送。
+ * 接管失效改由系统通知告知。它现在收到的推送只有两类，都是**只长在这一页上**的东西：
+ * 词典的下载状态（[ADR-0071]）与"设置被主进程自己改掉了"（[ADR-0079]，来源是菜单里的缩放）。
  */
 export function createSettingsWindow(): BrowserWindow {
   const window = createLocalWindow({ title: `${instanceLabel()} — 设置`, entry: SETTINGS_ENTRY })
