@@ -120,6 +120,7 @@ import { drawUnreadBadge } from '../src/shared/tray-badge'
 import { NO_SMOOTH_SCROLLING_SWITCH, applySmoothScrolling } from '../src/main/smooth-scroll'
 import { FULLSCREEN_HINT_BODY, trackFullscreenHint } from '../src/shared/notice'
 import { CHAT_PROTOCOL, parseChatTarget } from '../src/shared/deep-link'
+import { denialKey, trackDenial } from '../src/shared/permission-log'
 import {
   accountKey,
   archiveDir,
@@ -721,6 +722,56 @@ check(
 check(
   `放行的类型恰好 ${String(ALLOWED_PERMISSIONS.size)} 项（加一项要改断言，也就必须说清理由）`,
   ALLOWED_PERMISSIONS.size === 5,
+)
+
+/**
+ * 拒绝日志的簿记（[ADR-0085]）。
+ *
+ * 这三条守的是"取证"这件事本身：判据放宽需要证据（[ADR-0035] 的取证清单），而证据只能来自
+ * 日志。日志坏掉有两种相反的方式 —— 被重复行挤掉，或者少记了一条路（有些 API **只检查不请求**，
+ * 那种情形下"检查被拒"是唯一的信号）。
+ */
+const persistedCheck = denialKey({
+  path: 'check',
+  permission: 'persistent-storage',
+  fromUpstream: true,
+})
+
+/**
+ * `session.ts` 在这里**单独读一份**：下面几节那个 `sessionSource` 在这一节之后才声明，而这几条
+ * 断言要跟着权限判据走（它们守的是同一件事：判据放宽需要证据，而证据只能从日志里来）。
+ */
+const permissionSessionSource = source('../src/main/session.ts')
+
+check(
+  '拒绝日志会去重（内核反复检查同一项时不该逐条记，否则真正有用的那几行会被挤掉）',
+  trackDenial(new Set(), { path: 'check', permission: 'persistent-storage', fromUpstream: true })
+    .log &&
+    !trackDenial(new Set([persistedCheck]), {
+      path: 'check',
+      permission: 'persistent-storage',
+      fromUpstream: true,
+    }).log,
+  '去重失效 —— 取证时会在一堆重复行里找不到那句"上游第一次请求了什么"',
+)
+check(
+  '两条路各留各的痕：**检查**被拒也记（有些 API 只检查、不请求）',
+  permissionSessionSource.includes("reportDenial('request'") &&
+    permissionSessionSource.includes("reportDenial('check'") &&
+    permissionSessionSource.includes("'permission check denied'"),
+  '检查那条路没留痕 —— 症状是"用户报点了没反应、而日志里一片干净"，我们会去别处找原因',
+)
+check(
+  '键里带着三个维度（一次第三方检查不该把上游那条真正的证据静音）',
+  trackDenial(
+    new Set([denialKey({ path: 'check', permission: 'display-capture', fromUpstream: false })]),
+    {
+      path: 'request',
+      permission: 'display-capture',
+      fromUpstream: true,
+    },
+  ).log,
+  '键里少了维度 —— 第三方检查过同一项权限，上游那次真正的请求就不再出现在日志里',
 )
 
 // ---------------------------------------------------------------------------

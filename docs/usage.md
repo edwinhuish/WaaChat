@@ -515,6 +515,19 @@ waachat 2>&1 | grep -i vulkan   # 应当看不到那行 ERROR（我们的开关�
 WARN permission denied {"permission":"geolocation","fromUpstream":true}
 ```
 
+还有一条**很容易被忽略**的：
+
+```
+WARN permission check denied {"permission":"display-capture","fromUpstream":true}
+```
+
+两者的区别是上游做的事不同：`permission denied` = 它**请求**了这项权限；`permission check denied`
+= 它只**查**了一下（有些 Web API 只检查不请求）。查一次就放弃时，前一条永远不会出现 ——
+因此排查"点了没反应"时**两条都要看**（[ADR-0085](decisions.md#adr-0085)）。
+
+⚠️ 两条日志都是**去重的**：同一项权限 + 同一条路，**每次运行只记一次**。因此想取证请**先重启
+应用**，再复现那个功能（做法见 `ai/TASKS.md` 的 T14）。
+
 放行的只有这五项（都只对上游源生效）：
 
 | 权限 | 对应功能 |

@@ -10,6 +10,7 @@
 
 import type { Session } from 'electron'
 
+import { trackDenial, type DenialPath } from '../shared/permission-log'
 import type { Settings } from '../shared/types'
 import { isUpstreamOrigin } from '../shared/upstream'
 import { buildUserAgent, isCleanUserAgent } from '../shared/user-agent'
@@ -84,6 +85,36 @@ function quietOverride(): { readonly notificationsMuted: boolean } {
   return { notificationsMuted: quietState().notificationsMuted }
 }
 
+/**
+ * 已经记过的"拒绝组合"（规则与理由见 `shared/permission-log.ts`）。
+ *
+ * 模块级可变状态：两个处理器必须共用同一份"已经说过了"，而每个进程只承载一个实例，因此不需要
+ * 按会话分。与 `notice.ts` 里那几个 `announced*` 是同一种东西。
+ */
+let seenDenials: ReadonlySet<string> = new Set()
+
+/**
+ * 记一条"我们拒了某个权限"。
+ *
+ * ⚠️ 级是 `warn`：这几行是**取证**用的（[ADR-0035] 的取证清单、[ADR-0085] 的屏幕共享），而它
+ * 同时是用户能自己判断"这个功能没反应是不是被我们拒了"的唯一线索 —— 写在 debug 级等于让它消失
+ * （默认级别下看不到）。
+ *
+ * 两条路各用一条消息：它们对应上游完全不同的行为（真的请求 vs 只检查），混成一条会让我们在
+ * 取证时读不出卡在哪一环。
+ */
+function reportDenial(path: DenialPath, permission: string, fromUpstream: boolean): void {
+  const tracking = trackDenial(seenDenials, { path, permission, fromUpstream })
+  seenDenials = tracking.seen
+
+  if (!tracking.log) return
+
+  logger.warn(path === 'request' ? 'permission denied' : 'permission check denied', {
+    permission,
+    fromUpstream,
+  })
+}
+
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
   // 这一次性决策（权限、密文缓存开关）用当时的取值。订阅层次的选择在会话建立时
   // 就固定了，运行期改不了 —— 见 shared/types.ts 的 RESTART_REQUIRED_SETTINGS。
@@ -104,18 +135,26 @@ export async function configureSession(ses: Session, getSettings: () => Settings
     const fromUpstream = isUpstreamOrigin(contents.getURL())
     const allowed = isPermissionAllowed(permission, contents.getURL(), quietOverride())
 
-    if (!allowed) {
-      logger.warn('permission denied', { permission, fromUpstream })
-    }
+    if (!allowed) reportDenial('request', permission, fromUpstream)
 
     callback(allowed)
   })
 
   // 有些 Web API 只做权限**检查**（不发起请求），因此两个处理器必须用同一套判据 ——
   // 只接一边的症状是"检查通过、请求被拒"或反过来。托盘的「免打扰」也在这套判据里（[ADR-0082]）。
-  ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) =>
-    isPermissionAllowed(permission, requestingOrigin, quietOverride()),
-  )
+  ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) => {
+    const fromUpstream = isUpstreamOrigin(requestingOrigin)
+    const allowed = isPermissionAllowed(permission, requestingOrigin, quietOverride())
+
+    /**
+     * ⚠️ 这一条是**新增**的，而且是"共享屏幕到底卡在哪一环"这个问题的关键证据（[ADR-0085]）：
+     * 检查被拒时我们从前**什么都不说** —— 于是当某个 API 只检查、不请求时，用户报"点了没反应"
+     * 而日志里一片干净，我们会以为上游根本没试过，接着去别处找原因。
+     */
+    if (!allowed) reportDenial('check', permission, fromUpstream)
+
+    return allowed
+  })
 
   /**
    * 屏幕共享。
