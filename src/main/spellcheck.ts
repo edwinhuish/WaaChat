@@ -23,6 +23,7 @@ import type { Session } from 'electron'
 import {
   dictionaryKey,
   dictionaryRetryDelay,
+  languagesWithoutStatus,
   nextDictionaryStatus,
   type DictionaryEvent,
   type DictionaryStatus,
@@ -216,6 +217,39 @@ function scheduleDictionaryRetry(
 export function retryDictionaryDownload(ses: Session, getSettings: () => Settings): void {
   ses.setSpellCheckerLanguages([])
   applySpellcheck(ses, getSettings())
+}
+
+/**
+ * 启动时的**兜底重播**（[ADR-0073]）。
+ *
+ * 主修法是"订阅紧跟建会话"（`session.ts` 的 {@link attachDictionaryWatch}）：实测内核在
+ * `session.fromPartition()` 之后 **4ms** 就发出了 `spellcheck-dictionary-initialized`，而那
+ * 四个事件**不会重发** —— 订阅晚一步（原来它排在 `configureSession()` 里，前面隔着一次读 cookie
+ * 的 `await`，实测约 8ms）就永远收不到，那几格只会停在**空槽**，与"这门词典本来就不需要下载"
+ * 看不出区别。
+ *
+ * 这一支是第二道：装配完语言之后回头看一眼"该有状态的语言里还有谁没有"。有就重播一次 —— 杠杆
+ * 复用 {@link retryDictionaryDownload}（清空再设回，实测有效），因此**只有漏听**这一种情况会
+ * 命中（正在下载的已经留下 `download-begin`），不会打断谁。
+ *
+ * 前提与 {@link applySpellcheck} 的两处早退一致：内核还没给出清单、或一门都装不上时，这里不加
+ * 干预（那两种情况各自有更合适的说法，见那两个分支）。
+ */
+export function replayMissingDictionaryStatus(ses: Session, getSettings: () => Settings): void {
+  const settings = getSettings()
+  if (!settings.spellcheck) return
+
+  const available = ses.availableSpellCheckerLanguages
+  if (available.length === 0) return
+
+  const { applied } = resolveSpellcheckLanguages(settings.spellcheckLanguages, available)
+  const missing = languagesWithoutStatus(applied, dictionaryStatusSnapshot())
+  if (missing.length === 0) return
+
+  logger.info('spellcheck: re-announcing dictionaries loaded before we were listening', {
+    languages: missing.join(','),
+  })
+  retryDictionaryDownload(ses, getSettings)
 }
 
 /** 这一门已经好了（拿到字节或者装载完成）—— 把它的失败计数清掉。 */

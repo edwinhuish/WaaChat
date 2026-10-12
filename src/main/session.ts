@@ -21,7 +21,12 @@ import { CHANNELS } from './ipc/channels'
 import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
 import { isPermissionAllowed } from './permissions'
-import { applySpellcheck, onDictionaryStatusChange, watchSpellcheck } from './spellcheck'
+import {
+  applySpellcheck,
+  onDictionaryStatusChange,
+  replayMissingDictionaryStatus,
+  watchSpellcheck,
+} from './spellcheck'
 import { getSettingsWindow } from './window'
 
 /**
@@ -45,6 +50,26 @@ function applyUserAgent(ses: Session): void {
   // 记的是"UA 干净吗"，不是整条头：上游会据此判定浏览器是否受支持，而它是这一类改动最容易
   // 静默坏掉的地方（`Electron/` 标记一旦漏出去，页面会出现什么行为不由我们决定）。
   logger.info('session: user agent applied', { userAgentClean: isCleanUserAgent(userAgent) })
+}
+
+/**
+ * 订阅与词典有关的那四个事件（[ADR-0073]）。
+ *
+ * ⚠️ **必须在会话被创建之后立刻调用，早于任何 `await`。** 这一条是实测出来的时序：词典已经在
+ * 磁盘上时，内核在 `session.fromPartition()` 之后 **4ms** 就把
+ * `spellcheck-dictionary-initialized` 发出去了（两趟本机探针），而那四个事件**不会重发**
+ * —— 把同一个语言列表再设一遍，内核什么都不做（[ADR-0072] 实测）。
+ *
+ * 它原来排在 `configureSession()` 里，也就是 `applySpellcheck()` 之后；而那前面隔着一次
+ * `await resolveAccountKey()`（一个 cookie 的 IPC 往返，实测约 8ms）。晚了这几毫秒的代价不是
+ * 报错，而是**那几格永远是空槽** —— 而"空槽"与"这门词典本来就不需要下载"在界面上长得一模一样，
+ * 用户读到的就是"词典一直没下载"。安装版 v1.1.0 的日志里因此**一条词典事件都没有**。
+ *
+ * 通知在这里**注入**（而不是让 `spellcheck.ts` 自己 import `notice.ts`）：那个文件只
+ * `import type` electron，是本模块能把它读进离线自检的前提，理由写在它文件头。
+ */
+export function attachDictionaryWatch(ses: Session, getSettings: () => Settings): void {
+  watchSpellcheck(ses, getSettings, announceDictionaryFailure)
 }
 
 export async function configureSession(ses: Session, getSettings: () => Settings): Promise<void> {
@@ -104,13 +129,17 @@ export async function configureSession(ses: Session, getSettings: () => Settings
    * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效
    * （拼写检查是每一次输入时向内核要素材的，不是页面自己渲染的），因此它不需要重载页面。
    *
-   * 紧随其后的订阅补三个窟窿，三个都不会报错（见 `spellcheck.ts` 的 {@link watchSpellcheck}）：
-   * 启动时内核**还没给出词典清单**的话，用户勾的那一组就没被交上去；词典**下载失败**时，
-   * 除了这里之外没有任何地方能看出来；而"正在下 / 下好了"这两种状态只有订阅了事件才存在
-   * —— 设置页上那一格据此显示进度（[ADR-0071]）。
+   * 事件订阅**不在这里** —— 它必须早得多（见 {@link attachDictionaryWatch}，[ADR-0073]），
+   * 因此由 `index.ts` 在会话被创建之后立刻接上。这一层只负责把用户勾的那一组交上去。
    */
   applySpellcheck(ses, settings)
-  watchSpellcheck(ses, getSettings, announceDictionaryFailure)
+
+  /**
+   * 兜底重播（[ADR-0073]）：回头看一眼"该有状态的语言里还有谁没有"。正常路径下**一个都没有**
+   * —— 订阅早于内核那四条通知，因此它们都听见了；这一支只兜住"漏听"这一种情况，把那一格从
+   * 空槽救成绿条（或红条），而不是让它在整个运行期里都读作"没下载"。
+   */
+  replayMissingDictionaryStatus(ses, getSettings)
 
   /**
    * 把词典状态的每一次变化推给**设置窗口**（[ADR-0071]）。进度条长在设置页里（[ADR-0025]），

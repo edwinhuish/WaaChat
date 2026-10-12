@@ -113,3 +113,26 @@ export function dictionaryKey(languageCode: string): string {
  * 在日志与断言里读）。渲染进程按 `dictionaryKey()` 取，取不到按 `unknown` 处理。
  */
 export type DictionaryStatusMap = Readonly<Record<string, DictionaryStatus>>
+
+/**
+ * 这一组语言里，哪些**还没有任何状态**（= 内核那条通知没被我们听到）。
+ *
+ * 用途只有一个：启动时的那次兜底重播（[ADR-0073]）。这张状态表只由四个事件喂，而事件**不会
+ * 重发**（把同一个语言列表再设一遍是 no-op，[ADR-0072] 实测）—— 于是只要"内核装载磁盘上已经
+ * 有的那几门"发生在订阅之前，那几格就永远是空的，而**空槽与"这门词典本来就不需要下载"在界面
+ * 上长得一模一样**。判据因此只能是"该有状态的语言里，还有谁没有"。
+ *
+ * 为什么"有状态"就算数（哪怕只是 `download-begin`）：正在下载的那一门已经听到消息了，而重播的
+ * 杠杆是"把**整组**语言清空再设回去"（`main/spellcheck.ts` 的 `retryDictionaryDownload()`）
+ * —— 对已经在下的一门再播一次会把它的下载打断。
+ *
+ * 纯函数：调用方把 `applied`（真正交给内核的那一组）与一份状态快照传进来。⚠️ 传入的那个列表的
+ * 码**不必**归一（查询这一侧会过 {@link dictionaryKey}），但**状态表的键假定已经归一**
+ * —— 写入方（`main/spellcheck.ts`）每一处都过它，这正是"两张表要用同一个键"那条纪律的落点。
+ */
+export function languagesWithoutStatus(
+  languages: readonly string[],
+  statuses: DictionaryStatusMap,
+): string[] {
+  return languages.filter((language) => statuses[dictionaryKey(language)] === undefined)
+}

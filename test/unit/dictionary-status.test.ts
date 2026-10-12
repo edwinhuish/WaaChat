@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import {
   dictionaryKey,
   dictionaryRetryDelay,
+  languagesWithoutStatus,
   nextDictionaryStatus,
   type DictionaryEvent,
   type DictionaryStatus,
@@ -97,5 +98,50 @@ describe('dictionaryKey', () => {
   it('已经是小写的码原样返回（`de` / `fr` / `ko` 这类不变的码不受影响）', () => {
     expect(dictionaryKey('de')).toBe('de')
     expect(dictionaryKey('pt-br')).toBe('pt-br')
+  })
+})
+
+/**
+ * 启动时那次"兜底重播"的判据（[ADR-0073]）。
+ *
+ * 为什么值得测：它决定**要不要**对整组语言重播一次，而重播的杠杆是"清空再设回"。判据写松了会
+ * 把正在下载的那几门打断（清空整组时它们的下载一起没了）；写紧了则救不回"漏听"的那几格 ——
+ * 两种错法都只表现成"那一格颜色不对"，不会报错。
+ */
+describe('languagesWithoutStatus', () => {
+  it('一条消息都没听到的语言才算"缺状态"', () => {
+    expect(languagesWithoutStatus(['en-US', 'es'], {})).toEqual(['en-US', 'es'])
+  })
+
+  it('已经听到消息的（下载中 / 就绪 / 失败）都不算缺 —— 对这些重播会打断正在进行的下载', () => {
+    expect(
+      languagesWithoutStatus(['en-US', 'es', 'de'], {
+        'en-us': 'ready',
+        es: 'downloading',
+        de: 'failed',
+      }),
+    ).toEqual([])
+  })
+
+  it('只挑出缺的那几个，且保持传入的次序', () => {
+    expect(languagesWithoutStatus(['de', 'en-US', 'fr'], { 'en-us': 'ready' })).toEqual([
+      'de',
+      'fr',
+    ])
+  })
+
+  it('查表用的是归一之后的键：传进来的语言码换个大小写也认得出来', () => {
+    expect(languagesWithoutStatus(['EN-us'], { 'en-us': 'ready' })).toEqual([])
+  })
+
+  it('状态表那一侧的键假定**已经**归一（写入方每次都过 `dictionaryKey()`）', () => {
+    // 这一条钉的是"两份字符串必须经过同一个归一"这件事：表里若留着没归一的形状（`EN-US`），
+    // 查 `en-US` 就会落空。写入方（`main/spellcheck.ts`）全部经过 `dictionaryKey()`，
+    // 因此这不是一条缺陷，而是一条**前提** —— 谁绕过它谁就会让那一格永远停在空槽。
+    expect(languagesWithoutStatus(['en-US'], { 'EN-US': 'ready' })).toEqual(['en-US'])
+  })
+
+  it('空列表不炸（内核还没给出清单时调用方会在更早的地方早退）', () => {
+    expect(languagesWithoutStatus([], {})).toEqual([])
   })
 })

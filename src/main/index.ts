@@ -21,7 +21,7 @@ import { createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { applyLinuxGpuSwitches } from './linux-gpu'
 import { configureLogger, logger, redactPath } from './logger'
-import { configureSession } from './session'
+import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
 import {
@@ -224,13 +224,26 @@ app.whenReady().then(async () => {
   const settings = getSettings()
 
   /**
+   * 建分区会话，并且**紧挨着**接上词典事件的订阅（[ADR-0073]）。
+   *
+   * 这两行中间**不许**出现 `await`。实测（两趟本机探针）：词典已经在磁盘上时，内核在
+   * `session.fromPartition()` 之后 **4ms** 就发出了 `spellcheck-dictionary-initialized`，
+   * 而那四个事件**不会重发**（把同一个语言列表再设一遍，内核什么都不做，[ADR-0072] 实测）。
+   * 订阅原来排在 `configureSession()` 里，前面隔着下面那次读 cookie 的往返（实测约 8ms）
+   * —— 晚这几毫秒的代价不是报错，而是设置页上那几格**永远停在空槽**（灰条），而它与"这门
+   * 词典本来就不需要下载"长得一模一样：安装版 v1.1.0 的日志里因此一条词典事件都没有。
+   */
+  const ses = session.fromPartition(sessionPartition())
+  attachDictionaryWatch(ses, getSettings)
+
+  /**
    * 账号标识（[ADR-0039]）：归档与密文缓存的第一层目录名，来自分区会话里的 `wa_ul` cookie。
    *
    * 必须早于 `configureSession`：两个接管点都要用它 —— 归档写入（`commitFromTemp`）与
    * 密文缓存的条目路径（`capture/protocol.ts`）。读不到就回落到 `unknown-account`，
    * 不阻断启动。
    */
-  await resolveAccountKey(session.fromPartition(sessionPartition()))
+  await resolveAccountKey(ses)
 
   /**
    * 归档位置必须早于会话配置：接管点 A 在装配时就会建好归档目录并清扫临时文件，
@@ -254,7 +267,7 @@ app.whenReady().then(async () => {
 
   // 会话配置必须早于创建任何窗口：两个接管点都是挂在 session 上的。
   // 传读取函数而不是快照 —— 见 settings.ts 里 current 的说明。
-  await configureSession(session.fromPartition(sessionPartition()), getSettings)
+  await configureSession(ses, getSettings)
 
   /**
    * 开发模式：只读观察网页版那条语言偏好 cookie（未打包时才生效，见 dev-probe-lang.ts）。

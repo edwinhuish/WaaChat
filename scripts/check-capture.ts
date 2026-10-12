@@ -1457,6 +1457,34 @@ check(
 )
 
 /**
+ * 词典事件的订阅必须**紧跟建会话**（[ADR-0073]）。
+ *
+ * 又一条实测出来的时序，而且还是上一节那条（[ADR-0072] "源要写在建会话之前"）的同一根因的另一半：
+ * 内核在建会话那一刻就开始按 profile 里持久化的语言列表装载词典，**4ms** 后就把
+ * `spellcheck-dictionary-initialized` 发了出去（两趟本机探针），而那四个事件**不会重发**
+ * —— 把同一个语言列表再设一遍是 no-op（[ADR-0072]，同一批探针也量过）。
+ *
+ * 订阅原来排在 `configureSession()` 里，前面隔着一次读 cookie 的往返（实测约 8ms）。晚这几毫秒
+ * 不会报错：那几格永远停在**空槽**，而"空槽"与"这门词典本来就不需要下载"在界面上长得一模一样 ——
+ * 用户读到的就是"词典一直没下载"。判据因此是三个调用点的**前后位置**。
+ *
+ * 指针都带上调用形状（`attachDictionaryWatch(ses` 而不是 `attachDictionaryWatch`），并且先剥掉
+ * 注释：这几段注释里正写着这些名字，只按名字找会指到注释上，于是代码顺序真被改反时它也不变红。
+ */
+const entryCode = entrySource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+const atWatchSession = entryCode.indexOf('session.fromPartition(sessionPartition())')
+const atDictionaryWatch = entryCode.indexOf('attachDictionaryWatch(ses')
+const atAccountKey = entryCode.indexOf('await resolveAccountKey(')
+check(
+  '词典事件订阅紧跟建会话、早于第一处 await（晚了 = 磁盘上已有的那几门永远停在空槽）',
+  atWatchSession > -1 && atDictionaryWatch > atWatchSession && atAccountKey > atDictionaryWatch,
+  atDictionaryWatch === -1
+    ? 'src/main/index.ts 的代码里找不到 attachDictionaryWatch(ses'
+    : `建会话在第 ${atWatchSession} 个字符处，订阅在第 ${atDictionaryWatch} 个，` +
+        `而第一处 await 在第 ${atAccountKey} 个（订阅必须夹在中间）`,
+)
+
+/**
  * 「至少要留一门」在**清单那一侧**的闸门（[ADR-0070]）：只剩一门时 `⋯` 里那一项是禁用的。
  *
  * 它与对话框里那条（草稿为空时禁用「确定」）是两个必须同时在位的落点 —— 少了这一条，用户能
