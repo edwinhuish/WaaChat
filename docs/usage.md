@@ -529,6 +529,17 @@ WARN permission denied {"permission":"geolocation","fromUpstream":true}
 
 **如果某个上游功能因此不可用**（例如通话里的"共享屏幕"点了没反应），把日志里那条 `permission denied` 贴出来就行 —— 那正是我们需要的证据，ADR-0035 里列了每一项的取证方式。**不要**为了"先跑起来"去改白名单：那一行是安全边界（`docs/security.md` T5），加它需要一次决策。
 
+### 全屏之后怎么退出去
+
+按 **`Esc`** —— 通话与媒体查看器会让页面自己进全屏，而那时我们这边**没有任何可点的地方**：
+Wayland 下窗口连装饰都没有，关掉窗口又只是"隐藏到托盘"（[ADR-0056](decisions.md#adr-0056)）。
+浏览器里那条"按 Esc 退出"的提示条**不在我们的窗口里**，因此**每个进程的第一次**会弹一条系统
+通知把这件事说清楚（[ADR-0084](decisions.md#adr-0084)）。
+
+⚠️ 应用菜单里的「全屏」（`F11`）是**窗口**全屏，它退不出页面的 HTML 全屏 —— 别把那个键当出口。
+日志里 `fullscreen: the page went full screen` 与 `fullscreen: the page left full screen` 成对
+出现，说明 `Esc` 确实退出来了。
+
 ### 点了 `whatsapp:` / `wa.me` 链接没反应，或者只打开了首页
 
 （`wa.me` 链接在**应用页面里**点击是另一回事：那种走的是应用自己那条路，见第 2 节。）

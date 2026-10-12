@@ -18,11 +18,14 @@ import { Notification } from 'electron'
 
 import {
   CAPTURE_FAILED_TITLE,
+  FULLSCREEN_HINT_BODY,
+  FULLSCREEN_HINT_TITLE,
   SPELLCHECK_DICTIONARY_FAILED_TITLE,
   captureFailureBody,
   spellcheckDictionaryFailureBody,
   trackCaptureFailure,
   trackDictionaryFailure,
+  trackFullscreenHint,
 } from '../shared/notice'
 import type { CaptureFailure } from '../shared/types'
 import { logger } from './logger'
@@ -101,5 +104,30 @@ export function announceDictionaryFailure(languageCode: string): void {
     logger.info('notice: told the user that a spellcheck dictionary could not be downloaded', {
       language: languageCode,
     })
+  }
+}
+
+/** 这个进程里是否已经提示过全屏（见 `shared/notice.ts` 的 `trackFullscreenHint`）。 */
+let announcedFullscreenHint = false
+
+/**
+ * 提示"页面进了全屏、按 Esc 退出"（[ADR-0084]）。
+ *
+ * 由 `main/fullscreen.ts` 订阅 `enter-html-full-screen` 调用。**每个进程只说一次** ——
+ * 上游进全屏的场合不止通话（点开一张图也会），每次都说会把通知吵到被关掉，而那条通道上还挂着
+ * 接管失效的告警。
+ *
+ * ⚠️ 它**不受托盘那个「免打扰」影响**：后者拒绝的是**页面**的通知权限
+ * （`notifications`，见 `permissions.ts`），而这条通知是我们自己在主进程里发的 —— 这也正是
+ * 这条提示该有的性质：免打扰的意思是"别人的消息别吵我"，不是"别告诉我怎么退出全屏"。
+ */
+export function announceFullscreenHint(): void {
+  const tracking = trackFullscreenHint(announcedFullscreenHint)
+  announcedFullscreenHint = tracking.announced
+
+  if (!tracking.announce) return
+
+  if (show(FULLSCREEN_HINT_TITLE, FULLSCREEN_HINT_BODY)) {
+    logger.info('notice: told the user how to leave full screen')
   }
 }

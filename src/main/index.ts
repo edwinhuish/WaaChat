@@ -20,6 +20,7 @@ import { applyLaunchAtLogin } from './integration/login'
 import { applyTrayUnread, createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { chatTargetFromArgv, registerChatProtocol } from './deep-link'
+import { attachFullscreenHint } from './fullscreen'
 import { applyLinuxGpuSwitches } from './linux-gpu'
 import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
@@ -359,6 +360,12 @@ app.whenReady().then(async () => {
 
   // 右键菜单：唯一的内容是拼写检查的建议（Electron 不像浏览器自带菜单，见 context-menu.ts）。
   attachContextMenu(mainWindow)
+
+  /**
+   * 全屏的退出提示（[ADR-0084]）—— 浏览器里那个"按 Esc 退出全屏"的提示条在我们的窗口里不存在，
+   * 因此由我们补一条系统通知（每个进程只说一次，判据在 `shared/notice.ts`）。
+   */
+  attachFullscreenHint(mainWindow)
 
   /**
    * 应用菜单：替换 Electron 那份默认菜单（英文、带 DevTools 与 "Learn More about Electron"）。

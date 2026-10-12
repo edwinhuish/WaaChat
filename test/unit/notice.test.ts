@@ -16,11 +16,14 @@ import { describe, expect, it } from 'vitest'
 
 import {
   CAPTURE_FAILED_TITLE,
+  FULLSCREEN_HINT_BODY,
+  FULLSCREEN_HINT_TITLE,
   SPELLCHECK_DICTIONARY_FAILED_TITLE,
   captureFailureBody,
   spellcheckDictionaryFailureBody,
   trackCaptureFailure,
   trackDictionaryFailure,
+  trackFullscreenHint,
 } from '../../src/shared/notice'
 import type { CaptureFailure } from '../../src/shared/types'
 
@@ -91,5 +94,29 @@ describe('词典下载失败的内容', () => {
     expect(SPELLCHECK_DICTIONARY_FAILED_TITLE).not.toBe('')
     expect(spellcheckDictionaryFailureBody('en-US')).toContain('en-US')
     expect(spellcheckDictionaryFailureBody('en-US')).toContain('设置')
+  })
+})
+
+describe('全屏提示的簿记（trackFullscreenHint）', () => {
+  it('第一次进入全屏要提示', () => {
+    expect(trackFullscreenHint(false)).toEqual({ announce: true, announced: true })
+  })
+
+  it('之后不再提示（点开一张图也会进全屏，每次都说会把通知吵到被关掉）', () => {
+    const first = trackFullscreenHint(false)
+
+    expect(trackFullscreenHint(first.announced).announce).toBe(false)
+  })
+})
+
+describe('全屏提示的内容', () => {
+  it('给出唯一那个键：Esc', () => {
+    expect(FULLSCREEN_HINT_TITLE).not.toBe('')
+    expect(FULLSCREEN_HINT_BODY).toContain('Esc')
+  })
+
+  it('**不**把 F11 写进去 —— 它是我们自己的「窗口全屏」，退不出页面的 HTML 全屏', () => {
+    // 写进去的后果是用户按了没用，然后连这条提示一起不信。
+    expect(FULLSCREEN_HINT_BODY).not.toContain('F11')
   })
 })

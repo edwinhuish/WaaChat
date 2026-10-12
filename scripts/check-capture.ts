@@ -118,6 +118,7 @@ import {
 import { UNREAD_BADGE_LIMIT, parseUnreadCount, unreadBadgeLabel } from '../src/shared/unread'
 import { drawUnreadBadge } from '../src/shared/tray-badge'
 import { NO_SMOOTH_SCROLLING_SWITCH, applySmoothScrolling } from '../src/main/smooth-scroll'
+import { FULLSCREEN_HINT_BODY, trackFullscreenHint } from '../src/shared/notice'
 import { CHAT_PROTOCOL, parseChatTarget } from '../src/shared/deep-link'
 import {
   accountKey,
@@ -2020,6 +2021,44 @@ check(
   launcherEntry.includes(`MimeType=x-scheme-handler/${CHAT_PROTOCOL};`) &&
     launcherEntry.includes(' %U'),
   '那份同名条目在用户目录里优先 —— 漏了 MimeType 的症状是"换过一次图标之后，点链接什么都不发生"',
+)
+
+/**
+ * 全屏的退出提示（[ADR-0084]）。
+ *
+ * 它坏起来是"用户卡在全屏里"这一类：不报错、日志也正常、功能一个都不少。三条断言各自对应
+ * 一种安静坏法：
+ *
+ *   1. **没接上**：上游进了全屏而没人说话。Wayland 下窗口连装饰都没有，用户没有任何可点的
+ *      地方（关掉窗口是我们设计的"隐藏到托盘"，连"点那个叉"都不是退路）；
+ *   2. **说了错的话**：正文里出现 `F11`（那是我们自己的「窗口全屏」，退不出页面的 HTML 全屏）
+ *      —— 用户按了没用，然后连这条提示一起不信；
+ *   3. **说得太频繁**：点开一张图也会进全屏，每次都弹会把通知吵到被关掉，而那条通道上还挂着
+ *      接管失效的告警。
+ */
+
+section('全屏提示')
+
+const fullscreenSource = source('../src/main/fullscreen.ts')
+const noticeSource = source('../src/shared/notice.ts')
+
+check(
+  '接到的是**页面**发起的全屏（`enter-html-full-screen`），而且挂在主窗口上',
+  fullscreenSource.includes("contents.on('enter-html-full-screen'") &&
+    entrySource.includes('attachFullscreenHint(mainWindow)'),
+  '没接上 —— 上游进全屏之后用户没有任何可点的地方能退出来',
+)
+check(
+  '正文只说 Esc，不写 F11（F11 是我们自己的「窗口全屏」，退不出页面的 HTML 全屏）',
+  FULLSCREEN_HINT_BODY.includes('Esc') && !FULLSCREEN_HINT_BODY.includes('F11'),
+  '正文里出现了按了没用的键 —— 用户会连这条提示一起不信',
+)
+check(
+  '每个进程只说一次（点开一张图也会进全屏，每次都说会把通知吵到被关掉）',
+  trackFullscreenHint(false).announce &&
+    trackFullscreenHint(true).announce === false &&
+    noticeSource.includes('每个进程只提示一次'),
+  '判据被改成了"每次都提示" —— 通知被关掉之后，接管失效那条告警也一起没了',
 )
 
 /**

@@ -57,6 +57,7 @@
 | **应用菜单** | 我们自己装的那份菜单（`main/menu.ts`，[ADR-0077](decisions.md#adr-0077)），替换 Electron 自带的英文默认菜单。菜单栏默认隐藏（`autoHideMenuBar`），按 `Alt` 可见，但**快捷键一直生效** —— 因此"Ctrl+Q 能不能退出"由它决定。它也是唯一"始终存在"的窗口入口：托盘在不显示它的桌面环境上**检测不到**（[ADR-0034](decisions.md#adr-0034)） |
 | **平滑滚动** | 设置里那个布尔（默认开，[ADR-0081](decisions.md#adr-0081)）。⚠️ 它与别的界面项不同：落在**启动期**的内核开关上（`--disable-smooth-scrolling`，`main/smooth-scroll.ts`），因此**要重启才生效**，而且是 `RESTART_REQUIRED_SETTINGS` 唯一的成员。两条边界：开着什么都不写（内核默认就是它）、用户自己传过同名开关就不插手 |
 | **静音 / 免打扰** | 托盘菜单里那两个勾（`main/quiet.ts`，[ADR-0082](decisions.md#adr-0082)）。⚠️ 都是**运行期**状态：不落盘、重启复位，因为"静默一直开着的不打扰开关"比复位更难发现。机制完全不同 —— 静音落到 `webContents.setAudioMuted()`（整扇页面的音频，通话一起静），免打扰落到**权限层**（`notifications` 一律拒绝，判据与白名单同在 `permissions.ts` 的同一个函数里）。状态只有一个源，改它的入口只有托盘那一处 |
+| **全屏提示** | 页面进 HTML 全屏（通话 / 媒体查看器）时弹的**那一条**系统通知（`main/fullscreen.ts` + `shared/notice.ts` 的第三条，[ADR-0084](decisions.md#adr-0084)）。⚠️ 只说 `Esc`（`F11` 是我方的「窗口全屏」，退不出页面的 HTML 全屏）、**每个进程只说一次**（点开一张图也会进全屏）。它**不受**托盘「免打扰」影响：免打扰拒绝的是**页面**的通知权限，这条是我们自己在主进程发的 |
 | **深链接** | `--new-chat <号码或链接>`、系统交来的 `whatsapp:` 协议链接、页面里点的 `wa.me` 链接（`shared/deep-link.ts` + `main/deep-link.ts`，[ADR-0083](decisions.md#adr-0083)）。⚠️ 只有一种落点：`loadURL()` 到**我们拼的**上游 `/send?phone=<数字>`（不注入，代价是**重新加载页面**）。URL 只有一处拼、只取数字；三条入口共用 `openChat()`。装到系统里还需要 `.desktop` 的两条声明（`MimeType` + `Exec` 的 `%U`）—— **用户换过图标之后生效的那份也要带**，见 `shared/appicon.ts` |
 
 ## 3. 项目的价值集中在哪里
