@@ -55,6 +55,7 @@
 | **主题** | 设置里那一项（浅色 / 深色 / 跟随系统，[ADR-0078](decisions.md#adr-0078)），取值与 Electron 的 `nativeTheme.themeSource` 同形。它落到三处，而**三处各自能到什么程度不一样**：我们自己两扇窗口的样式（走 `prefers-color-scheme`，立即跟随）、三扇窗口的底色（`BrowserWindow.backgroundColor`，内核不会自己更新，由 `main/theme.ts` 订阅系统主题变化）、以及内嵌页面**在它自己的主题设为"跟随系统"时**。判据（合法取值、窗口底色）在 `shared/theme.ts`，落到 Electron 上的那一步在 `main/theme.ts` |
 | **界面缩放** | 设置里那一个倍数（`1` = 100%，[ADR-0079](decisions.md#adr-0079)），`shared/zoom.ts` 定档位与收敛。它有**两个入口**（设置页、应用菜单），两者都必须把同一件事做完：写设置 → 三扇窗口跟上 → 通知设置页那一行。窗口那一步在 `window.ts`（建窗口时设一次、每次加载之后再设一次），菜单那一步在 `main/zoom.ts` |
 | **应用菜单** | 我们自己装的那份菜单（`main/menu.ts`，[ADR-0077](decisions.md#adr-0077)），替换 Electron 自带的英文默认菜单。菜单栏默认隐藏（`autoHideMenuBar`），按 `Alt` 可见，但**快捷键一直生效** —— 因此"Ctrl+Q 能不能退出"由它决定。它也是唯一"始终存在"的窗口入口：托盘在不显示它的桌面环境上**检测不到**（[ADR-0034](decisions.md#adr-0034)） |
+| **平滑滚动** | 设置里那个布尔（默认开，[ADR-0081](decisions.md#adr-0081)）。⚠️ 它与别的界面项不同：落在**启动期**的内核开关上（`--disable-smooth-scrolling`，`main/smooth-scroll.ts`），因此**要重启才生效**，而且是 `RESTART_REQUIRED_SETTINGS` 唯一的成员。两条边界：开着什么都不写（内核默认就是它）、用户自己传过同名开关就不插手 |
 
 ## 3. 项目的价值集中在哪里
 

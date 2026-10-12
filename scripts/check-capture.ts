@@ -117,6 +117,7 @@ import {
 } from '../src/shared/zoom'
 import { UNREAD_BADGE_LIMIT, parseUnreadCount, unreadBadgeLabel } from '../src/shared/unread'
 import { drawUnreadBadge } from '../src/shared/tray-badge'
+import { NO_SMOOTH_SCROLLING_SWITCH, applySmoothScrolling } from '../src/main/smooth-scroll'
 import {
   accountKey,
   archiveDir,
@@ -1740,6 +1741,83 @@ check(
   sectionOfRow('zoomFactor')?.title === '外观与启动' &&
     mainSettingsSource.includes('normalizeZoomFactor('),
   '这一行不在「外观与启动」，或者读设置时没有收敛',
+)
+
+/**
+ * 平滑滚动（[ADR-0081]）。
+ *
+ * 它坏起来是**安静**的三种形状，因此每一条都值得钉住：
+ *
+ *   1. **开关名与内核不再对得上** —— 命令行上多一个没人认识的开关，Chromium 静默忽略，
+ *      症状是"设置里关掉了、滚动照旧带缓动"（名字是在二进制里核对过的，见 `smooth-scroll.ts`
+ *      的文件头）；
+ *   2. **判据用了 `getSwitchValue()` 而不是 `hasSwitch()`** —— 用户写
+ *      `--disable-smooth-scrolling`（不带 `=`）时读出来是空串，于是我们**覆盖掉他显式传的**
+ *      那一份，而命令行是他唯一能自己动手的地方；
+ *   3. **应用时机晚于 `whenReady`** —— 命令行那时已经解析完，这一项从此永远不生效。
+ */
+
+section('平滑滚动')
+
+const smoothScrollSource = source('../src/main/smooth-scroll.ts')
+
+/**
+ * 去掉注释之后的源码。
+ *
+ * 下面那条"读的是 hasSwitch 还是 getSwitchValue"问的是**代码里怎么写**，而这个文件的注释里
+ * **必须**写着 `getSwitchValue()` —— 那是给下一个改它的人看的理由（"布尔开关不带 `=`，
+ * 读值会把两种情况混起来"）。裸文本扫描会把说明当成违规，因此这条断言先去掉注释再找
+ * （与下面 `restart.ts` 那两条同一条纪律）。
+ */
+const smoothScrollCode = smoothScrollSource
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\/\/[^\n]*/g, '')
+
+/** 与 `app.commandLine` 同形的假对象（判据是纯函数，因此这里不必启动内核）。 */
+function smoothScrollingCli(explicit: readonly string[] = []): {
+  hasSwitch: (name: string) => boolean
+  appendSwitch: (name: string) => void
+} {
+  const switches = new Set(explicit)
+
+  return {
+    hasSwitch: (name) => switches.has(name),
+    appendSwitch: (name) => switches.add(name),
+  }
+}
+
+check(
+  '开关名与内核里核对过的那两个逐字一致（写错＝设置静默失效）',
+  smoothScrollSource.includes("'disable-smooth-scrolling'") &&
+    smoothScrollSource.includes("'enable-smooth-scrolling'"),
+  '开关名被改过 —— 症状是"关掉平滑滚动却没变化"，而且不报错',
+)
+check(
+  '判据读的是"这个开关在不在"（hasSwitch），不是它的取值 —— 布尔开关普遍不带 `=`',
+  smoothScrollCode.includes('hasSwitch(') && !smoothScrollCode.includes('getSwitchValue('),
+  '用了 getSwitchValue()：用户显式传的 `--disable-smooth-scrolling` 会被我们覆盖掉',
+)
+check(
+  '关掉才写开关：开启（默认）这一侧一个字节都不动，用户显式传过就不插手',
+  applySmoothScrolling(smoothScrollingCli(), true) === false &&
+    applySmoothScrolling(smoothScrollingCli([NO_SMOOTH_SCROLLING_SWITCH]), false) === false &&
+    applySmoothScrolling(smoothScrollingCli(['enable-smooth-scrolling']), false) === false &&
+    applySmoothScrolling(smoothScrollingCli(), false) === true,
+  '两条边界被改过（见 smooth-scroll.ts 的文件头）',
+)
+check(
+  '在 whenReady 之前应用（命令行解析之后就固定了），且它在"重启后生效"名单里',
+  entrySource.includes('applySmoothScrolling(app.commandLine, getSettings().smoothScrolling)') &&
+    entrySource.indexOf('applySmoothScrolling(') < entrySource.indexOf('app.whenReady(') &&
+    RESTART_REQUIRED_SETTINGS.includes('smoothScrolling') &&
+    DEFAULT_SETTINGS.smoothScrolling === true,
+  '时机或名单不对 —— 晚于 whenReady 时这一项永远不生效；不进名单则用户不知道要重启',
+)
+check(
+  '这一行在「外观与启动」区域，且设置页里真的有它（漏了＝设置项从界面上消失）',
+  sectionOfRow('smoothScrolling')?.title === '外观与启动' &&
+    settingsViewSource.includes("key: 'smoothScrolling'"),
+  '这一行不在「外观与启动」，或者设置页里没有它',
 )
 
 /**

@@ -139,9 +139,9 @@ export const CHANNELS = {
    * ⚠️ 这是**唯一**会让应用自己退出的界面动作，因此它的配套要求写在 `main/restart.ts`：
    * 必须走 `app.quit()`（不是 `exit()`），否则退出清理会被跳过。
    *
-   * ⚠️ 当前 `RESTART_REQUIRED_SETTINGS` **是空的**（[ADR-0066] 撤掉了它唯一的成员「界面语言」），
-   * 因此界面上那颗「立即重启」暂时不会出现。通道保留：判据、实现与实测结论都在（见 `restart.ts`
-   * 的文件头），而"这一项要重启"是很容易再出现的性质。
+   * 它今天是真的可达的：`RESTART_REQUIRED_SETTINGS` 里有 `smoothScrolling`（[ADR-0081]），
+   * 改成与启动时不同的值之后界面上就会出现那颗按钮（[ADR-0066] 撤掉「界面语言」之后，
+   * 这条通道空转过一段时间）。
    */
   restart: 'app:restart',
 } as const

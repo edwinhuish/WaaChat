@@ -96,7 +96,7 @@ export const SETTINGS_SECTIONS = [
      * 深浅是个人的、一眼就有偏好，而"字太小"是遇到之后才来找的。
      */
     title: '外观与启动',
-    rows: ['theme', 'zoomFactor', 'appIcon', 'launchAtLogin'],
+    rows: ['theme', 'zoomFactor', 'smoothScrolling', 'appIcon', 'launchAtLogin'],
   },
   {
     title: '关于',

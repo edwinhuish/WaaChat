@@ -20,6 +20,7 @@ import { applyLaunchAtLogin } from './integration/login'
 import { applyTrayUnread, createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { applyLinuxGpuSwitches } from './linux-gpu'
+import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
 import { installApplicationMenu } from './menu'
 import { attachDictionaryWatch, configureSession } from './session'
@@ -125,6 +126,20 @@ if (process.platform === 'linux') {
   if (changed) {
     logger.info('linux: not requesting Vulkan (the Wayland ozone path has no Vulkan surfaces)')
   }
+}
+
+/**
+ * 平滑滚动（[ADR-0081]）。
+ *
+ * 与上面那一段同类 —— 都是**启动期**决定的内核开关，都必须在 `whenReady` 之前写完
+ * （命令行解析之后就固定了）。区别是这一段读的是**用户设置**，因此必须排在
+ * `setPath('userData')` 之后：设置文件就在那个目录里，早一步读到的会是另一个实例的。
+ *
+ * 关掉才写开关："开着"（默认）这一侧一个字节都不动，内核的默认就是它。
+ * 用户自己传了这两个开关中的任何一个时这一句是空转（`smooth-scroll.ts` 的边界 1）。
+ */
+if (applySmoothScrolling(app.commandLine, getSettings().smoothScrolling)) {
+  logger.info('smooth scrolling: off (setting), not requesting it from the kernel')
 }
 
 /**

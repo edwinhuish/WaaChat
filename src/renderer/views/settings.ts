@@ -143,6 +143,16 @@ const TOGGLES: readonly ToggleSpec[] = [
     label: '拼写检查',
     hint: '在消息输入框里标注拼错的词（内核自带，不往页面注入任何东西）。关掉后也不会去下载词典。',
   },
+  {
+    key: 'smoothScrolling',
+    /**
+     * ⚠️ 这一行是"重启后生效"名单里**唯一**的成员（[ADR-0081]）：它是一个启动期的内核开关
+     * （`--disable-smooth-scrolling`），进程起来之后改不动 —— 徽标与「立即重启」那条提示
+     * 都由 {@link RESTART_REQUIRED_SETTINGS} 自动给出，因此**不要**在这里另写一句"要重启"。
+     */
+    label: '平滑滚动',
+    hint: '聊天列表滚动时的缓动。关掉它滚动会立刻跟手（内核默认开启）。',
+  },
 ]
 
 interface SizeSpec {
@@ -807,10 +817,8 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * 位置在**整个列表的最前面**（见 {@link render}）—— 它是一句要用户做事的提示，
    * 埋在最后等于没说。
    *
-   * ⚠️ **今天这条路径是死的**：`RESTART_REQUIRED_SETTINGS` 是空的（[ADR-0066] 撤掉了它唯一
-   * 待过的成员「界面语言」）。它仍然必须存在且**可达** —— 那一项回来的时候，"改完却什么都不说"
-   * 会让用户以为已经生效了，而那正是这一整套机制当初存在的理由。自检第 19 节据此断言界面里
-   * 确实有这个触发点，而不是只剩一条没人用的通道。
+   * 触发点是 `RESTART_REQUIRED_SETTINGS` —— 今天那条名单里有 `smoothScrolling`（[ADR-0081]），
+   * 因此这条路径是活的。自检第 19 节断言界面里确实有这个触发点，而不是只剩一条没人用的通道。
    */
   function pendingRestartRow(): HTMLElement | null {
     if (restartState.restart.length === 0) return null

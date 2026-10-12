@@ -126,6 +126,16 @@ export interface Settings {
    */
   readonly zoomFactor: number
   /**
+   * 内嵌页面滚动时是否带缓动动画（[ADR-0081]）。
+   *
+   * ⚠️ 它**只能**在启动期决定（落到内核的 `--disable-smooth-scrolling`），因此它是
+   * {@link RESTART_REQUIRED_SETTINGS} 的成员 —— 那份机制自 [ADR-0066] 之后第一次真的有成员。
+   *
+   * **默认开启**：内核自己就是这个默认值，也就是说"开着"这一侧我们一个开关都不写，
+   * 与"还没有这一项设置之前"逐字节相同。
+   */
+  readonly smoothScrolling: boolean
+  /**
    * 是否启用内核自带的拼写检查（[ADR-0061]）。
    *
    * 关掉它是一个**真实的**选择，而不只是偏好：词典由内核按需从第三方下载（默认是 Google
@@ -153,6 +163,7 @@ export const DEFAULT_SETTINGS: Settings = {
   launchAtLogin: false,
   theme: DEFAULT_THEME,
   zoomFactor: DEFAULT_ZOOM_FACTOR,
+  smoothScrolling: true,
   spellcheck: true,
   spellcheckLanguages: DEFAULT_SPELLCHECK_LANGUAGES,
 }
@@ -162,16 +173,18 @@ export const DEFAULT_SETTINGS: Settings = {
  *
  * 界面对照这个列表渲染"重启后生效"的徽标与「立即重启」按钮，不自己写死。
  *
- * ⚠️ **现在是空的**：机制与按钮都留着 —— 它是有判据、有单测、有实测结论的一套东西
- * （[ADR-0064]），而"这一项要重启"是将来很容易再出现的性质。空列表的后果只有一个：
- * 那颗按钮不显示。
+ * 今天只有一个成员：`smoothScrolling`（[ADR-0081]）。它是**启动期**的内核开关
+ * （`--disable-smooth-scrolling`），进程起来之后就没有合法的改法了。同类的还有 UA 与那几条
+ * GPU 开关，但它们没有对应的设置项，因此不需要进这张名单。
  *
  * 历史：最初只有 `enableCiphertextCache`（`ses.protocol.handle('https')` 过去只在启动时注册
  * 一次），密文缓存改事务式后出列（[ADR-0027]）；随后是 `uiLanguage`（[ADR-0063] 让它进来、
- * [ADR-0065] 把它挪去「重载即生效」、[ADR-0066] 把这一项整个撤掉）。它旁边那张
- * `RELOAD_REQUIRED_SETTINGS` 名单随 [ADR-0066] 一起删除 —— 那名单上从头到尾只有界面语言一项。
+ * [ADR-0065] 把它挪去「重载即生效」、[ADR-0066] 把这一项整个撤掉）—— 那之后这份名单空了一段时间
+ * （[ADR-0066] 到 [ADR-0081] 之间），机制与按钮都留着等下一个真的需要重启的成员，`smoothScrolling`
+ * 就是它。它旁边那张 `RELOAD_REQUIRED_SETTINGS` 名单随 [ADR-0066] 一起删除 —— 那名单上从头到尾
+ * 只有界面语言一项。
  */
-export const RESTART_REQUIRED_SETTINGS: readonly SettingsKey[] = []
+export const RESTART_REQUIRED_SETTINGS: readonly SettingsKey[] = ['smoothScrolling']
 
 /** `Settings` 的键。跨 IPC 传"哪些设置项变了"时用它，而不是传裸字符串。 */
 export type SettingsKey = keyof Settings

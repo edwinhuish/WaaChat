@@ -168,8 +168,8 @@ export function getSettings(): Settings {
  * 界面据此决定要不要给「立即重启」按钮 —— 常驻一个按钮就成了噪音，而"改完却什么都不说"
  * 会让用户以为这一项已经生效了。
  *
- * ⚠️ `RESTART_REQUIRED_SETTINGS` 现在是**空的**（[ADR-0066] 撤掉了唯一待过的成员「界面语言」），
- * 因此它现在恒返回空数组。`initial` 这份快照与判据都留着：它们与哪一项在名单里无关。
+ * 名单里的唯一成员是 `smoothScrolling`（[ADR-0081]）—— [ADR-0066] 撤掉「界面语言」之后它空过一段时间，
+ * 这份快照与判据一直都在（它们与"哪一项在名单里"无关），因此那个成员回来时不需要改这里一行。
  */
 export function pendingRestart(): SettingsKey[] {
   const loaded = initial ?? getSettings()
