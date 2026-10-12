@@ -22,6 +22,7 @@ import { isUpstreamPage } from '../shared/upstream'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { instanceLabel, sessionPartition } from './instance'
 import { logger } from './logger'
+import { currentWindowBackground } from './theme'
 
 /** 左上角符合 GNOME 习惯的默认尺寸；上游页面是双栏布局，窄了会很难用。 */
 const DEFAULT_SIZE = { width: 1280, height: 820 } as const
@@ -102,6 +103,13 @@ export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     ...DEFAULT_SIZE,
     show: false,
+    /**
+     * 内容画出来之前的那一层底色，取自当前主题（[ADR-0078]）。
+     *
+     * 它**不是**装饰：不改它的话，深色桌面上每次启动都会先闪一下白（内容要等页面加载）。
+     * 系统主题变了之后由 `main/theme.ts` 的 `nativeTheme` 订阅刷新。
+     */
+    backgroundColor: currentWindowBackground(),
     /**
      * 窗口标题是用户**唯一**能一眼分清两扇同款窗口的地方（托盘图标与窗口图标都可以长得
      * 一模一样）。命名实例因此必须自报家门，见 `shared/instance.ts` 的 `instanceLabelOf`。
@@ -199,6 +207,8 @@ function createLocalWindow(options: {
   const window = new BrowserWindow({
     ...LOCAL_WINDOW_SIZE,
     show: false,
+    // 与主窗口同一个来源：三扇窗口的底色必须一致，否则切主题时看得见"一块跟上了、一块没跟"。
+    backgroundColor: currentWindowBackground(),
     title: options.title,
     autoHideMenuBar: true,
     icon: effectiveAppIcon() ?? defaultIconPath(),

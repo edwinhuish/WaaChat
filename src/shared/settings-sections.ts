@@ -88,8 +88,14 @@ export const SETTINGS_SECTIONS = [
     rows: ['languageNotice', 'spellcheck', 'spellcheckLanguages'],
   },
   {
+    /**
+     * 「外观与启动」= 我们这扇应用自己的样子与它什么时候起来。
+     *
+     * 主题排在最前：它是这一区域里唯一一个"改完立刻在三扇窗口上都看得见"的项，也是用户
+     * 进这个区域最先想找的东西（图标与自启属于"装一次就不动"的那一类）。
+     */
     title: '外观与启动',
-    rows: ['appIcon', 'launchAtLogin'],
+    rows: ['theme', 'appIcon', 'launchAtLogin'],
   },
   {
     title: '关于',

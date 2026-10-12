@@ -70,6 +70,7 @@ import { archiveDir } from '../paths'
 import { relaunchApp } from '../restart'
 import { getSettings, pendingRestart, updateSettings } from '../settings'
 import { applySpellcheck, dictionaryStatusSnapshot } from '../spellcheck'
+import { applyTheme } from '../theme'
 import { getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
 
@@ -290,6 +291,16 @@ function applySettings(value: unknown): Settings {
   if ('spellcheck' in patch || 'spellcheckLanguages' in patch) {
     applySpellcheck(session.fromPartition(sessionPartition()), next)
   }
+
+  /**
+   * 主题（[ADR-0078]）与拼写检查同类：**不需要重启，也不需要重载页面**。
+   *
+   * `nativeTheme.themeSource` 一改，渲染进程看到的 `prefers-color-scheme` 当场就变 —— 我们
+   * 两扇本地窗口的样式因此立即跟上，内嵌页面则在它自己的主题设为"跟随系统"时跟上
+   * （那个设置在账号上，见 `shared/theme.ts`）。顺带把三扇窗口的底色刷一遍：它是唯一一处
+   * 内核不会替我们更新的地方。
+   */
+  if ('theme' in patch) applyTheme(next.theme)
 
   logger.info('settings updated', { keys: Object.keys(patch).join(',') })
   return presentSettings(next)

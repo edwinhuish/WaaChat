@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { app } from 'electron'
 
 import { normalizeSpellcheckLanguages } from '../shared/language'
+import { normalizeTheme } from '../shared/theme'
 import {
   DEFAULT_SETTINGS,
   changedRestartKeys,
@@ -71,6 +72,16 @@ function coerce(raw: unknown): Settings {
     logger.warn('settings: adjusted the spellcheck dictionaries to the known list')
   }
   result['spellcheckLanguages'] = spellcheckLanguages
+
+  /**
+   * 同一条纪律用在主题上（[ADR-0078]）：它也是枚举，任何字符串都能骗过上面那圈 `typeof`。
+   * 认不出的值收敛到"跟随系统"，而不是让一个不存在的取值一路走到 `nativeTheme`。
+   */
+  const theme = normalizeTheme(result['theme'])
+  if (theme !== result['theme']) {
+    logger.warn('settings: adjusted the theme to the known list')
+  }
+  result['theme'] = theme
 
   return result as unknown as Settings
 }

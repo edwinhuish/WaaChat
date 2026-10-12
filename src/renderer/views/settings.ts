@@ -44,6 +44,7 @@ import {
   sizeLimitBytesFromInput,
   type SizeLimitKey,
 } from '../../shared/size-limit'
+import { THEME_OPTIONS, type ThemeSource } from '../../shared/theme'
 import {
   RESTART_REQUIRED_SETTINGS,
   type AppIconState,
@@ -368,6 +369,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (key === 'about') return aboutRow()
     if (key === 'languageNotice') return languageNoticeRow()
     if (key === 'spellcheckLanguages') return spellcheckLanguagesRow(current)
+    if (key === 'theme') return themeRow(current)
 
     const toggle = TOGGLES.find((spec) => spec.key === key)
     if (toggle !== undefined) return toggleRow(toggle, current)
@@ -376,6 +378,56 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (size !== undefined) return sizeRow(size, current)
 
     throw new Error(`ui: 设置项 ${key} 在 ROW_ORDER 里，却没有对应的渲染`)
+  }
+
+  /**
+   * 主题那一行（[ADR-0078]）。
+   *
+   * 用一个原生的**单选**下拉框，而不是复选框或"点一下换下一个"的循环按钮：这三个取值互斥
+   * 且同等重要（"跟随系统"本身就是默认值，不是次要选项），而用户点进这一行想知道的两件事
+   * 恰好是"现在是哪个"与"还能选哪些" —— 下拉框一眼同时给出两者，循环按钮一次只给一个。
+   *
+   * ⚠️ 这与被否掉的**原生多选**（`<select multiple>`，[ADR-0070]）不是一回事：那个的问题在
+   * "要按住 Ctrl 才勾得上第二项"，单选没有这个问题。
+   *
+   * 提示文案必须写出**边界**：网页版自己的主题存在账号上（与界面语言同源），我们这一层没有
+   * 可动的杠杆 —— 只写"改主题"会让点完没看到内嵌页面变化的用户以为功能坏了。
+   */
+  function themeRow(current: Settings): HTMLElement {
+    const select = h('select', {
+      title: '界面主题',
+      dataRole: 'theme-select',
+      onChange: (event) => {
+        const value = (event.target as HTMLSelectElement).value as ThemeSource
+        void patch({ theme: value })
+      },
+    })
+
+    for (const option of THEME_OPTIONS) {
+      select.append(
+        h('option', {
+          value: option.value,
+          text: option.label,
+          // 这一行每次都是整体重建的，因此属性就是它最终的样子（见 `dom.ts` 的 `selected`）。
+          selected: option.value === current.theme,
+        }),
+      )
+    }
+
+    return h(
+      'div',
+      { class: 'setting' },
+      select,
+      h(
+        'div',
+        { class: 'meta' },
+        h('div', { class: 'label', text: '主题' }),
+        h('div', {
+          class: 'hint',
+          text: '改的是 WaaChat 自己的窗口（立即生效）。内嵌的网页版另有一处自己的主题设置，它在"跟随系统"时才会跟着这里变 —— 我们不去碰页面里的那个选择。',
+        }),
+      ),
+    )
   }
 
   /**

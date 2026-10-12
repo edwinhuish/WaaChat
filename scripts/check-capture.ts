@@ -100,6 +100,12 @@ import { ALLOWED_PERMISSIONS, isPermissionAllowed } from '../src/main/permission
 import { captureFailureBody, trackCaptureFailure } from '../src/shared/notice'
 import { DEFAULT_SETTINGS, RESTART_REQUIRED_SETTINGS } from '../src/shared/types'
 import {
+  DEFAULT_THEME,
+  THEME_OPTIONS,
+  WINDOW_BACKGROUND,
+  normalizeTheme,
+} from '../src/shared/theme'
+import {
   accountKey,
   archiveDir,
   ciphertextCacheDir,
@@ -1577,6 +1583,74 @@ check(
   roleItems.length === 0
     ? 'context-menu.ts 里找不到任何 role 项'
     : `这几项没有 label：${roleItems.filter((item) => !item.includes('label:')).join(' ')}`,
+)
+
+/**
+ * 主题（[ADR-0078]：浅色 / 深色 / 跟随系统）。
+ *
+ * 这一项有三种**静默**的坏法，都值得钉住：
+ *
+ *   - **窗口底色与样式表的两组 `--bg` 不一致**：底色只在"窗口已经出现、内容还没画出来"之间
+ *     可见，对不上就是一次白闪 —— 而深色桌面上的那次白闪正是这一项要解决的问题本身。
+ *   - **晚于建窗口**：`backgroundColor` 在窗口构造时就取了值，"跟随系统"时那是系统**当时**的
+ *     深浅 —— 晚一步，启动瞬间用的就是上一次的答案。
+ *   - **认不出的取值一路走到 `nativeTheme`**：任何字符串都能骗过 `typeof value === 'string'`
+ *     那圈校验，因此收敛必须发生在**读设置**的那一刻（与拼写检查清单同一条纪律）。
+ */
+
+section('主题')
+
+const themeSource = source('../src/shared/theme.ts')
+const themeMainSource = source('../src/main/theme.ts')
+const mainSettingsSource = source('../src/main/settings.ts')
+check(
+  '窗口底色与样式表的两组 `--bg` 逐字符一致（对不上＝深色桌面上每次启动闪一下白）',
+  stylesheet.includes(`--bg: ${WINDOW_BACKGROUND.light};`) &&
+    stylesheet.includes(`--bg: ${WINDOW_BACKGROUND.dark};`),
+  'styles.css 里的 --bg 与 shared/theme.ts 的 WINDOW_BACKGROUND 对不上',
+)
+check(
+  '主题在**任何窗口被创建之前**应用，且底色跟着系统主题刷新',
+  entrySource.includes('applyTheme(settings.theme)') &&
+    entrySource.indexOf('applyTheme(settings.theme)') <
+      entrySource.indexOf('= createMainWindow()') &&
+    themeMainSource.includes("nativeTheme.on('updated'"),
+  '主题要么排在建窗口之后（启动瞬间的底色是上一次的答案），要么没有订阅系统主题的变化',
+)
+check(
+  '主窗口与本地窗口都按当前主题设了底色（只设一处＝切主题时看得见一块没跟上）',
+  // 两处构造：`createMainWindow()` 与 `createLocalWindow()`（后者被文件列表与设置共用）。
+  (windowSource.match(/backgroundColor: currentWindowBackground\(\)/g) ?? []).length >= 2,
+  'window.ts 里有窗口没设 backgroundColor —— 深色下它会先闪一下白',
+)
+check(
+  '主题取值在读设置的那一刻收敛（认不出的值不许一路走到 nativeTheme）',
+  mainSettingsSource.includes('normalizeTheme('),
+  'main/settings.ts 里没有收敛主题的调用',
+)
+check(
+  '改设置时主题立刻生效，且不在"重启后生效"名单里',
+  ipcSource.includes("if ('theme' in patch) applyTheme(next.theme)") &&
+    !RESTART_REQUIRED_SETTINGS.includes('theme'),
+  '主题要么没在改设置时应用，要么被误加进了需要重启的清单',
+)
+check(
+  '主题的三个取值与 nativeTheme 的三个取值同形（它只认 system / light / dark）',
+  THEME_OPTIONS.map((option) => option.value)
+    .sort()
+    .join(',') === 'dark,light,system' &&
+    DEFAULT_THEME === 'system' &&
+    normalizeTheme('dark') === 'dark' &&
+    normalizeTheme('没有这个主题') === DEFAULT_THEME,
+  '取值表被改过 —— 认不出的值会被 nativeTheme 静默忽略，界面看起来只是"没反应"',
+)
+check(
+  '主题在「外观与启动」区域，且选项由视图照着共享清单渲染（少一个＝那个取值在界面上无法抵达）',
+  sectionOfRow('theme')?.title === '外观与启动' &&
+    new Set(THEME_OPTIONS.map((option) => option.value)).size === THEME_OPTIONS.length &&
+    settingsViewSource.includes('THEME_OPTIONS') &&
+    themeSource.includes('WINDOW_BACKGROUND'),
+  '主题那一行不在「外观与启动」，或者视图没有照着共享的选项清单渲染',
 )
 
 /**

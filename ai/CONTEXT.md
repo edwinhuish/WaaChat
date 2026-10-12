@@ -51,6 +51,7 @@
 | **用户级启动器条目** | `~/.local/share/applications/<app_id>.desktop`。XDG 的查找顺序让它优先于系统目录里的同名条目 —— "换应用图标"能生效靠的就是这个机制（ADR-0022）。只认带 `X-WaaChat-Managed=true` 标记的那份，其余视为用户自己的文件，不碰 |
 | **实例** | 一份完全独立的本地状态：一个 Chromium profile（登录态）、一份设置、一份归档、一份缓存。由 `--profile <名>` 选择（v1.0.8–v1.1.1 叫 `--instance`，见 ADR-0076），不带参数就是**默认实例**（沿用改动之前的全部路径）。隔离的唯一杠杆是启动时按实例 `app.setPath('userData'/'sessionData')`（ADR-0062）；单实例锁因此自动变成"每实例一把"（锁文件在 `userData` 里）。**实例名不是安全边界**，只是目录名 |
 | **窗口标题 / 托盘菜单** | 区分"哪一份数据"的界面落点：默认实例就是应用名，命名实例带 `（<实例名>）` 后缀。GNOME 的 appindicator 不显示托盘 tooltip，因此命名实例在菜单第一行自报家门 |
+| **主题** | 设置里那一项（浅色 / 深色 / 跟随系统，[ADR-0078](decisions.md#adr-0078)），取值与 Electron 的 `nativeTheme.themeSource` 同形。它落到三处，而**三处各自能到什么程度不一样**：我们自己两扇窗口的样式（走 `prefers-color-scheme`，立即跟随）、三扇窗口的底色（`BrowserWindow.backgroundColor`，内核不会自己更新，由 `main/theme.ts` 订阅系统主题变化）、以及内嵌页面**在它自己的主题设为"跟随系统"时**。判据（合法取值、窗口底色）在 `shared/theme.ts`，落到 Electron 上的那一步在 `main/theme.ts` |
 | **应用菜单** | 我们自己装的那份菜单（`main/menu.ts`，[ADR-0077](decisions.md#adr-0077)），替换 Electron 自带的英文默认菜单。菜单栏默认隐藏（`autoHideMenuBar`），按 `Alt` 可见，但**快捷键一直生效** —— 因此"Ctrl+Q 能不能退出"由它决定。它也是唯一"始终存在"的窗口入口：托盘在不显示它的桌面环境上**检测不到**（[ADR-0034](decisions.md#adr-0034)） |
 
 ## 3. 项目的价值集中在哪里

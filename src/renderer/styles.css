@@ -94,6 +94,7 @@ input[type='search'] {
 }
 
 input:focus-visible,
+select:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -254,6 +255,24 @@ ul.archive li:last-child {
   width: 16px;
   height: 16px;
   accent-color: var(--accent);
+}
+
+/*
+ * 「主题」那一行的三选一（`shared/theme.ts` 的 THEME_OPTIONS）。
+ *
+ * 它是**单选**下拉框，落在一行的第一个格子里（也就是复选框的位置），因此**不要** `flex: 1`
+ * —— 那是 `input[type='search']` 给归档页那条横排工具栏写的（那个坑在 `.language-search`
+ * 那里已经踩过一次）。配色与搜索框同一套，深色下才不会是块白板。
+ */
+.setting select {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 8px;
 }
 
 .setting .label {

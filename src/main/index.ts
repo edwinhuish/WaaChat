@@ -25,6 +25,7 @@ import { installApplicationMenu } from './menu'
 import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
+import { applyTheme, attachThemeSync } from './theme'
 import {
   beginQuit,
   createFilesWindow,
@@ -284,6 +285,17 @@ app.whenReady().then(async () => {
   // 让系统里的自启条目与设置一致。用户可能在设置里关了自启，或手工删过那个
   // `.desktop` 条目 —— 每次启动对齐一次，代价是一次同步写入。
   applyLaunchAtLogin(settings.launchAtLogin)
+
+  /**
+   * 主题：**必须在任何窗口被创建之前**（[ADR-0078]）。
+   *
+   * 窗口的 `backgroundColor` 在构造时就取当前主题的底色，而"跟随系统"时那个值取决于
+   * 系统**当时**的深浅 —— 晚一步，启动瞬间的底色就是上一次的答案。
+   * 订阅那一条是"系统主题变了"（用户在桌面里切深色）：内核会自己更新我们的界面与内嵌页面，
+   * 只有窗口底色需要我们再刷一次。
+   */
+  applyTheme(settings.theme)
+  attachThemeSync()
 
   // 本地界面：两扇窗口（文件列表 / 设置），各自一个渲染入口，都挂 preload。
   const filesWindow = createFilesWindow()

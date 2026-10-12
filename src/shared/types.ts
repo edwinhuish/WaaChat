@@ -10,6 +10,7 @@
  */
 
 import { DEFAULT_SPELLCHECK_LANGUAGES } from './language'
+import { DEFAULT_THEME, type ThemeSource } from './theme'
 
 // ---------------------------------------------------------------------------
 // 归档
@@ -110,6 +111,13 @@ export interface Settings {
   /** 是否随桌面会话自启动。 */
   readonly launchAtLogin: boolean
   /**
+   * 界面主题（浅色 / 深色 / 跟随系统，[ADR-0078]）。
+   *
+   * 它落到三处，而**三处各自能到什么程度并不一样** —— 逐条写在 `shared/theme.ts` 的文件头
+   * （最关键的一条：内嵌的网页版只在它自己的主题设为"跟随系统"时才跟着变，那个设置在**账号**上）。
+   */
+  readonly theme: ThemeSource
+  /**
    * 是否启用内核自带的拼写检查（[ADR-0061]）。
    *
    * 关掉它是一个**真实的**选择，而不只是偏好：词典由内核按需从第三方下载（默认是 Google
@@ -135,6 +143,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheMaxBytes: 2 * 1024 * 1024 * 1024,
   enableCiphertextCache: true,
   launchAtLogin: false,
+  theme: DEFAULT_THEME,
   spellcheck: true,
   spellcheckLanguages: DEFAULT_SPELLCHECK_LANGUAGES,
 }
