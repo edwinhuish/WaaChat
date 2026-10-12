@@ -20,6 +20,11 @@
   --ok: #1a7f37;
   --warn: #9a6700;
   --danger: #b42318;
+  /*
+   * 「下载中」那条进度条上的**斜纹**颜色（[ADR-0071]）：一道浅色斜纹与 `--accent` 相间。
+   * 浅色主题里它就是白（"蓝白相间"），深色主题里改用浅蓝 —— 纯白在那块亮蓝上会刺眼。
+   */
+  --stripe: #ffffff;
   --radius: 8px;
 
   color-scheme: light dark;
@@ -36,6 +41,7 @@
     --ok: #3fb950;
     --warn: #d29922;
     --danger: #f85149;
+    --stripe: #cfe4ff;
   }
 }
 
@@ -358,9 +364,18 @@ ul.archive li:last-child {
  *
  * ⚠️ 它**不是**一条有百分比的进度条：内核只发"开始 / 成功 / 失败 / 装载好"四个事件，
  * 不给字节数（词典请求由浏览器进程发出，不经过我们的协议层与 `webRequest`，[ADR-0068]）。
- * 因此四态各有一种样子，"下载中"是**不确定**动画 —— 画一条假的百分比会比它更糟。
+ * 因此四态各有一种样子 —— 画一条假的百分比会比它更糟。
  *
- * 颜色取现有的三个变量：`--ok` 是"下好了"（全绿），`--danger` 是"取不回来"，`--accent` 是"正在下"。
+ * 四态的视觉必须**一眼分得开**，因为这一格回答的正是"它到底在不在下"：
+ *
+ *   `unknown`      空槽（只剩下面那层 `--border`）—— "还没听到关于它的消息"，**不是**失败；
+ *   `downloading`  蓝底 + **蓝白相间的斜纹**，且斜纹**持续朝一个方向滚**（在动 = 没停）；
+ *   `ready`        **纯绿**、走满 —— 绿是这一格的全部结论，也是终局；
+ *   `failed`       **纯红**、走满 —— 红只在"真的取不回来"时出现。
+ *
+ * 两条取舍：一是**只在"下载中"用纹理**，另两态是纯色 —— 纹理本身就是"不确定"的视觉语言，
+ * 挪到绿条上会让人以为"还没完"；二是滚动**只有一个方向、不来回**，来回摆动读起来像"卡住了
+ * 在喘"，而这一格要表达的是"一直在往前走"。
  */
 .setting .language-progress {
   position: relative;
@@ -372,8 +387,8 @@ ul.archive li:last-child {
 }
 
 /*
- * 填充走伪元素：`transform: scaleX()` 而不是 `width` —— 后者每一帧都要重新布局，
- * 而这条动画可能在设置窗口里一直转着。
+ * 填充走伪元素、用 `transform: scaleX()` 来"填满"而不是 `width`：`ready` / `failed` 由 0
+ * 变成 1，而这条动画可能在设置窗口里一直待着 —— `width` 每次都要重新布局。
  */
 .setting .language-progress::after {
   content: '';
@@ -385,37 +400,66 @@ ul.archive li:last-child {
   transform-origin: left center;
 }
 
+/*
+ * 「下载中」：整条填满（不是来回伸缩的一块），蓝底 + 一道浅色斜纹相间，斜纹**持续**朝一个方向滚。
+ *
+ * 三个必须一起对的数（下面同一组数字在三处出现，改一处就要改三处，自检有断言钉住）：
+ *
+ *   `background-size: 10px 10px`  一个**周期**（横竖都是 10px）
+ *   `linear-gradient(... 50% ...)` 一个周期里蓝白**各一半**
+ *   `@keyframes` 的 `10px`         一次循环正好平移一个周期 ⇒ **无缝**
+ *
+ * ⚠️ 两个颜色都写**不透明**的实色，不用 `transparent`：CSS 里的 `transparent` 是
+ * `rgba(0,0,0,0)`，与浅色做硬切本来没事，但一旦不是硬切就会插值出灰边（试的时候发灰就是它）。
+ * ⚠️ 一半对一半是**试出来的**：这一格只有 6px 高，斜纹在竖直方向上只露出一小块 —— 浅色占到
+ * 三分之一以下时，看上去就是一条纯蓝（浅色只在下边缘留几个小豁口），"蓝白相间"读不出来。
+ *
+ * 滚动的做法：平移 `background-position` 而不是动 `width` / `transform` —— 后者每一帧都要重新
+ * 布局或重画，而这条动画会在设置窗口里一直转着。计时函数用 `linear`（不是 `ease-in-out`）：
+ * 它要读成"匀速前进"，而不是"在来回喘"。
+ */
 .setting .language-progress[data-state='downloading']::after {
-  animation: dictionary-downloading 1.4s ease-in-out infinite;
+  transform: scaleX(1);
+  background-image: linear-gradient(135deg, var(--accent) 0 50%, var(--stripe) 50% 100%);
+  background-size: 10px 10px;
+  animation: dictionary-downloading 0.7s linear infinite;
 }
 
-/* 下好了就是一条**走满的绿条** —— 那是这一格的全部结论。 */
+/* 下好了就是一条**走满的纯绿** —— 那是这一格的全部结论（也是终局，不会再变）。 */
 .setting .language-progress[data-state='ready']::after {
   background: var(--ok);
   transform: scaleX(1);
 }
 
+/* 取不回来就是一条**走满的纯红** —— 它只在"真的失败了"时出现，因此红是有信息的。 */
 .setting .language-progress[data-state='failed']::after {
   background: var(--danger);
   transform: scaleX(1);
 }
 
+/*
+ * 平移的**恰好是一个周期的宽度**（= `background-size` 的 10px），因此循环处**无缝**（看不出接头）。
+ * 这个数与上面那条规则的 `background-size` 必须相等 —— 不等的话每一圈都会跳一下，而那一下
+ * 恰好很难被眼睛抓住（只觉得"有点抖"），自检里有一条断言钉住这两个数。
+ */
 @keyframes dictionary-downloading {
-  0%,
-  100% {
-    transform: scaleX(0.1);
+  from {
+    background-position: 0 0;
   }
 
-  50% {
-    transform: scaleX(0.9);
+  to {
+    background-position: 10px 0;
   }
 }
 
-/* 关掉动效时留一条**静止**的填充：状态仍然看得见（"有东西在里面"），只是不再来回跑。 */
+/*
+ * 关掉动效时留一条**静止的纯蓝**：状态仍然看得见（蓝 = 正在下），只是不再滚动。
+ * 斜纹在这里一并去掉 —— 一道不动的斜纹读起来像装饰，纯色反而是更清楚的"它在下"。
+ */
 @media (prefers-reduced-motion: reduce) {
   .setting .language-progress[data-state='downloading']::after {
     animation: none;
-    transform: scaleX(0.4);
+    background-image: none;
   }
 }
 

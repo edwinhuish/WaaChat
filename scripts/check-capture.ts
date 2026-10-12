@@ -1374,6 +1374,32 @@ check(
 )
 
 /**
+ * 「下载中」那条斜纹的**周期**在样式表里出现两次，两处必须相等（[ADR-0071]）。
+ *
+ * 斜纹由 `background-size` 铺出来，而"持续滚动"是把 `background-position` 平移**恰好一个
+ * 周期**：这两个数一旦不等，每一圈都会在回头那一下**跳一格** —— 而那一下恰好很难被眼睛抓住
+ * （只觉得"有点抖"）。另外它必须是**正方形**周期，否则斜纹在横竖两个方向上的疏密不一样。
+ *
+ * 刻意不检查颜色与占比（那些是取舍，写在 ADR 里）：这里钉的是"会不会抖"这个静默坏法。
+ */
+const stripeTile =
+  /\.language-progress\[data-state='downloading'\]::after \{[\s\S]*?background-size: (\d+)px (\d+)px/.exec(
+    stylesheet,
+  )
+const stripeShift =
+  /@keyframes dictionary-downloading \{[\s\S]*?background-position: (\d+)px 0/.exec(stylesheet)
+check(
+  '「下载中」的斜纹周期是正方形，且与 @keyframes 每圈平移的距离相等（不等 = 每一圈跳一格）',
+  stripeTile !== null &&
+    stripeShift !== null &&
+    stripeTile[1] === stripeTile[2] &&
+    stripeTile[1] === stripeShift[1],
+  stripeTile === null || stripeShift === null
+    ? '样式表里找不到斜纹的 background-size 或者 @keyframes 的 background-position'
+    : `background-size 是 ${stripeTile[1]}px × ${stripeTile[2]}px，而 @keyframes 平移 ${stripeShift[1]}px`,
+)
+
+/**
  * 词典下载状态这一条链（[ADR-0071]）与它最容易静默坏掉的那一处。
  *
  * "语言码大小写归一"是这条链上唯一的**推理**（不是实测）：事件里的码用的是我们交给内核的
