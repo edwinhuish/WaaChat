@@ -2,7 +2,7 @@
  * 词典下载状态的单测（`src/shared/dictionary-status.ts`，[ADR-0071]）。
  *
  * 为什么值得测：这张状态机的**输入是内核发来的四个事件**，而它出错的方式全是安静的 ——
- * 映射写反了，症状是"设置里那一格停在未开始"或"绿条先亮后灭"，两者都与"功能正常"长得一样。
+ * 映射写反了，症状是"设置里那一格停在未开始"或"蓝条先亮后灭"，两者都与"功能正常"长得一样。
  * 因此这里断言的是**每一条路径**，而不是某一次调用的结果。
  */
 
@@ -45,7 +45,7 @@ describe('nextDictionaryStatus', () => {
     expect(nextDictionaryStatus('failed', 'download-failure')).toBe('failed')
   })
 
-  it('就绪是终局：文件已经在磁盘上，后面任何消息都不该把绿条改回别的样子', () => {
+  it('就绪是终局：文件已经在磁盘上，后面任何消息都不该把蓝条改回别的样子', () => {
     for (const event of EVENTS.filter((item) => item !== 'download-begin')) {
       expect(nextDictionaryStatus('ready', event)).toBe('ready')
     }

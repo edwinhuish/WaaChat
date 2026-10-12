@@ -137,7 +137,7 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   /**
    * 兜底重播（[ADR-0073]）：回头看一眼"该有状态的语言里还有谁没有"。正常路径下**一个都没有**
    * —— 订阅早于内核那四条通知，因此它们都听见了；这一支只兜住"漏听"这一种情况，把那一格从
-   * 空槽救成绿条（或红条），而不是让它在整个运行期里都读作"没下载"。
+   * 空槽救成蓝条（或红条），而不是让它在整个运行期里都读作"没下载"。
    */
   replayMissingDictionaryStatus(ses, getSettings)
 

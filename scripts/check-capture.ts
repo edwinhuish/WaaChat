@@ -1374,29 +1374,45 @@ check(
 )
 
 /**
- * 「下载中」那条斜纹的**周期**在样式表里出现两次，两处必须相等（[ADR-0071]）。
+ * 「下载中」那一段的**几何**（[ADR-0071]；斜纹换成扫动条见 [ADR-0074]）。
  *
- * 斜纹由 `background-size` 铺出来，而"持续滚动"是把 `background-position` 平移**恰好一个
- * 周期**：这两个数一旦不等，每一圈都会在回头那一下**跳一格** —— 而那一下恰好很难被眼睛抓住
- * （只觉得"有点抖"）。另外它必须是**正方形**周期，否则斜纹在横竖两个方向上的疏密不一样。
+ * 判据分散成两处：`width` 在那条状态规则里，两个 `translateX` 在 `@keyframes` 里，而它们必须
+ * 彼此对得上 —— 起点要在**左外侧**（否则那一段会在轨道中间**凭空冒出来**）、终点要把**整段**
+ * 送出**右外侧**（否则它会在还看得见的时候**跳回左边**）。
  *
- * 刻意不检查颜色与占比（那些是取舍，写在 ADR 里）：这里钉的是"会不会抖"这个静默坏法。
+ * 只改一处不会报错，只会"看着有点怪"，而那一下恰好很难被眼睛抓住（只觉得"有点抖"）——
+ * 因此这里钉住它。刻意不检查颜色、时长与计时函数（那些是取舍，写在 ADR 里）。
  */
-const stripeTile =
-  /\.language-progress\[data-state='downloading'\]::after \{[\s\S]*?background-size: (\d+)px (\d+)px/.exec(
-    stylesheet,
-  )
-const stripeShift =
-  /@keyframes dictionary-downloading \{[\s\S]*?background-position: (\d+)px 0/.exec(stylesheet)
+const sweepBand = /\[data-state='downloading'\]::after \{[\s\S]*?width: (\d+)%/.exec(stylesheet)
+const sweepFrames = /@keyframes dictionary-downloading \{([\s\S]*?)\n\}/.exec(stylesheet)
+const sweepShifts =
+  sweepFrames === null
+    ? []
+    : [...sweepFrames[1].matchAll(/translateX\((-?\d+)%\)/g)].map((shift) => Number(shift[1]))
 check(
-  '「下载中」的斜纹周期是正方形，且与 @keyframes 每圈平移的距离相等（不等 = 每一圈跳一格）',
-  stripeTile !== null &&
-    stripeShift !== null &&
-    stripeTile[1] === stripeTile[2] &&
-    stripeTile[1] === stripeShift[1],
-  stripeTile === null || stripeShift === null
-    ? '样式表里找不到斜纹的 background-size 或者 @keyframes 的 background-position'
-    : `background-size 是 ${stripeTile[1]}px × ${stripeTile[2]}px，而 @keyframes 平移 ${stripeShift[1]}px`,
+  '「下载中」那一段从轨道左外侧起步、整段走出右外侧，且终点与它自己的宽度对得上（对不上 = 凭空冒出或跳回）',
+  sweepBand !== null &&
+    sweepShifts.length === 2 &&
+    sweepShifts[0] <= -100 &&
+    sweepShifts[1] * Number(sweepBand[1]) === 100 * 100,
+  sweepBand === null || sweepFrames === null
+    ? '样式表里找不到「下载中」那一段的 width 或者 @keyframes dictionary-downloading'
+    : `width 是 ${sweepBand === null ? '（没找到）' : sweepBand[1]}%，两个 translateX 是 ${sweepShifts.join(' / ')}`,
+)
+
+/**
+ * 关掉动效时，两态**仍然**分得开（[ADR-0074]）。
+ *
+ * [ADR-0074] 之后 `ready` 与 `downloading` 是**同一种蓝**，全靠"动没动"分开 —— 而这条媒体
+ * 查询正是把"动"关掉的那一处。若它把 `downloading` 退回"走满的纯蓝"，两态就**完全同形**，
+ * 且界面上没有任何别的东西能提示差别。分开它们的是浓淡（`opacity`），因此这里必须看到它。
+ */
+const reducedMotion = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(stylesheet)
+check(
+  '关掉动效时「下载中」仍然与「已就绪」分得开（两者都是蓝，这条规则是唯一的区分手段：[ADR-0074]）',
+  reducedMotion !== null &&
+    /data-state='downloading'\]::after \{[\s\S]*?opacity:/.test(reducedMotion[1]),
+  '这里退回"走满的纯蓝"就等于把「下载中」画成了「已就绪」—— 两态从此同形',
 )
 
 /**

@@ -360,7 +360,7 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
  * 四个事件都就地记进 {@link dictionaryStatuses}（映射见 `shared/dictionary-status.ts`），
  * 状态表变化时由 {@link onDictionaryStatusChange} 推给界面。`…-download-success` 与
  * `initialized` **都**算"就绪"：前者是"字节拿到了"，后者是"内核已经能查它了"（磁盘上本来就
- * 有这门词典时只会发后一个），把两种都点亮才不会让第二台机器上的绿条永远不出现。
+ * 有这门词典时只会发后一个），把两种都点亮才不会让第二台机器上的蓝条永远不出现。
  *
  * 接的是 `getSettings` 而不是一份快照：补交发生在启动之后的某个时刻，那时用户可能已经改过设置
  * （`settings.ts` 里"读当前值而不是注册时的那一份"是同一条理由）。
