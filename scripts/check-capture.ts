@@ -115,6 +115,8 @@ import {
   zoomStepDown,
   zoomStepUp,
 } from '../src/shared/zoom'
+import { UNREAD_BADGE_LIMIT, parseUnreadCount, unreadBadgeLabel } from '../src/shared/unread'
+import { drawUnreadBadge } from '../src/shared/tray-badge'
 import {
   accountKey,
   archiveDir,
@@ -1738,6 +1740,75 @@ check(
   sectionOfRow('zoomFactor')?.title === '外观与启动' &&
     mainSettingsSource.includes('normalizeZoomFactor('),
   '这一行不在「外观与启动」，或者读设置时没有收敛',
+)
+
+/**
+ * 托盘未读徽标（[ADR-0080]）。
+ *
+ * 这一项有一条**结构性**的风险值得钉住：数据源只有"页面标题"一个，而它坏起来是安静的
+ * ——上游改了标题格式，徽标不再出现，日志里只有在**第一次**解析时记的那一条 `count: null`。
+ * 与它并排的另外两条：托盘图标现在是**合成**出来的（应用图标 + 徽标），因此任何"自己设一张
+ * 裸图标"的地方都会把徽标抹掉；以及标题的归属权（我们拦下 `page-title-updated`）。
+ */
+
+section('托盘未读')
+
+const unreadSource = source('../src/shared/unread.ts')
+const unreadMainSource = source('../src/main/unread.ts')
+const trayBadgeSource = source('../src/shared/tray-badge.ts')
+const traySource = source('../src/main/integration/tray.ts')
+check(
+  '标题解析只认"（N）"前缀，读不到就是 null（而不是 0 —— 那是另一件事：读到了、确实没有未读）',
+  parseUnreadCount('(3) WhatsApp') === 3 &&
+    parseUnreadCount('  (12) WhatsApp') === 12 &&
+    parseUnreadCount('WhatsApp') === null &&
+    parseUnreadCount('(0) WhatsApp') === null &&
+    parseUnreadCount('(abc) WhatsApp') === null &&
+    parseUnreadCount('') === null,
+  '解析判据被改过 —— 认错的表现是徽标显示一个错的数字，或者把"不知道"说成"没有未读"',
+)
+check(
+  '徽标文字：没有未读不画，超过上限收成 99+（三位数在 22px 的图标里糊成一团）',
+  unreadBadgeLabel(null) === null &&
+    unreadBadgeLabel(0) === null &&
+    unreadBadgeLabel(1) === '1' &&
+    unreadBadgeLabel(UNREAD_BADGE_LIMIT) === String(UNREAD_BADGE_LIMIT) &&
+    unreadBadgeLabel(UNREAD_BADGE_LIMIT + 1) === `${UNREAD_BADGE_LIMIT}+`,
+  '徽标上限或"没有未读"的判据被改过',
+)
+check(
+  '窗口标题由我们决定：拦下 page-title-updated（否则命名实例不再自报家门，页面标题还会盖掉未读数）',
+  unreadMainSource.includes("on('page-title-updated'") &&
+    unreadMainSource.includes('event.preventDefault()') &&
+    unreadMainSource.includes('window.setTitle('),
+  'unread.ts 里没有拦标题 —— 上游的标题会把实例名与未读数一起覆盖掉',
+)
+check(
+  '托盘图标是"应用图标 + 徽标"合成出来的，且只有一处设它 —— 改图标不许绕过去',
+  traySource.includes('trayIconWithBadge(') &&
+    traySource.includes('export function syncTrayIcon') &&
+    ipcSource.includes('syncTrayIcon()') &&
+    !ipcSource.includes('.setImage('),
+  '有一处自己设了裸图标：改一次应用图标就会把未读徽标无声地抹掉（而且不会自己回来）',
+)
+check(
+  '未读跟踪在 createTray() 之后接上（托盘不存在时那一次调用是空转，徽标会一直空到下次变化）',
+  entrySource.includes('attachUnreadTracking(mainWindow, applyTrayUnread)') &&
+    entrySource.indexOf('attachUnreadTracking(') > entrySource.indexOf('createTray('),
+  '顺序反了：启动后第一个未读数出现之前，托盘上不会有徽标',
+)
+check(
+  '两个新模块都不导入 electron（判据要能在没有 Electron 的环境里断言）',
+  !unreadSource.includes("from 'electron'") && !trayBadgeSource.includes("from 'electron'"),
+  'shared/ 里出现了 electron 的运行时依赖',
+)
+check(
+  '徽标几何按画布比例算、落点有边界守卫（画到画布外会串到下一行像素：一条乱码横线）',
+  trayBadgeSource.includes('CENTER_RATIO') &&
+    trayBadgeSource.includes('RADIUS_RATIO') &&
+    trayBadgeSource.includes('x >= size || y >= size') &&
+    typeof drawUnreadBadge === 'function',
+  '几何被写死或边界守卫被去掉 —— 症状是图标上出现一条乱码横线，很难联想到徽标',
 )
 
 /**

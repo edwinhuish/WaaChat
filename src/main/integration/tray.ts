@@ -16,12 +16,14 @@
  */
 
 import { Menu, Tray, app } from 'electron'
-import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
+import type { BrowserWindow, MenuItemConstructorOptions, NativeImage } from 'electron'
 
+import { formatWindowTitle, unreadBadgeLabel } from '../../shared/unread'
 import { instanceLabel, usingDefaultInstance } from '../instance'
 import { logger } from '../logger'
 import { presentWindow } from '../window'
 import { effectiveAppIcon } from './appicon'
+import { trayIconWithBadge } from './badge'
 
 /**
  * 托盘要打开的三扇窗口。
@@ -38,6 +40,15 @@ export interface TrayWindows {
 let tray: Tray | null = null
 
 /**
+ * 当前的未读条数；`null` = 不知道（页面上报之前就是它）。`0` 与它同义：都不画徽标。
+ *
+ * 为什么要留一份：托盘图标会**因为别的原因**被重设一次（最典型的是用户换了应用图标，
+ * 见 {@link syncTrayIcon}），而那一次必须把徽标一起带上 —— 否则换个图标就把未读数弄丢了，
+ * 症状是"图标变了、红点没了，而且再也不会回来"（要等下一次未读数变化）。
+ */
+let unreadCount: number | null = null
+
+/**
  * 当前托盘，供"换了图标要立刻反映到托盘上"的调用方使用（见 `ipc/index.ts`）。
  *
  * 托盘可能整个不存在（缺 Ayatana 支持），因此返回 `null` 是正常路径，调用方不必区分。
@@ -46,23 +57,64 @@ export function getTray(): Tray | null {
   return tray
 }
 
+/** 托盘图标 = 应用图标（+ 未读徽标）。两处（建托盘、刷新）共用它，因此不可能只带一半。 */
+function trayImage(): NativeImage | null {
+  /**
+   * 与窗口用同一个来源（`integration/appicon.ts`）。**不要**在这里另读一次文件：
+   * 那样"自定义图标"就要在各处分别实现一遍，而漏掉其中一处的外观症状是
+   * "托盘换了、窗口没换" —— 看起来像随机故障。
+   */
+  const base = effectiveAppIcon()
+  if (base === null) return null
+
+  const label = unreadBadgeLabel(unreadCount)
+  return label === null ? base : trayIconWithBadge(base, label)
+}
+
+/**
+ * 设（或清掉）未读徽标（[ADR-0080]）。来源是 `main/unread.ts`（页面的标题）。
+ *
+ * 没有托盘时什么都不做 —— "有没有托盘"这件事检测不到（见文件头），因此这里不能把它当成错误，
+ * 唯一能做的是让其余功能照常工作。
+ */
+export function applyTrayUnread(count: number | null): void {
+  unreadCount = count
+  syncTrayIcon()
+}
+
+/**
+ * 把托盘的外观与"当前的应用图标 + 未读徽标"对齐（两者一起设，因此不可能只更新一半）。
+ *
+ * ⚠️ 换了应用图标的调用方必须走这里，而**不是**自己 `tray.setImage(effectiveAppIcon())` ——
+ * 那样未读徽标会被无声地抹掉（见 {@link unreadCount}）。
+ */
+export function syncTrayIcon(): void {
+  if (tray === null) return
+
+  const image = trayImage()
+  if (image === null) return
+
+  tray.setImage(image)
+  /**
+   * tooltip 在 GNOME 的 appindicator 下**看不到**（[ADR-0034]：点一下直接弹菜单），但别的指示器
+   * 实现会显示它 —— 那里带上未读数：与窗口标题说的是同一件事、同一份文案（`shared/unread.ts`）。
+   */
+  tray.setToolTip(formatWindowTitle(instanceLabel(), unreadCount))
+}
+
 export function createTray(windows: TrayWindows): Tray | null {
   if (tray !== null) return tray
 
   try {
-    /**
-     * 与窗口用同一个来源（`integration/appicon.ts`）。**不要**在这里另读一次文件：
-     * 那样"自定义图标"就要在各处分别实现一遍，而漏掉其中一处的外观症状是
-     * "托盘换了、窗口没换" —— 看起来像随机故障。
-     */
-    const image = effectiveAppIcon()
+    const image = trayImage()
     if (image === null) {
       logger.warn('tray: icon not found, continuing without a tray icon')
       return null
     }
 
     tray = new Tray(image)
-    tray.setToolTip(instanceLabel())
+    // tooltip 与图标一起由 syncTrayIcon() 设（它同时负责命名实例自报家门，见 `formatWindowTitle`）。
+    syncTrayIcon()
 
     const template: MenuItemConstructorOptions[] = []
 

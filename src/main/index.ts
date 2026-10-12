@@ -17,7 +17,7 @@ import { attachDevProbe } from './dev-probe'
 import { attachLangProbeSession } from './dev-probe-lang'
 import { registerIpcHandlers } from './ipc'
 import { applyLaunchAtLogin } from './integration/login'
-import { createTray } from './integration/tray'
+import { applyTrayUnread, createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { applyLinuxGpuSwitches } from './linux-gpu'
 import { configureLogger, logger, redactPath } from './logger'
@@ -26,6 +26,7 @@ import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
 import { applyTheme, attachThemeSync } from './theme'
+import { attachUnreadTracking } from './unread'
 import {
   beginQuit,
   createFilesWindow,
@@ -319,6 +320,16 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers()
   createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })
+
+  /**
+   * 未读徽标（[ADR-0080]）：数据源是**页面标题**（上游把未读数写在那里），由内核交给我们
+   * （`page-title-updated`），因此不碰页面一个字节（INV-1）。
+   *
+   * ⚠️ 必须在 `createTray()` **之后**：这一句会立刻按"当前没有未读"设一次标题与托盘图标，
+   * 而托盘还不存在时那次调用只是白跑（`applyTrayUnread` 没有托盘就什么都不做）——
+   * 顺序反了不会报错，只会让徽标在启动后的第一次未读数变化之前一直是空的。
+   */
+  attachUnreadTracking(mainWindow, applyTrayUnread)
 
   /**
    * `app.getLocale()` 仍然记一条（[ADR-0066] 之后它是**系统** locale，不再由我们设置）。

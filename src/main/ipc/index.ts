@@ -55,16 +55,10 @@ import { archiveStore, enforceArchiveLimit } from '../archive/store'
 import { cacheUsage, enforceCacheLimit, planCacheConversion } from '../capture/cache-files'
 import { instanceId, instanceLabel, sessionPartition, usingDefaultInstance } from '../instance'
 import { switchCiphertextCache } from '../capture/cache-switch'
-import {
-  appIconState,
-  effectiveAppIcon,
-  readIconSource,
-  resetAppIcon,
-  setAppIcon,
-} from '../integration/appicon'
+import { appIconState, readIconSource, resetAppIcon, setAppIcon } from '../integration/appicon'
 import { applyLaunchAtLogin } from '../integration/login'
 import { openPath, revealPath } from '../integration/open'
-import { getTray } from '../integration/tray'
+import { syncTrayIcon } from '../integration/tray'
 import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { relaunchApp } from '../restart'
@@ -437,8 +431,12 @@ function toIconBytes(value: unknown): Uint8Array | null {
 function refreshTrayIcon(result: AppIconResult): AppIconResult {
   if (!result.ok) return result
 
-  const image = effectiveAppIcon()
-  if (image !== null) getTray()?.setImage(image)
+  /**
+   * ⚠️ 走 `syncTrayIcon()` 而不是自己 `setImage(effectiveAppIcon())`：托盘图标现在是
+   * "应用图标 + 未读徽标"合成的（[ADR-0080]），自己设一张裸图标会把未读徽标**无声地**抹掉，
+   * 而且它不会自己回来（要等下一次未读数变化）。
+   */
+  syncTrayIcon()
 
   return result
 }
