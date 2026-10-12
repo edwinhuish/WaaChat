@@ -1579,6 +1579,48 @@ check(
     : `这几项没有 label：${roleItems.filter((item) => !item.includes('label:')).join(' ')}`,
 )
 
+/**
+ * 应用菜单（`src/main/menu.ts`）。
+ *
+ * 我们不调用 `Menu.setApplicationMenu()` 时，Electron 会装**它自己**那份默认菜单：文案是英文、
+ * 视图里带着 Force Reload 与 Toggle DevTools、帮助里一条会去打开 electronjs.org 的
+ * "Learn More about Electron"。三扇窗口都是 `autoHideMenuBar: true`，菜单栏平时看不见 ——
+ * 但 Alt 一按就出来，**而且它的快捷键一直在生效**：那份默认菜单既是暴露面，又是"Ctrl+Q 能不能
+ * 退出 / 能不能缩放"的实际来源。因此这一节钉住三件事：装的是我们的那份、每个 `role` 都有中文
+ * `label`（与右键菜单同一条纪律）、默认菜单里那几个入口没有溜回来。
+ */
+
+section('应用菜单')
+
+const appMenuSource = source('../src/main/menu.ts')
+/**
+ * 只看**代码**，把块注释去掉：这份文件的注释**正当**要提到那几个名字（它解释的正是"我们为什么不
+ * 装 DevTools / Learn More"）。断言不该把"写清了理由"当成违规。
+ */
+const appMenuCode = appMenuSource.replace(/\/\*[\s\S]*?\*\//g, '')
+const appMenuRoleItems = appMenuCode.match(/\{\s*role:\s*'[a-zA-Z]+'[^}]*\}/g) ?? []
+
+check(
+  '应用菜单里每个 role 项都带 label（默认文案取自 Chromium 的 locale，可能是英文）',
+  appMenuRoleItems.length > 0 && appMenuRoleItems.every((item) => item.includes('label:')),
+  appMenuRoleItems.length === 0
+    ? 'menu.ts 里找不到任何 role 项 —— 菜单模板被改过了？'
+    : `这几项没有 label：${appMenuRoleItems.filter((item) => !item.includes('label:')).join(' ')}`,
+)
+check(
+  '内核的调试入口与 Electron 的帮助项没有溜回来（DevTools / Force Reload / Learn More）',
+  !/toggleDevTools|forceReload|Learn More/.test(appMenuCode),
+  'menu.ts 里出现了 DevTools / Force Reload / Learn More —— 它们不该由一次按键触达',
+)
+check(
+  '菜单在窗口创建之后才装，且三扇窗口都传了进去',
+  entrySource.indexOf('installApplicationMenu(') > entrySource.indexOf('= createMainWindow()') &&
+    entrySource.includes('files: filesWindow') &&
+    entrySource.includes('settings: settingsWindow') &&
+    entrySource.includes('main: mainWindow'),
+  '菜单装早了拿不到窗口引用，或者漏了某一扇 —— 那一项会变成"点了没反应"',
+)
+
 const mainSourceFiles = sourceFiles(join(srcRoot, 'main'))
 check(
   '拼写检查的两个设置项在主进程里都有读者（能改的就一定真的会被执行）',

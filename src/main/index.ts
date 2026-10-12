@@ -21,6 +21,7 @@ import { createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { applyLinuxGpuSwitches } from './linux-gpu'
 import { configureLogger, logger, redactPath } from './logger'
+import { installApplicationMenu } from './menu'
 import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
@@ -296,6 +297,13 @@ app.whenReady().then(async () => {
 
   // 右键菜单：唯一的内容是拼写检查的建议（Electron 不像浏览器自带菜单，见 context-menu.ts）。
   attachContextMenu(mainWindow)
+
+  /**
+   * 应用菜单：替换 Electron 那份默认菜单（英文、带 DevTools 与 "Learn More about Electron"）。
+   *
+   * 必须在窗口创建**之后** —— 菜单里那三项要的正是这三扇窗口的引用（与托盘同一批目的地）。
+   */
+  installApplicationMenu({ files: filesWindow, settings: settingsWindow, main: mainWindow })
 
   registerIpcHandlers()
   createTray({ files: filesWindow, settings: settingsWindow, main: mainWindow })

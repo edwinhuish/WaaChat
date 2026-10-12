@@ -106,6 +106,7 @@ waachat/
 │   │   ├── instance.ts             当前实例：解析 argv、派生分区名与界面名（不导入 electron）
 │   │   ├── spellcheck.ts           内核自带的拼写检查：词典清单按内核实有者过滤（ADR-0061）
 │   │   ├── context-menu.ts         承载页面的右键菜单：拼写建议 + 编辑动作（ADR-0061）
+│   │   ├── menu.ts                 应用菜单：替换 Electron 的默认菜单（ADR-0077）
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
 │   │   ├── errors.ts               失败原因取 errno（fs 错误的 name 恒为 `Error`，说不清处境）
