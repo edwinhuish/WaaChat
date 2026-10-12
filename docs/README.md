@@ -174,7 +174,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── language.ts             拼写词典的判据表 + 收敛（纯函数，可单测）
-│       ├── instance.ts             实例标识：解析 --instance、净化、按实例派生名字（纯函数，可单测）
+│       ├── instance.ts             实例标识：解析 --profile、净化、按实例派生名字（纯函数，可单测）
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
 │       ├── notice.ts               主动提示用户的文案与判据：接管失效（纯函数，可单测）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）

@@ -43,7 +43,7 @@ export const sessionPartition = (): string => instancePartition(instanceId())
 export const instanceLabel = (): string => instanceLabelOf(instanceId(), APP_DISPLAY_NAME)
 
 /**
- * 本进程是默认实例（用户没指定 `--instance`）？
+ * 本进程是默认实例（用户没指定 `--profile`）？
  *
  * 有**三处系统集成是全机共享的、只能有一个主人**：用户级启动器条目
  * （`~/.local/share/applications/<app_id>.desktop`）、开机自启条目

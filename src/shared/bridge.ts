@@ -108,7 +108,7 @@ export interface WaaChatBridge {
    *
    * **不接受参数**，也**没有结果**：调用之后进程就开始退出，`await` 到什么都不代表"已经重启好了"。
    * 这一步走的是与托盘「退出」**同一条**退出路径（"退出时清除归档"之类的收尾照常执行），
-   * 然后带着原来的命令行参数重新启动（`--instance work` 因此会被带过去）。
+   * 然后带着原来的命令行参数重新启动（`--profile work` 因此会被带过去）。
    */
   restart(): Promise<void>
   /**
@@ -212,7 +212,7 @@ export interface WaaChatBridge {
 /**
  * 当前进程的实例标识。
  *
- * `id` 是空串表示**默认实例**（用户没指定 `--instance`），因此判断"是不是默认实例"必须
+ * `id` 是空串表示**默认实例**（用户没指定 `--profile`），因此判断"是不是默认实例"必须
  * 看 {@link InstanceInfo.isDefault}，不要拿 `id` 与 `'default'` 比 —— 那个名字是**保留的**，
  * 永远不是一个真实实例的名字（见 `shared/instance.ts` 的 `RESERVED_INSTANCE_IDS`）。
  */

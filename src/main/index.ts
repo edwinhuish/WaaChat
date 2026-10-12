@@ -45,7 +45,7 @@ configureLogger({ packaged: app.isPackaged })
 /**
  * 实例解析与"我是哪一份数据"的落点。
  *
- * `--instance <名>` 选择实例（判据在 `shared/instance.ts`）；不带则是默认实例，此时下面
+ * `--profile <名>` 选择实例（判据在 `shared/instance.ts`）；不带则是默认实例，此时下面
  * 两行写回去的是**原值**，因此既有用户的目录一个字节都不变。
  *
  * 顺序上有三处硬要求，每一处都有具体后果：

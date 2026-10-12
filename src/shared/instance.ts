@@ -16,7 +16,7 @@
  *
  * ── 向后兼容是这次改动的硬要求 ──
  *
- * **默认实例（不带 `--instance`）的目录名、分区名、界面文字一个字节都不变。** 既有用户
+ * **默认实例（不带 `--profile`）的目录名、分区名、界面文字一个字节都不变。** 既有用户
  * 升级之后不该看到任何差别，否则"加了个功能"会变成"我的聊天记录没了"。因此这里所有派生
  * 都遵守同一条规则：默认实例的后缀是空串。
  */
@@ -30,8 +30,24 @@
  */
 export const DEFAULT_INSTANCE_ID = ''
 
-/** 选择实例的命令行参数（`--instance work` 与 `--instance=work` 都接受）。 */
-export const INSTANCE_ARG = '--instance'
+/**
+ * 选择实例的命令行参数（`--profile work` 与 `--profile=work` 都接受）。
+ *
+ * 它**曾经**叫 `--instance`（v1.0.8–v1.1.1），本版本起改名为 `--profile`（[ADR-0076]）。
+ * 因此旧名字不在这里 —— 它是 {@link LEGACY_INSTANCE_ARG}，见到就**拒绝启动**。
+ */
+export const INSTANCE_ARG = '--profile'
+
+/**
+ * 已退休的旧参数名。
+ *
+ * ⚠️ 对它必须**报错**，绝不能像其它陌生参数那样被无视 —— `parseInstanceArg` 的默认姿势是
+ * "只认自己那两种写法，其余一律无视"（Chromium 往 `argv` 里塞了一堆自己的开关，无视是唯一
+ * 可行的姿势）。于是 `waachat --instance work` 会**静默**启动默认实例：用户以为在动 work
+ * 的数据，实际写的是默认实例那一份，而两者在界面上完全一样 —— 这正是本模块最不能接受的
+ * 那类失败（安静地做错事）。报错文案必须说清"改成什么了"，否则用户只看到"起不来"。
+ */
+export const LEGACY_INSTANCE_ARG = '--instance'
 
 /**
  * 实例名的合法形状：**小写**字母/数字开头，其后可含 `-` 与 `_`，最长 32。
@@ -113,14 +129,19 @@ export function describeInstanceIdProblem(id: string): string | null {
 /**
  * 从命令行参数里解析实例。
  *
- * 只认 `--instance <名>` 与 `--instance=<名>` 两种写法，其余参数一律无视（Chromium 会往
+ * 只认 `--profile <名>` 与 `--profile=<名>` 两种写法，其余参数一律无视（Chromium 会往
  * `argv` 里塞它自己的开关）。同一实例被写两次且**值相同**是允许的（无害），值不同则报错：
  * 歧义不能猜，猜错的那一半是"动了另一个实例的数据"。
+ *
+ * 唯一的例外是 {@link LEGACY_INSTANCE_ARG}（旧名字）：它不是"被无视"，而是**报错**——见那里
+ * 的说明。旧名字与 `--profile` 同时出现时，报的是旧名字那一条（它才是用户真正要改的地方）。
  *
  * 纯函数（接收 `argv` 而不是读 `process.argv`），因此每种用法都能单测。
  */
 export function parseInstanceArg(argv: readonly string[]): InstanceArgs {
   const values: string[] = []
+  /** 见到旧名字时记下用户**本来想要**的实例名（取不到就是空串），只为让报错文案能给出正确的改法。 */
+  let legacy: string | null = null
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] ?? ''
@@ -140,6 +161,30 @@ export function parseInstanceArg(argv: readonly string[]): InstanceArgs {
     }
 
     if (arg.startsWith(`${INSTANCE_ARG}=`)) values.push(arg.slice(INSTANCE_ARG.length + 1))
+
+    const isLegacy = arg === LEGACY_INSTANCE_ARG || arg.startsWith(`${LEGACY_INSTANCE_ARG}=`)
+    if (isLegacy) {
+      const inline = arg.startsWith(`${LEGACY_INSTANCE_ARG}=`)
+        ? arg.slice(LEGACY_INSTANCE_ARG.length + 1)
+        : null
+      const wanted = inline ?? argv[index + 1] ?? ''
+      // 值像另一个开关或不存在时，只报"值没给"这一件事：改名才是要修的地方。
+      legacy ??= wanted.startsWith('-') ? '' : wanted
+    }
+  }
+
+  if (legacy !== null) {
+    /**
+     * `id` 用**用户本来想要的那个名字**（取不到就是空串），与"非法实例名保留原值"同一条理由：
+     * 万一将来某个调用方漏判了 `error`，最坏也只是落到一个空目录，而不会写进用户正在用的
+     * 那份数据。空串是唯一会落到默认实例的取值，而它只在用户**没写出名字**时出现。
+     */
+    return {
+      id: legacy,
+      error:
+        `${LEGACY_INSTANCE_ARG} 已改名为 ${INSTANCE_ARG}，本次启动已拒绝（以免误用默认实例的数据）：` +
+        `请改用 ${INSTANCE_ARG}${legacy === '' ? ' <名>' : ` ${legacy}`}`,
+    }
   }
 
   if (values.length === 0) return { id: DEFAULT_INSTANCE_ID, error: null }

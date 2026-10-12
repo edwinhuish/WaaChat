@@ -7,6 +7,9 @@
  *   2. **两两不等**：不同实例派生出来的目录名/分区名必须互不相同（否则"隔离"只是说法）；
  *   3. **非法参数要拒绝**，绝不能回落到默认实例（否则"我指定了 work"变成"我动了默认实例
  *      的数据"，而两种结果在界面上完全一样）。
+ *
+ * 第 3 类里还有一条**改名留下的**判据：旧参数名必须报错而不是被无视 —— 被无视＝静默启动
+ * 默认实例，与"非法参数回落到默认实例"是同一个失败（[ADR-0076]）。
  */
 
 import { describe, expect, it } from 'vitest'
@@ -15,6 +18,7 @@ import {
   ARCHIVE_DIR_BASE_NAME,
   DEFAULT_INSTANCE_ID,
   INSTANCE_ARG,
+  LEGACY_INSTANCE_ARG,
   instanceLabelOf,
   instancePartition,
   instanceSuffix,
@@ -29,9 +33,34 @@ const APP = 'WaaChat'
 
 describe('parseInstanceArg', () => {
   it('没有参数就是默认实例', () => {
-    for (const argv of [[], ['/usr/bin/waachat'], ['--debug'], ['--instance' + 'X']]) {
+    for (const argv of [[], ['/usr/bin/waachat'], ['--debug'], [`${INSTANCE_ARG}X`]]) {
       expect(parseInstanceArg(argv)).toEqual({ id: DEFAULT_INSTANCE_ID, error: null })
     }
+  })
+
+  it('旧参数名（--instance）报错，而不是被无视 —— 被无视＝静默启动默认实例', () => {
+    // 这一条是本项目最不能接受的那类失败的反面：旧脚本 `waachat --instance work` 一旦被当成
+    // "没指定"，用户以为在动 work，实际写的是默认实例那一份，而界面上看不出任何差别。
+    for (const argv of [
+      [LEGACY_INSTANCE_ARG, 'work'],
+      [`${LEGACY_INSTANCE_ARG}=work`],
+      [LEGACY_INSTANCE_ARG],
+    ]) {
+      const parsed = parseInstanceArg(argv)
+      expect(parsed.error).not.toBeNull()
+      // 报错必须说清"改成什么了"，否则用户只看到"起不来"。
+      expect(parsed.error).toContain(INSTANCE_ARG)
+    }
+
+    // 用户本来想要的那个名字要保留下来（漏判 error 的调用方最多落到一个空目录）。
+    expect(parseInstanceArg([LEGACY_INSTANCE_ARG, 'work']).id).toBe('work')
+    expect(parseInstanceArg([`${LEGACY_INSTANCE_ARG}=work`]).id).toBe('work')
+
+    // 新写法照旧生效，两条一起出现时报的仍是旧名字那一条。
+    expect(parseInstanceArg([INSTANCE_ARG, 'work']).error).toBeNull()
+    expect(parseInstanceArg([INSTANCE_ARG, 'work', LEGACY_INSTANCE_ARG, 'work']).error).toContain(
+      LEGACY_INSTANCE_ARG,
+    )
   })
 
   it('两种写法都认', () => {

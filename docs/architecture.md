@@ -179,7 +179,7 @@ sequenceDiagram
 └── logs/                        # 日志（含脱敏约定，见 security.md）
 ```
 
-**多实例**（[ADR-0062](decisions.md#adr-0062)）：有 `--instance <名>` 时，上面这一整套**整体平移**到带
+**多实例**（[ADR-0062](decisions.md#adr-0062)）：有 `--profile <名>` 时，上面这一整套**整体平移**到带
 后缀的位置；默认实例（不带参数）用的就是上面这些路径，一个字节都不变。
 
 ```

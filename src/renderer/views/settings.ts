@@ -1202,7 +1202,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
           ? [
               h('div', {
                 class: 'hint',
-                text: `这一项归默认实例管：它对应的系统条目全机只有一份，两个实例同时改会互相覆盖。要开机启动这个实例，请单独做一个启动器条目（带 ${'--instance'} 参数）。`,
+                text: `这一项归默认实例管：它对应的系统条目全机只有一份，两个实例同时改会互相覆盖。要开机启动这个实例，请单独做一个启动器条目（命令里带 --profile 参数）。`,
               }),
             ]
           : []),

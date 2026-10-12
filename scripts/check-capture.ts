@@ -73,6 +73,7 @@ import {
   ARCHIVE_DIR_BASE_NAME,
   DEFAULT_INSTANCE_ID,
   INSTANCE_ARG,
+  LEGACY_INSTANCE_ARG,
   instancePartition,
   parseInstanceArg,
   withInstanceSuffix,
@@ -1657,6 +1658,18 @@ check(
     parseInstanceArg([]).error === null,
   '有一个非法输入被当成了合法实例',
 )
+check(
+  '旧参数名（--instance）报错，而不是被当成陌生参数无视（无视＝静默启动默认实例）',
+  parseInstanceArg([LEGACY_INSTANCE_ARG, 'work']).error !== null &&
+    parseInstanceArg([`${LEGACY_INSTANCE_ARG}=work`]).error !== null &&
+    // 新名字照旧生效（改名不许把生效的那个也弄坏）
+    parseInstanceArg([INSTANCE_ARG, 'work']).error === null &&
+    // 报错时保留用户本来想要的那个名字：漏判 error 的调用方最多落到一个空目录。
+    parseInstanceArg([LEGACY_INSTANCE_ARG, 'work']).id === 'work',
+  '旧脚本会被静默地落到默认实例的数据上 —— 那正是改名最危险的失败方式',
+)
+// ⚠️ "两个常量不是同一个字符串"不需要断言：它们都是字面量类型，写成 `INSTANCE_ARG ===
+// LEGACY_INSTANCE_ARG` 是**编译错误**（TS2367）。类型系统在这一点上比运行时断言更早发现问题。
 
 // `entrySource` 复用上面"拼写检查与 UA"那一节读到的同一份文本（词典源写得够不够早就出自它）。
 

@@ -49,7 +49,7 @@
 | **降级** | 接管失效时退回上游原生行为。**必须可见**，不允许静默 |
 | **app_id / StartupWMClass / .desktop 文件名** | 桌面环境用来把窗口与启动器条目关联起来的标识。GNOME 按窗口的 `app_id` 去找**同名** `.desktop`；`app_id` 同时是文件名词干与 `StartupWMClass` 的值。四处（含 electron-builder 的 `linux.syncDesktopName`）不一致会导致图标显示异常 |
 | **用户级启动器条目** | `~/.local/share/applications/<app_id>.desktop`。XDG 的查找顺序让它优先于系统目录里的同名条目 —— "换应用图标"能生效靠的就是这个机制（ADR-0022）。只认带 `X-WaaChat-Managed=true` 标记的那份，其余视为用户自己的文件，不碰 |
-| **实例** | 一份完全独立的本地状态：一个 Chromium profile（登录态）、一份设置、一份归档、一份缓存。由 `--instance <名>` 选择，不带参数就是**默认实例**（沿用改动之前的全部路径）。隔离的唯一杠杆是启动时按实例 `app.setPath('userData'/'sessionData')`（ADR-0062）；单实例锁因此自动变成"每实例一把"（锁文件在 `userData` 里）。**实例名不是安全边界**，只是目录名 |
+| **实例** | 一份完全独立的本地状态：一个 Chromium profile（登录态）、一份设置、一份归档、一份缓存。由 `--profile <名>` 选择（v1.0.8–v1.1.1 叫 `--instance`，见 ADR-0076），不带参数就是**默认实例**（沿用改动之前的全部路径）。隔离的唯一杠杆是启动时按实例 `app.setPath('userData'/'sessionData')`（ADR-0062）；单实例锁因此自动变成"每实例一把"（锁文件在 `userData` 里）。**实例名不是安全边界**，只是目录名 |
 | **窗口标题 / 托盘菜单** | 区分"哪一份数据"的界面落点：默认实例就是应用名，命名实例带 `（<实例名>）` 后缀。GNOME 的 appindicator 不显示托盘 tooltip，因此命名实例在菜单第一行自报家门 |
 
 ## 3. 项目的价值集中在哪里
