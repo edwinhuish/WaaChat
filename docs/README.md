@@ -110,6 +110,11 @@ waachat/
 │   │   ├── theme.ts                主题落到 Electron 上：themeSource + 窗口底色跟着系统变（ADR-0078）
 │   │   ├── zoom.ts                 菜单里的缩放动作：算下一档 → 落盘 → 窗口跟上 → 通知设置窗口（ADR-0079）
 │   │   ├── unread.ts               未读跟踪：拦下页面标题、读出未读数、交给托盘与窗口标题（ADR-0080）
+│   │   ├── quiet.ts                「减少打扰」的两个运行期开关：静音、免打扰（ADR-0082，不落盘）
+│   │   ├── smooth-scroll.ts        平滑滚动：启动期的内核开关（ADR-0081，要重启才生效）
+│   │   ├── deep-link.ts            深链接的主进程那一半：声明 scheme、把 argv 变成对话 URL（ADR-0083）
+│   │   ├── fullscreen.ts           页面进 HTML 全屏时的那条退出提示（ADR-0084，每进程一次）
+│   │   ├── restart.ts              「立即重启」：relaunch 先于 quit，退出清理照常跑（ADR-0064）
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
 │   │   ├── errors.ts               失败原因取 errno（fs 错误的 name 恒为 `Error`，说不清处境）
@@ -120,6 +125,7 @@ waachat/
 │   │   ├── linux-gpu.ts            Wayland 启动期的 GPU 开关（ADR-0036 / ADR-0038）
 │   │   ├── dev-probe.ts            **仅开发模式**：把只读探针注入聊天窗口（ADR-0046）
 │   │   ├── dev-probe-source.ts     它的路径与注入代码（纯函数，可单测）
+│   │   ├── dev-probe-lang.ts       **仅开发模式**：只读观察页面那条语言偏好 cookie（ADR-0066）
 │   │   ├── capture/                ★ 核心：内核层接管
 │   │   │   ├── cachekey.ts         幂等键推导（纯函数，可单测）
 │   │   │   ├── cache-files.ts      缓存条目形态 + 转换/暂存区/启动对账 + 容量上限与 LRU 淘汰（ADR-0049，不导入 electron）
@@ -128,6 +134,7 @@ waachat/
 │   │   │   ├── early-identity.ts   下载前的对账：读消息模型的 filehash，命中归档就打开并作废这次下载（ADR-0047）；另按哈希反查会话ID（ADR-0055）
 │   │   │   ├── protocol.ts         会话协议拦截 → 密文磁盘缓存
 │   │   │   ├── headers.ts          回放缓存时保留哪些响应头（白名单；漏一个会静默坏页面）
+│   │   │   ├── request-context.ts  直通重发前把原请求的 fetch 元数据补回去（ADR-0058）
 │   │   │   ├── retry.ts            连接层失败（`ERR_CONNECTION_RESET` 一类）的有限重试（ADR-0033）
 │   │   │   └── health.ts           接管失效的事实源（markCaptured / markFailure / onHealthChange）
 │   │   ├── archive/                ★ 核心：本地归档（账号 / 会话ID 分层，见 ADR-0055）
@@ -172,15 +179,18 @@ waachat/
 │       ├── appicon.ts              图标尺寸/上限、裁剪几何、桌面条目生成（纯函数，可单测）
 │       ├── cache-conversion.ts     密文缓存切换失败的文案（只有一份，主进程与界面共用）
 │       ├── constants.ts            上游地址、分区名、app_id、容量上限
+│       ├── deep-link.ts            深链接的判据与归一化：号码只有一种形状（纯函数，可单测；ADR-0083）
 │       ├── deletion.ts             批量删除的确认与失败文案（纯函数，可单测）
 │       ├── export.ts               批量导出的失败文案（纯函数，可单测）
 │       ├── types.ts                数据形状 + 默认设置 + 需重启的项
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── language.ts             拼写词典的判据表 + 收敛（纯函数，可单测）
+│       ├── dictionary-status.ts    词典下载的四态判据与键归一化（纯函数，可单测；ADR-0071 / ADR-0074）
 │       ├── instance.ts             实例标识：解析 --profile、净化、按实例派生名字（纯函数，可单测）
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
-│       ├── notice.ts               主动提示用户的文案与判据：接管失效（纯函数，可单测）
+│       ├── notice.ts               主动提示用户的文案与判据（接管失效 / 词典失败 / 全屏提示；纯函数，可单测）
+│       ├── permission-log.ts       权限拒绝的簿记：每组合只记一次（纯函数，可单测；ADR-0085）
 │       ├── settings-sections.ts    设置窗口的区域与行序（数据；每个设置项恰好一行）
 │       ├── size-limit.ts           容量上限的状态文案：按"当前值 + 是否已实现"算出来（纯函数，可单测）
 │       ├── theme.ts                主题的取值与窗口底色（纯函数，可单测；与 styles.css 的 --bg 同源）
