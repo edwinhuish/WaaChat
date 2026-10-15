@@ -29,7 +29,7 @@ import {
   type DictionaryStatus,
   type DictionaryStatusMap,
 } from '../shared/dictionary-status'
-import { resolveSpellcheckLanguages } from '../shared/language'
+import { isLanguageCode, resolveSpellcheckLanguages } from '../shared/language'
 import type { Settings } from '../shared/types'
 import { logger } from './logger'
 
@@ -83,6 +83,31 @@ export function applyDictionaryDownloadSource(ses: Session): void {
  * 补交会在内核每次装载词典时都白跑一遍（那会被日志放大成噪音，而噪音会把真正的那几条埋掉）。
  */
 let awaitingDictionaries = false
+
+/**
+ * 当前的**界面语言**（网页版那条 `wa_web_lang_pref` 的原值），由 `main/page-language.ts` 推进来。
+ *
+ * ⚠️ 它只有**一份**：值由 `page-language.ts` 读（它订阅那条 cookie 的变化），这里只是**消费者** ——
+ * 而消费者恰恰是最多的：改设置、重试下载、内核装载完成后的补交都会重跑 {@link applySpellcheck}。
+ * 反过来让本模块去 `import` `page-language.ts` 会成一个环（那边要调 {@link applySpellcheck}），
+ * 因此值由那边推过来，`page-language.ts` 自己要判断"是不是真的变了"时也从这里读回去。
+ */
+let pageLanguage: string | null = null
+
+/** 当前的界面语言；`null` = 页面还没说过（全新 profile 里那条 cookie 还不存在）。 */
+export function currentPageLanguage(): string | null {
+  return pageLanguage
+}
+
+/** 记下界面语言。只有 `main/page-language.ts` 该调它 —— 那条 cookie 是它读的。 */
+export function setPageLanguage(value: string | null): void {
+  pageLanguage = value
+}
+
+/** 界面语言进日志的形状：只有"看起来就是语言码"才原样打出来（那条 cookie 可能是凭据）。 */
+function safeLanguage(value: string): string {
+  return isLanguageCode(value) ? value : `len=${value.length}`
+}
 
 /**
  * 每一门词典此刻的状态（键是 {@link dictionaryKey} 归一过的小写语言码）。
@@ -242,7 +267,11 @@ export function replayMissingDictionaryStatus(ses: Session, getSettings: () => S
   const available = ses.availableSpellCheckerLanguages
   if (available.length === 0) return
 
-  const { applied } = resolveSpellcheckLanguages(settings.spellcheckLanguages, available)
+  const { applied } = resolveSpellcheckLanguages(
+    settings.spellcheckLanguages,
+    pageLanguage,
+    available,
+  )
   const missing = languagesWithoutStatus(applied, dictionaryStatusSnapshot())
   if (missing.length === 0) return
 
@@ -305,14 +334,22 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
 
   awaitingDictionaries = false
 
-  const { applied, rejected } = resolveSpellcheckLanguages(settings.spellcheckLanguages, available)
+  /**
+   * ⚠️ **只挑一门**（[ADR-0089]）。交多门就回到 [ADR-0075] 实测的**并集**语义：几门的词表合在一起，
+   * 纠错建议也来自那一组 —— 于是"界面是西语、却给我英语建议"无法避免（那正是实测到的现象）。
+   */
+  const { applied, rejected } = resolveSpellcheckLanguages(
+    settings.spellcheckLanguages,
+    pageLanguage,
+    available,
+  )
 
   /**
-   * 被丢掉的那些**必须留痕**：这一支是静默失效的入口 —— 用户勾了法语、内核没有那门词典，
-   * 于是英文以外的词全被画上红线，而日志里只有这一条能说清为什么。
+   * 被丢掉的那一门**必须留痕**：这一支是静默失效的入口 —— 清单里排着法语、内核没有那门词典，
+   * 于是所有词全被画上红线，而日志里只有这一条能说清为什么。
    */
   if (rejected.length > 0) {
-    logger.warn('spellcheck: dropped dictionaries the kernel does not provide', {
+    logger.warn('spellcheck: dropped the dictionary the kernel does not provide', {
       dropped: rejected.join(','),
       availableCount: available.length,
     })
@@ -333,6 +370,7 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
 
   logger.info('spellcheck: enabled', {
     languages: applied.join(','),
+    pageLanguage: pageLanguage === null ? null : safeLanguage(pageLanguage),
     availableCount: available.length,
   })
 }

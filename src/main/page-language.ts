@@ -15,14 +15,15 @@
  * （`shared/language.ts`）。顺带一提，`es_LA` / `en_GB` 这种值在页面按账号语言重写它之后，
  * 恰恰就是**账号语言**本身 —— 那次"我们改不动"的实测，正好是这里要读的那个事实。
  *
- * ── 什么时候动手、动到什么程度 ──────────────────────────────────────────────
+ * ── 它管两件事 ──────────────────────────────────────────────────────────────
  *
- * 两条路，见 `shared/language.ts` 的 `adoptInterfaceDictionary()`：
- *
- *   1. **启动**时（{@link followPageLanguage}）：只做"清单还停在写死的默认值上就换掉它"这一半。
- *      磁盘上那条 cookie 是**上次**留下的值，拿它去改一份用户排过的清单就是在跟用户抢；
- *   2. **它真的变了**时（{@link watchPageLanguage}）：把这门补进清单的**第一位**，其余不动。
- *      页面登录之后会写下账号语言，用户在手机上改语言也会走到这里。
+ *   1. **清单里有没有那一门**（[ADR-0088]，写设置）：见 `shared/language.ts` 的
+ *      `adoptInterfaceDictionary()`。启动时只做"清单还停在写死的默认值上就换掉它"这一半 —— 磁盘上
+ *      那条 cookie 是**上次**留下的值，拿它去改一份用户排过的清单就是在跟用户抢；**它真的变了**时
+ *      （页面登录后写下账号语言、用户在手机上改语言）把那门补进清单的**第一位**，其余不动。
+ *   2. **当前值是哪一个**（[ADR-0089]，进内存）：把它交给 `spellcheck.ts`（`setPageLanguage()`）。
+ *      每一次装配拼写检查都要拿它从清单里**挑一门** —— 匹配得上就用那一门，匹配不上就用清单的第一门。
+ *      只有这一份值（`spellcheck.ts` 里的那个变量），本文件判断"是不是真的变了"时也从那里读回去。
  *
  * ⚠️ 判断"真的变了"只看**值**：`docs/research/lang-preference.md` §4.5 实测页面会**同值重写**
  * 那条 cookie（11:54:28 与 11:54:50 两次），不过滤的话每次登录都会去动一遍用户的清单。
@@ -40,7 +41,7 @@ import type { Settings } from '../shared/types'
 import { failureReason } from './errors'
 import { logger } from './logger'
 import { updateSettings } from './settings'
-import { applySpellcheck } from './spellcheck'
+import { applySpellcheck, currentPageLanguage, setPageLanguage } from './spellcheck'
 import { pushSettingsToSettingsWindow } from './window'
 
 /** 一次"页面说的是哪种语言"的读取结果。 */
@@ -122,7 +123,7 @@ async function adopt(
   applySpellcheck(ses, getSettings())
   pushSettingsToSettingsWindow(getSettings())
 
-  logger.info('spellcheck: the dictionaries followed the page language', {
+  logger.info('spellcheck: the dictionary followed the page language', {
     language: safeLanguage(page.raw),
     dictionary: page.dictionary,
     from: previous,
@@ -133,23 +134,19 @@ async function adopt(
 }
 
 /**
- * 启动时的那一次：读一眼界面语言，必要时把**写死的默认值**换掉（[ADR-0088]）。
+ * 启动时的那一次：读一眼界面语言，把它记下来，必要时把**写死的默认值**换掉（[ADR-0088]）。
  *
  * ⚠️ **必须在启动时那次 `applySpellcheck()` 之前调用**，而且那次装配必须传**刚读到的**设置：
  * 这一支可能刚把清单换掉，拿动身之前的那份快照去装配会让内核查的与设置里显示的不是同一个
  * —— 顺带也让内核白下一门 `en-US`（[ADR-0072] 那条"设过的词典不会自己重来"的时序在这里同样成立）。
- *
- * 返回值是**它读到的那条 cookie 的值**，交给 {@link watchPageLanguage} 当"当前值"的起点：
- * 没有这个起点，页面登录之后那次**同值重写**会被当成一次语言变化。
  */
-export async function followPageLanguage(
-  ses: Session,
-  getSettings: () => Settings,
-): Promise<string | null> {
+export async function followPageLanguage(ses: Session, getSettings: () => Settings): Promise<void> {
   const page = await readPageLanguage(ses)
-  await adopt(page, ses, getSettings, false)
 
-  return page?.raw ?? null
+  // "还没有这条 cookie"与"认不出它"都记下来：`applySpellcheck()` 每次都要拿它挑一门（[ADR-0089]）。
+  setPageLanguage(page?.raw ?? null)
+
+  await adopt(page, ses, getSettings, false)
 }
 
 /**
@@ -157,30 +154,24 @@ export async function followPageLanguage(
  *
  * ⚠️ 必须**早于任何窗口**：页面装载之后几秒内就会写下账号语言，晚一步就错过那一次
  * —— 而它的后果与 [ADR-0073] 那条一模一样：不是因为报错，而是因为**什么都没发生**。
- *
- * @param current {@link followPageLanguage} 启动时读到的那个值（`null` = 那时还没有这条 cookie）
  */
-export function watchPageLanguage(
-  ses: Session,
-  getSettings: () => Settings,
-  current: string | null,
-): void {
-  /**
-   * 上一次见到的值。它过滤掉两件事：页面**同值重写**（§4.5 实测会反复发生 —— 不过滤的话每次
-   * 登录都会去动一遍用户的清单），以及别的作用域上那一条同名的 cookie 反复刷新。
-   *
-   * 比的是字符串而不是"上一次匹配到的词典"：语言码的形状由上游决定，我们只在**真的换了值**
-   * 时才多看一眼 —— 判据越窄，越不会误动用户的清单。
-   */
-  let seen = current
-
+export function watchPageLanguage(ses: Session, getSettings: () => Settings): void {
   ses.cookies.on('changed', (_event, cookie, _cause, removed) => {
     if (cookie.name !== PAGE_LANGUAGE_COOKIE) return
     // 被删掉不是"换了语言"：那说明页面清了自己的状态，而下一轮它还会写回同一个语言。
     if (removed) return
-    if (cookie.value === seen) return
 
-    seen = cookie.value
+    /**
+     * 比的是**当前记着的那个值**（`spellcheck.ts` 里那一份，[ADR-0089]）。它过滤掉两件事：页面
+     * **同值重写**（§4.5 实测会反复发生 —— 不过滤的话每次登录都会去动一遍用户的清单），以及别的
+     * 作用域上那一条同名的 cookie 反复刷新。
+     *
+     * 比的是字符串而不是"上一次匹配到的词典"：语言码的形状由上游决定，我们只在**真的换了值**
+     * 时才多看一眼 —— 判据越窄，越不会误动用户的清单。
+     */
+    if (cookie.value === currentPageLanguage()) return
+
+    setPageLanguage(cookie.value)
 
     void adopt(
       { raw: cookie.value, dictionary: matchDictionaryLanguage(cookie.value) },

@@ -82,10 +82,10 @@ import {
   DEFAULT_SPELLCHECK_LANGUAGES,
   SPELLCHECK_LANGUAGES,
   adoptInterfaceDictionary,
-  formatDictionaryList,
   matchDictionaryLanguage,
   normalizeSpellcheckLanguages,
   parseDictionaryList,
+  pickSpellcheckLanguage,
   resolveSpellcheckLanguages,
 } from '../src/shared/language'
 import {
@@ -1309,10 +1309,10 @@ check(
   !SPELLCHECK_LANGUAGES.some((entry) => entry.code.startsWith('zh')),
 )
 check(
-  '只把内核实有的词典交给它，被丢掉的那些留在返回值里（供调用点记日志）',
+  '只把内核实有的那一门交给它，被丢掉的那一门留在返回值里（供调用点记日志）',
   (() => {
-    const resolved = resolveSpellcheckLanguages('en-US,de', ['en-US'])
-    return resolved.applied.join(',') === 'en-US' && resolved.rejected.join(',') === 'de'
+    const resolved = resolveSpellcheckLanguages('de,en-US', 'de', ['en-US'])
+    return resolved.applied.length === 0 && resolved.rejected.join(',') === 'de'
   })(),
 )
 check(
@@ -1322,31 +1322,48 @@ check(
 )
 
 /**
- * 「留在清单里但不参与检查」（`-` 前缀，[ADR-0087]）最关键的一格：那个记号只影响**交给内核**的
- * 那一份，不影响清单本身。它两边的错法都完全静默 —— 滤少了是"这一门我关了，它还在查"，
- * 滤多了是"这一门被静默删掉了"。
+ * **一次只交给内核一门**（[ADR-0089]）—— 这是这一块最关键的一格。
+ *
+ * 它两边的错法都完全静默，而且**正是上一次实测到的那个现象**：交多门时内核把几门的词表合成一组
+ * （并集，[ADR-0075] 实测），纠错建议也来自那一组 —— 于是"界面是西语、却给我英语建议"无法避免。
+ * 交少了（一门都不交）是"拼写检查看起来没做"。
  */
 check(
-  '停用的一门留在清单里、但不交给内核，也不算"内核没有这门词典"（[ADR-0087]）',
+  '一次只交一门：界面语言匹配到的那一门（哪怕它排在后面），且只有它',
   (() => {
-    const entries = parseDictionaryList('en-US,-de')
-    const resolved = resolveSpellcheckLanguages('en-US,-de', ['en-US', 'de'])
+    const resolved = resolveSpellcheckLanguages('en-US,es,de', 'es_LA', ['en-US', 'es', 'de'])
 
     return (
-      entries.length === 2 &&
-      entries[1]?.enabled === false &&
-      formatDictionaryList(entries) === 'en-US,-de' &&
-      resolved.applied.join(',') === 'en-US' &&
-      resolved.rejected.length === 0
+      resolved.applied.join(',') === 'es' &&
+      resolved.rejected.length === 0 &&
+      pickSpellcheckLanguage('en-US,es,de', 'es_LA') === 'es'
     )
   })(),
-  '停用没有生效：它要么照样被交给内核（关了还在查），要么连清单一并丢掉了',
+  '交了不止一门（回到并集语义：建议会掺进别的语言），或者挑中的不是界面语言那一门',
 )
 check(
-  '至少要有一门参与检查：全都被停用时打开**第一项**，而不是把整份清单丢掉回落默认值',
-  normalizeSpellcheckLanguages('-de,-fr') === 'de,-fr' &&
-    normalizeSpellcheckLanguages('-de,en-US') === '-de,en-US',
-  '要么回落到了默认值（用户排的清单被抹掉），要么留下一份空清单（等于什么都不查）',
+  '匹配不上时按**清单的次序**回落第一门（次序因此是回落顺序，不只是好看）',
+  pickSpellcheckLanguage('es,en-US', 'zh_CN') === 'es' &&
+    pickSpellcheckLanguage('es,en-US', null) === 'es',
+  '回落点变了：界面语言是我们这 24 门之外时（中文、日语）会用错一门',
+)
+check(
+  '挑的那一门**不在清单里**时不顺手动清单（只按次序回落）',
+  pickSpellcheckLanguage('en-US,de', 'es_LA') === 'en-US' &&
+    adoptInterfaceDictionary('en-US,de', 'es', false) === null,
+  '挑的这一步改了设置：那会让用户的清单自己变',
+)
+
+/**
+ * [ADR-0089] 撤掉了"逐门停用"那个开关，而既有的 `settings.json` 里可能还留着那个记号
+ * （`language` 码前的 `-`）。它必须被**读成那一门还在**，而不是被当成表外的值剔掉 ——
+ * 后者在用户看来是"升级之后我少了一门"。
+ */
+check(
+  '旧值里那个"停用"记号被抹掉、那一门保住（升级路径）',
+  parseDictionaryList('en-US,-de').join(',') === 'en-US,de' &&
+    normalizeSpellcheckLanguages('-de,en-US') === 'de,en-US',
+  '升级之后用既有的 `settings.json` 会静默少一门 —— 那是最难被发现的那种数据丢失',
 )
 
 const spellcheckSection = sectionOfRow('spellcheckLanguages')
@@ -1438,7 +1455,7 @@ check(
     adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, 'en-US', false) === null &&
     adoptInterfaceDictionary('en-US,de', 'es', false) === null &&
     adoptInterfaceDictionary('en-US,de', 'es', true) === 'es,en-US,de' &&
-    adoptInterfaceDictionary('-es,de', 'es', true) === null &&
+    adoptInterfaceDictionary('de,es', 'es', true) === null &&
     adoptInterfaceDictionary('en-US,de', null, true) === null,
   '要么把用户排过的清单覆盖了，要么把"界面语言变了"该补的那一门丢了',
 )
@@ -1461,7 +1478,7 @@ check(
     sessionSource.indexOf('await followPageLanguage(ses, getSettings)') <
       sessionSource.indexOf('applySpellcheck(ses, getSettings())') &&
     sessionSource.indexOf('applySpellcheck(ses, getSettings())') <
-      sessionSource.indexOf('watchPageLanguage(ses, getSettings, pageLanguage)') &&
+      sessionSource.indexOf('watchPageLanguage(ses, getSettings)') &&
     !sessionSource.includes('applySpellcheck(ses, settings)'),
   '顺序反了，或者又把动身前那份快照传给了 applySpellcheck()',
 )
@@ -1522,7 +1539,6 @@ const LANGUAGE_UI_CLASSES = [
   'language-code',
   'language-progress',
   'language-status',
-  'language-toggle',
   'language-menu-button',
   'language-menu',
   'language-menu-item',
@@ -1533,7 +1549,7 @@ const LANGUAGE_UI_CLASSES = [
   'language-option',
 ]
 check(
-  '拼写词典是"表头 + 一门一行的清单（拖动把手 + 下载进度 + 开关 + `⋯`）+ 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070] / [ADR-0071] / [ADR-0087]）',
+  '拼写词典是"表头 + 一门一行的清单（拖动把手 + 下载进度 + `⋯`）+ 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070] / [ADR-0071] / [ADR-0087] / [ADR-0089]）',
   LANGUAGE_UI_CLASSES.every(
     (name) => settingsViewSource.includes(`'${name}'`) && stylesheet.includes(`.${name} {`),
   ),
@@ -1685,20 +1701,36 @@ check(
 )
 
 /**
- * 「至少要留一门」在**清单那一侧**的两个闸门（[ADR-0070] / [ADR-0087]）：只剩一门时 `⋯` 里的
- * 「移除」是禁用的，而只剩一门**参与检查**时那一门的开关也是禁用的。
+ * 「至少要留一门」在**清单那一侧**的闸门（[ADR-0070]）：只剩一门时 `⋯` 里的「移除」是禁用的。
  *
- * 它们与对话框里那条（草稿为空时禁用「确定」）是必须同时在位的落点 —— 少一个，用户就能把清单
- * 删空或把每一门都关掉，而那个值会被 `normalizeSpellcheckLanguages()` 收敛回**默认值**：
- * 看起来像"它自己变回去了"。这里只能做文本扫描，因此它挡的是**被人顺手删掉**，不是"逻辑写错了"。
+ * 它与对话框里那条（草稿为空时禁用「确定」）是必须同时在位的落点 —— 少一个，用户就能把清单删空，
+ * 而那个值会被 `normalizeSpellcheckLanguages()` 收敛回**默认值**：看起来像"它自己变回去了"。
+ * [ADR-0089] 之前这里还有第二个闸门（"只剩一门参与检查时禁用那一门的开关"），那个开关已经撤掉了
+ * —— 一门参不参与检查不再由用户逐门决定，因此那一格没有对象了。
+ *
+ * 这里只能做文本扫描，因此它挡的是**被人顺手删掉**，不是"逻辑写错了"。
  */
 check(
-  '「至少要留一门」的两个闸门都在位：只剩一门时「移除」禁用、只剩一门参与检查时开关禁用（[ADR-0070] / [ADR-0087]）',
-  settingsViewSource.includes('const removable = entries.length > 1') &&
-    settingsViewSource.includes('disabled: !options.removable') &&
-    settingsViewSource.includes('const stoppable = !(entry.enabled && enabledCount === 1)') &&
-    settingsViewSource.includes('disabled: off || !stoppable'),
-  '有一个闸门不见了：删到一门不剩、或把最后一门也停用时，设置会被悄悄收敛回默认值',
+  '「至少要留一门」的闸门还在位：只剩一门时「移除」禁用（[ADR-0070]）',
+  settingsViewSource.includes('const removable = codes.length > 1') &&
+    settingsViewSource.includes('disabled: !options.removable'),
+  '闸门不见了：删到一门不剩时，设置会被悄悄收敛回默认值',
+)
+
+/**
+ * **逐门开关已经撤掉**（[ADR-0089]）：那一格的对象（"这一门参不参与检查"）没有了 —— 每一时刻
+ * 真正用来查的只有一门，由界面语言从这张候选清单里挑。
+ *
+ * ⚠️ 它回来的话会有两个后果：① 界面上又出现一个"按了也不影响任何事"的控件（那正是 [ADR-0070]
+ * 当年要防的）；② 而且这次更糟 —— 交多门会回到 [ADR-0075] 的并集语义，"界面是西语却给英语建议"
+ * 那个实测现象会原样回来。
+ */
+check(
+  '清单行上没有逐门的启用开关了（那一格的对象随 [ADR-0089] 一起撤掉）',
+  !settingsViewSource.includes('language-toggle') &&
+    !settingsViewSource.includes('setDictionaryEnabled') &&
+    !stylesheet.includes('language-toggle'),
+  '那个开关又回来了：而交多门正是"界面是西语却给英语建议"的根因',
 )
 const restartSource = source('../src/main/restart.ts')
 

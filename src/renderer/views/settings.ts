@@ -37,12 +37,10 @@ import {
 } from '../../shared/dictionary-status'
 import {
   SPELLCHECK_LANGUAGES,
-  ensureEnabledDictionary,
   formatDictionaryList,
   moveDictionary,
   parseDictionaryList,
   stepDictionary,
-  type SpellcheckEntry,
 } from '../../shared/language'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
@@ -984,23 +982,20 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * 不去下载词典）。
    */
   function spellcheckLanguagesRow(current: Settings): HTMLElement {
-    const entries = parseDictionaryList(current.spellcheckLanguages)
+    const codes = parseDictionaryList(current.spellcheckLanguages)
     const labelOf = new Map(SPELLCHECK_LANGUAGES.map((entry) => [entry.code, entry.label]))
     const off = !current.spellcheck
 
     /**
-     * 「至少要留一门」在**这一侧**的两个落点：只剩一门时不给「移除」，只剩一门**参与检查**时
-     * 不给停用它（另一侧在对话框里：草稿为空时禁用「确定」）。两处都不重复：那一侧防的是"草稿被
-     * 勾空"，这一侧动的是**已存下的**那一组。
+     * 「至少要留一门」：只剩一门时不给「移除」（另一侧在对话框里：草稿为空时禁用「确定」）。两处
+     * 都不重复：那一侧防的是"草稿被勾空"，这一侧动的是**已存下的**那一组。
      *
-     * 两条同源：内核拿到一个空清单就等于"什么都不查"，而那与"功能坏了"在用户看来没有区别
-     * （[ADR-0070]；停用这一侧见 [ADR-0087]，兜底仍是 `normalizeSpellcheckLanguages()`）。
+     * 同源：内核拿到一个空清单就等于"什么都不查"，而那与"功能坏了"在用户看来没有区别
+     * （[ADR-0070]；兜底仍是 `normalizeSpellcheckLanguages()`）。
      */
-    const removable = entries.length > 1
-    const enabledCount = entries.filter((entry) => entry.enabled).length
+    const removable = codes.length > 1
 
-    const items = entries.map((entry, index) => {
-      const code = entry.code
+    const items = codes.map((code, index) => {
       const menuButton = h('button', {
         class: 'language-menu-button',
         type: 'button',
@@ -1013,26 +1008,22 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
           openLanguageMenu(menuButton, code, {
             removable,
             atTop: index === 0,
-            atBottom: index === entries.length - 1,
+            atBottom: index === codes.length - 1,
           }),
       })
 
       /**
        * 整块停用时**不画**进度：一份下到哪了的报告离开了那个开关就没有对象 ——
        * 而一条停在蓝/红上的条子会让人以为"拼写检查关着，但词典还在用"。
-       *
-       * 这一门**自己**被停用时同理（[ADR-0087]）：它此刻没有在被下载，留一条走满的蓝条等于说反了
-       * 话（蓝条的意思是"这一门已经装好、正在用它查"）。
        */
       const status = dictionaryStatuses[dictionaryKey(code)] ?? 'unknown'
-      const stoppable = !(entry.enabled && enabledCount === 1)
 
       return h(
         'div',
         {
           class: 'language-item',
           dataRole: 'language-item',
-          data: { code, enabled: entry.enabled ? 'true' : 'false' },
+          data: { code },
           // 整块停用时也不给拖：这一行既然"跟着停用"，能拖就是在说它还是一件活的东西。
           draggable: !off,
         },
@@ -1051,28 +1042,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
          * 与内核、日志、上游文档对得上的是这一串，而不是我们的中文名。
          */
         h('span', { class: 'language-code', text: code }),
-        ...(off || !entry.enabled ? [] : dictionaryProgressNode(status)),
-        /**
-         * 这一门的开关。贴在 `⋯` 左边：它说的是"这一门**现在**参不参与检查"（状态），而 `⋯` 里是
-         * "对这一门做什么"（动作）—— 与其它行"控件在左、动作在右"是同一个方向感。
-         *
-         * 为什么是一个开关而不是"从清单里删掉"：停用是**可逆**的（"这一阵子先别用它查"），删掉之后
-         * 要再用它就得回到对话框里重新搜一遍。真的不要了，用 `⋯` 里的「移除」。
-         */
-        h('input', {
-          type: 'checkbox',
-          class: 'language-toggle',
-          checked: entry.enabled,
-          disabled: off || !stoppable,
-          title: !stoppable
-            ? '至少要留一门参与检查 —— 要整块停用，请用上面那个开关'
-            : entry.enabled
-              ? '这一门正在参与拼写检查：取消勾选可以暂时不用它（它会留在清单里）'
-              : '这一门没在参与：勾上它会立刻开始查（词典可能要先下载）',
-          onChange: (event) => {
-            void setDictionaryEnabled(code, (event.target as HTMLInputElement).checked)
-          },
-        }),
+        ...(off ? [] : dictionaryProgressNode(status)),
         menuButton,
       )
     })
@@ -1105,7 +1075,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
               class: 'hint',
               text: off
                 ? '拼写检查关着，这一行跟着停用 —— 开着它才会去下载词典。'
-                : '第一次的那一门是按内嵌页面的界面语言选的（它跟随你的账号）；之后你在手机上改了语言，匹配到的那一门会排到清单最前，其余项不动。勾上的每一门都会被查（内核不会自己判断你在打哪种语言）；取消勾选只是把它留在清单里，不再参与标注。清单的顺序由你自己排，它不影响判定 —— 内核把勾上的语言当一组一起查。',
+                : '这是一张**候选清单**：每一时刻真正用来查错别字的只有**一门** —— 与内嵌页面界面语言匹配的那门（它跟随你的账号）；匹配不上时用**排在最前面**的那一门，所以拖动排的顺序就是回落顺序。只交一门是刻意的：交多门时内核把几门的词表合成一组，纠错建议也会掺进别的语言。只有当前那一门会在下载词典，其余几门那一格是空的 —— 它们等着被选中。',
             }),
           ),
           actionButton({
@@ -1251,7 +1221,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * 可能已经被主进程推来的新值换过（[ADR-0079] 那条 `onSettingsChanged`）。按已保存的那一份算，
    * 才不会把两次改动里较早的那一份写回去。
    */
-  function currentEntries(): SpellcheckEntry[] {
+  function currentCodes(): string[] {
     return parseDictionaryList(settings?.spellcheckLanguages ?? '')
   }
 
@@ -1259,36 +1229,23 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * 写回一份新清单。
    *
    * 空清单当作"没发生"：它会被 `normalizeSpellcheckLanguages()` 收敛回默认值，看起来像"它自己
-   * 变回去了"。界面上的两个闸门（只剩一门时禁用「移除」、只剩一门参与检查时禁用开关）本来就
-   * 到不了这里，因此这一条是兜底而不是规则。
+   * 变回去了"。界面上那个闸门（只剩一门时不给「移除」）本来就到不了这里，因此这一条是兜底而不是规则。
    */
-  function commitLanguages(entries: readonly SpellcheckEntry[]): void {
-    if (entries.length === 0) return
+  function commitLanguages(codes: readonly string[]): void {
+    if (codes.length === 0) return
 
-    void patch({ spellcheckLanguages: formatDictionaryList(entries) })
+    void patch({ spellcheckLanguages: formatDictionaryList(codes) })
   }
 
   /**
    * `⋯` 里的「移除」：把这一门从**已保存**的那一组里拿掉（[ADR-0070]）。
    *
    * 它**不走草稿**：作用对象是已保存的值，而对话框里那份草稿要保住的是"改到一半改主意"。
-   * 顺序与**别的门的开关**都不动（原样过滤），因此删掉一门不会顺手重排或重启谁。
+   * 其余几门的顺序都不动（原样过滤），因此删掉一门不会顺手重排或重启谁。
    */
   function removeDictionary(code: string): void {
     closeLanguageMenu()
-    commitLanguages(currentEntries().filter((entry) => entry.code !== code))
-  }
-
-  /**
-   * 停用 / 启用一门（[ADR-0087]）。
-   *
-   * ⚠️ 不从清单里删掉：停用是**可逆**的（"这一阵子先别用它查"），而删掉之后要再用它，得回到对话框
-   * 里在 24 门里重新找到它。「移除」是另一件事，在 `⋯` 里。
-   */
-  function setDictionaryEnabled(code: string, enabled: boolean): void {
-    commitLanguages(
-      currentEntries().map((entry) => (entry.code === code ? { code, enabled } : entry)),
-    )
+    commitLanguages(currentCodes().filter((item) => item !== code))
   }
 
   /**
@@ -1425,7 +1382,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     // 文本交给页面，而这里没有页面可交。
     event.preventDefault()
 
-    commitLanguages(moveDictionary(currentEntries(), code, target, after))
+    commitLanguages(moveDictionary(currentCodes(), code, target, after))
   }
 
   /**
@@ -1436,7 +1393,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    */
   function nudgeDictionary(code: string, delta: -1 | 1): void {
     closeLanguageMenu()
-    commitLanguages(stepDictionary(currentEntries(), code, delta))
+    commitLanguages(stepDictionary(currentCodes(), code, delta))
   }
 
   /**
@@ -1447,8 +1404,8 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * **草稿**、按「确定」才写回；点遮罩**不**关 —— 那个手势会丢掉草稿，而退出的路子已经有取消 /
    * × / Esc 三条。
    *
-   * ⚠️ 对话框管的是"清单里**有哪几门**"，不是"哪几门在查"（那是清单行上那个开关的事，[ADR-0087]）：
-   * 这里勾上的每一门写回之后都**保持它原来的开关状态与位置**，头一次出现的那几门排在最后。
+   * ⚠️ 对话框管的是"清单里**有哪几门**"（候选池），不是"哪一门在查"（那是界面语言挑的，[ADR-0089]）：
+   * 这里勾上的每一门写回之后都**保持它原来的位置**，头一次出现的那几门排在最后。
    *
    * ⚠️ 对话框挂在 `document.body` 上，不是 `root` 里：`patch()` → `render()` 会把 `root` 的
    * 子树整个换掉，而它要活过任意次重画。
@@ -1457,11 +1414,11 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (languageDialog !== null || settings === null) return
 
     /**
-     * 打开那一刻的清单。整个对话框（含写回）都以它为基准 —— 拖动 / 停用 / 上移下移不会与它同时
+     * 打开那一刻的清单。整个对话框（含写回）都以它为基准 —— 拖动 / 上移下移 / 移除不会与它同时
      * 发生（那些控件被这层模态挡住），因此不需要每画一次再读一遍。
      */
     const current = parseDictionaryList(settings.spellcheckLanguages)
-    const draft = new Set(current.map((entry) => entry.code))
+    const draft = new Set(current)
 
     const list = h('div', { class: 'language-list', dataRole: 'language-list' })
     const search = h('input', {
@@ -1525,28 +1482,23 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       ...actionButtonAttrs('确定'),
       onClick: () => {
         /**
-         * 写回：**已经在清单里的那几门原样留着** —— 次序与各自的开关状态都不动（[ADR-0087]）；
-         * 新勾上的排在**最后**，一律参与检查。
+         * 写回：**已经在清单里的那几门原样留着** —— 次序不动（[ADR-0087]）；新勾上的排在**最后**。
          *
          * ⚠️ 这一条取代了 [ADR-0070] 的"写回时按 `SPELLCHECK_LANGUAGES` 那张表排"：清单的次序
          * 现在是**用户**的（拖动排的），再按表排一次就会把他刚排好的次序抹掉 —— 而他是来"加一门
          * 语言"的，不会想到顺手弄丢别的。
          */
-        const known = new Set(current.map((entry) => entry.code))
-        const kept = current.filter((entry) => draft.has(entry.code))
+        const known = new Set(current)
+        const kept = current.filter((code) => draft.has(code))
         const added = SPELLCHECK_LANGUAGES.filter(
           (entry) => draft.has(entry.code) && !known.has(entry.code),
-        ).map((entry) => ({ code: entry.code, enabled: true }))
+        ).map((entry) => entry.code)
 
         dialog.close()
 
-        /**
-         * 结果里必须有**一门参与检查**的：草稿可以把唯一启用的那一门取消掉（只留下几门停用的），
-         * 而那与"什么都不查"是同一件事 —— 那条规则只在一个地方实现（[ADR-0070]）。
-         */
-        void patch({
-          spellcheckLanguages: formatDictionaryList(ensureEnabledDictionary([...kept, ...added])),
-        })
+        // 「确定」在草稿为空时是禁用的，因此这里不必再判一次 —— 与 {@link commitLanguages} 同一条
+        // "闸门挡在前面，后面只做兜底"的分工。
+        void patch({ spellcheckLanguages: formatDictionaryList([...kept, ...added]) })
       },
     })
 

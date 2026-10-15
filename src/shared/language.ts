@@ -13,14 +13,15 @@
  * 存下来之后，症状是"设置里显示 A、实际按 B 跑" —— 那正是 `settings.ts` 要避免的不一致。因此
  * {@link normalizeSpellcheckLanguages} 在**读设置的那一刻**就把值收敛到表内。
  *
- * 清单里的每一项还带一件小事：**这一门参不参与检查**（`-` 前缀，见 {@link SpellcheckEntry}，
- * [ADR-0087]）。它与"清单的次序"都只在本文件里解析与组装，因此设置层存下的仍然只是一个字符串
- * —— `settings.ts` 的 `coerce()` 依旧只按 `typeof` 比对。
+ * 清单里存的是**一串有序的语言码**（`settings.json` 里是 `"es,en-US"`），解析与组装都只在本文件
+ * 里，因此设置层存下的仍然只是一个字符串 —— `settings.ts` 的 `coerce()` 依旧只按 `typeof` 比对。
+ * [ADR-0087] 曾经还给每一项带一个"参不参与检查"的开关（`-` 前缀），[ADR-0089] 撤掉了它：每一时刻
+ * 真正用来查的**只有一门**，逐门开关因此没有了对象（读到旧值时那个 `-` 被抹掉，那一门保住）。
  *
- * ⚠️ 次序是**用户**排的（拖动整行，或 `⋯` 里的「上移 / 下移」），但它是清单**自己的**次序，
- * 不是优先级：内核把列出的语言当**一组**查（[ADR-0075] 的并集语义，实测），排第一与排最后的一门
- * 一样会被查。因此界面上不许把这件事说成"首选语言"，理由见 [ADR-0070] 对「移到顶部」的否决与
- * [ADR-0087] 接下它时写下的边界。
+ * ⚠️ 次序是**用户**排的（拖动整行，或 `⋯` 里的「上移 / 下移」）。[ADR-0087] 时它只是清单**自己的**
+ * 次序、不影响判定（并集语义，[ADR-0075] 实测）；[ADR-0089] 之后它**真的有用**了 —— 它是"界面语言
+ * 匹配不上时"的**回落顺序**（{@link pickSpellcheckLanguage} 的第 2 段）。但它仍然不是"优先级"：
+ * 界面上依旧不许把它说成"首选语言"。
  *
  * 历史：本文件曾经也放**界面语言**那张表（`UI_LANGUAGES` / `pageLanguageCode` / `--lang` 的
  * 诊断函数）。[ADR-0066] 把「界面语言」这一项整个撤掉了 —— 实测证明登录之后语言由**账号**决定，
@@ -31,6 +32,10 @@
  * 跟随内嵌页面的界面语言（`wa_web_lang_pref`，判据见 {@link matchDictionaryLanguage} 与
  * {@link adoptInterfaceDictionary}）。这不是 [ADR-0066] 的反悔 —— 那时我们试图**改**页面的语言
  * （三轮都失败，最后一轮还撞在 INV-1 上），现在我们只是把它**读**出来选一门词典。
+ *
+ * ⚠️ [ADR-0089] 之后界面语言还多管一件事：**每一时刻从清单里挑出哪一门交给内核**（{@link
+ * pickSpellcheckLanguage}）。只交一门是刻意的 —— 交多门时内核把几门的词表合成一组（并集），
+ * 纠错建议也来自那一组，于是"界面是西语、却给我英语建议"无法避免（那是实测到的现象）。
  */
 
 /** 拼写检查可选的一门词典。 */
@@ -109,89 +114,34 @@ export const SPELLCHECK_LANGUAGES: readonly SpellcheckLanguage[] = [
 export const DEFAULT_SPELLCHECK_LANGUAGES = 'en-US'
 
 /**
- * 清单里的一项。
+ * 清单串 → 有序的**语言码**数组（保序、去重）。
  *
- * `enabled === false` 表示**这一门在清单里、但不参与检查**（[ADR-0087]）：用户先前勾了它，
- * 只是这一阵子不想用它查错别字。它与"从清单里删掉"是两件事 —— 删掉之后要再用它，得回到对话框里
- * 重新搜一遍；而顺序与状态都会被原样保住。
+ * 刻意**不认识**语言码 —— 那是 {@link normalizeSpellcheckLanguages} 的事：{@link resolveSpellcheckLanguages}
+ * 要能说出"内核没有这一门"，在这里就把它滤掉的话，就没有人能报告了。
+ *
+ * ⚠️ 从前这里还有一种"留在清单里但不参与检查"的记号（语言码前的 `-`，[ADR-0087]）。[ADR-0089] 之后
+ * 清单是**候选池**、每次只挑一门交给内核，于是"停用某一门"没有了对象 —— 那个记号因此退休。读到还带着
+ * 它的旧值（`"en-US,-de"`）时这里把那个 `-` 去掉：**既有的 `settings.json` 一门都不会丢**，只是那一门
+ * 从此一直参与候选。
  */
-export interface SpellcheckEntry {
-  readonly code: string
-  readonly enabled: boolean
-}
-
-/**
- * 「留在清单里但不参与检查」的记号：语言码前面一个 `-`。
- *
- * 为什么挤进同一个字段，而不是另开一个"被停用的那些"：清单的**次序**与每一项的**开关**是同一条
- * 清单上的两个属性 —— 分成两份状态就会出现"在一个里删了、另一个里还留着"这种要额外对账的形状，
- * 而且两份状态各自的顺序还得各自维护。存成一个字符串还意味着设置层不必为"数组"这一种新类型单开
- * 一套逐字段校验（`settings.ts` 的 `coerce()` 只按 `typeof` 比对）。
- *
- * `settings.json` 里因此长这样：`"spellcheckLanguages": "en-US,-de"`。
- */
-export const DISABLED_DICTIONARY_PREFIX = '-'
-
-/**
- * 清单串 → 有序的 {@link SpellcheckEntry}[]。
- *
- * 按逗号切分、去空白、去空项、**去重且保序**（每一项多带回自己的开关）。刻意**不认识**语言码
- * —— 那是 {@link normalizeSpellcheckLanguages} 的事：{@link resolveSpellcheckLanguages} 要能
- * 说出"内核实有的那些"，在这里就把它滤掉的话，就没有人能报告"内核没有这门词典"了。
- */
-export function parseDictionaryList(value: string): SpellcheckEntry[] {
+export function parseDictionaryList(value: string): string[] {
   const seen = new Set<string>()
-  const entries: SpellcheckEntry[] = []
+  const codes: string[] = []
 
   for (const part of value.split(',')) {
-    const item = part.trim()
-    if (item === '') continue
-
-    const enabled = !item.startsWith(DISABLED_DICTIONARY_PREFIX)
-    const code = (enabled ? item : item.slice(DISABLED_DICTIONARY_PREFIX.length)).trim()
+    const code = part.trim().replace(/^-/, '').trim()
     if (code === '' || seen.has(code)) continue
 
     seen.add(code)
-    entries.push({ code, enabled })
+    codes.push(code)
   }
 
-  return entries
+  return codes
 }
 
-/** {@link SpellcheckEntry}[] → 清单串（保序）。 */
-export function formatDictionaryList(entries: readonly SpellcheckEntry[]): string {
-  return entries
-    .map((entry) => (entry.enabled ? '' : DISABLED_DICTIONARY_PREFIX) + entry.code)
-    .join(',')
-}
-
-/**
- * 清单串 → **参与检查**的那几门语言码（保序）—— 交给内核的就是它。
- *
- * 与 {@link parseDictionaryList} 分开，是为了让"停用"只有一个落点：要读清单的人要么要**完整**
- * 那一份（设置界面），要么要**交给内核**的那一份（拼写检查）。两种意图各有一个函数，就不会出现
- * "某处忘了滤掉停用的"。
- */
-export function enabledLanguageCodes(value: string): string[] {
-  return parseDictionaryList(value)
-    .filter((entry) => entry.enabled)
-    .map((entry) => entry.code)
-}
-
-/**
- * 保证清单里**至少有一门参与检查**：已经有一门启用的就原样返回，一门都没有时才把**第一项**打开。
- *
- * 为什么必须有：交给内核一个空清单等于"什么都不查"，而那与"拼写检查坏了"在用户看来没有区别
- * （[ADR-0070] 那条规则）。为什么打开第一项、而不是整体回落成默认值：后者会连着把用户排的次序与
- * 整份清单一起丢掉，看起来像"它自己变回去了"。
- *
- * 它是这条规则**唯一**的实现：{@link normalizeSpellcheckLanguages}（读设置那一刻）与对话框
- * 写回那一侧（草稿可以把唯一启用的那一门取消掉）都调它 —— 两处因此不会各自想出一种"至少要留一门"。
- */
-export function ensureEnabledDictionary(entries: readonly SpellcheckEntry[]): SpellcheckEntry[] {
-  if (entries.some((entry) => entry.enabled)) return [...entries]
-
-  return entries.map((entry, index) => ({ code: entry.code, enabled: index === 0 }))
+/** 有序的语言码数组 → 清单串（保序）。 */
+export function formatDictionaryList(codes: readonly string[]): string {
+  return codes.join(',')
 }
 
 /**
@@ -200,23 +150,25 @@ export function ensureEnabledDictionary(entries: readonly SpellcheckEntry[]): Sp
  * 纯函数，因此能被单测 —— 这条路全是"看着差不多"的边界：往下拖与往上拖的插入点差一格、拖到自己
  * 身上、目标已经不在清单里，而它们**错一格都不会报错**，只会让人觉得"拖完了位置不对"。
  *
+ * ⚠️ 拖动现在**真的有用**（[ADR-0089]）：清单的次序就是"界面语言匹配不上时"的**回落顺序**
+ * （{@link pickSpellcheckLanguage} 的第 2 段）。
+ *
  * 先把被挪的那一项摘掉再算落点：两个方向因此共用同一段推理（"落在停下来的那张清单的第几个"）。
  */
 export function moveDictionary(
-  entries: readonly SpellcheckEntry[],
+  codes: readonly string[],
   code: string,
   target: string,
   after: boolean,
-): SpellcheckEntry[] {
-  const moved = entries.find((entry) => entry.code === code)
-  if (moved === undefined || code === target) return [...entries]
+): string[] {
+  if (code === target || !codes.includes(code)) return [...codes]
 
-  const rest = entries.filter((entry) => entry.code !== code)
-  const at = rest.findIndex((entry) => entry.code === target)
-  if (at === -1) return [...entries]
+  const rest = codes.filter((item) => item !== code)
+  const at = rest.indexOf(target)
+  if (at === -1) return [...codes]
 
   const index = after ? at + 1 : at
-  return [...rest.slice(0, index), moved, ...rest.slice(index)]
+  return [...rest.slice(0, index), code, ...rest.slice(index)]
 }
 
 /**
@@ -225,16 +177,12 @@ export function moveDictionary(
  * 它是拖动的**键盘路径**（清单行 `⋯` 里的「上移 / 下移」）：一件只能用鼠标做的事，对不用鼠标的人
  * 等于不存在。已经到头时原样返回，调用点据此把那一项禁用。
  */
-export function stepDictionary(
-  entries: readonly SpellcheckEntry[],
-  code: string,
-  delta: -1 | 1,
-): SpellcheckEntry[] {
-  const from = entries.findIndex((entry) => entry.code === code)
+export function stepDictionary(codes: readonly string[], code: string, delta: -1 | 1): string[] {
+  const from = codes.indexOf(code)
   const to = from + delta
-  if (from === -1 || to < 0 || to >= entries.length) return [...entries]
+  if (from === -1 || to < 0 || to >= codes.length) return [...codes]
 
-  const next = [...entries]
+  const next = [...codes]
   const [moved] = next.splice(from, 1)
   next.splice(to, 0, moved)
 
@@ -246,51 +194,72 @@ export function normalizeSpellcheckLanguages(value: unknown): string {
   if (typeof value !== 'string') return DEFAULT_SPELLCHECK_LANGUAGES
 
   const known = new Set(SPELLCHECK_LANGUAGES.map((entry) => entry.code))
-  const kept = parseDictionaryList(value).filter((entry) => known.has(entry.code))
+  const kept = parseDictionaryList(value).filter((code) => known.has(code))
 
   // 一个都不剩（空串、或者全是我们不认识的值）时回落到默认 —— 空清单交给内核等于
   // "什么都不查"，而那与"功能坏了"在用户看来没有区别。
-  return kept.length === 0
-    ? DEFAULT_SPELLCHECK_LANGUAGES
-    : formatDictionaryList(ensureEnabledDictionary(kept))
+  return kept.length === 0 ? DEFAULT_SPELLCHECK_LANGUAGES : formatDictionaryList(kept)
 }
 
-/** 一次"请求哪些词典"的解析结果。 */
+/**
+ * 从清单里挑出**唯一**交给内核的那一门（[ADR-0089]）。
+ *
+ * 两段，与"首先和界面语言匹配的那一门，其次按词典顺序"一一对应：
+ *
+ *   1. **界面语言匹配到的那一门，且它在清单里** —— 匹配规则见 {@link matchDictionaryLanguage}
+ *      （先认区域，其次按表里的顺序落回基础语言）；
+ *   2. **否则清单里的第一门** —— 清单的次序是用户排的（[ADR-0087]），它现在是**回落顺序**。
+ *
+ * 为什么只交一门：内核把交上去的那几门当**一组**查（并集，[ADR-0075] 实测），纠错建议也来自那一组 ——
+ * 于是"界面是西语、却给我英语建议"在交多门时无法避免（那正是实测到的那个现象）。交一门就没有并集：
+ * 查的就是它、建议也来自它。
+ *
+ * @param pageLanguage 界面语言的原值（`wa_web_lang_pref`）；`null` = 还不知道（那时只看清单次序）
+ * @returns 要交给内核的那一门；`null` = 清单是空的（设置层保证至少一门，因此正常路径下到不了）
+ */
+export function pickSpellcheckLanguage(
+  requested: string,
+  pageLanguage: string | null,
+): string | null {
+  const codes = parseDictionaryList(requested)
+  if (codes.length === 0) return null
+
+  const matched = pageLanguage === null ? null : matchDictionaryLanguage(pageLanguage)
+  if (matched !== null && codes.includes(matched)) return matched
+
+  return codes[0]
+}
+
+/** 一次"请求哪一门词典"的解析结果。 */
 export interface SpellcheckResolution {
-  /** 真正交给内核的那些（请求 ∩ 内核有词典）。 */
+  /** 真正交给内核的那一门。**至多一门** —— 多门并用会回到并集语义（[ADR-0075]）。 */
   readonly applied: readonly string[]
   /**
-   * 请求了但内核没有词典的那些。
+   * 挑中了、但内核没有词典的那一门（至多一门）。
    *
-   * 单独返回而不是丢掉：这一支是**静默失效**的入口（用户勾了法语、法语词典下载不到，
-   * 于是英文以外的词全被画上红线），至少要有一条日志说清为什么。
+   * 单独返回而不是丢掉：这一支是**静默失效**的入口（清单里排着法语、内核没有那门词典，
+   * 于是所有词全被画上红线），至少要有一条日志说清为什么。
    */
   readonly rejected: readonly string[]
 }
 
 /**
- * 把设置里的词典清单与内核实际支持的清单对账。
+ * 挑一门 + 与内核实际支持的清单对账（[ADR-0089]）。
  *
  * `available` 由调用方从 `session.availableSpellCheckerLanguages` 取 —— 它是内核的事实，
- * 因此这个函数保持纯函数：给定同样的两个输入，结果就一样，可以单测。
- *
- * ⚠️ **被停用的那些不进来**（[ADR-0087]）：它们不参与检查，因此也不该出现在"内核没有这门词典"
- * 那条日志里 —— 那会把一条真正的缺词典埋在一批用户主动关掉的码里。
+ * 因此这个函数保持纯函数：给定同样的输入，结果就一样，可以单测。
  */
 export function resolveSpellcheckLanguages(
   requested: string,
+  pageLanguage: string | null,
   available: readonly string[],
 ): SpellcheckResolution {
-  const supported = new Set(available)
-  const applied: string[] = []
-  const rejected: string[] = []
+  const pick = pickSpellcheckLanguage(requested, pageLanguage)
+  if (pick === null) return { applied: [], rejected: [] }
 
-  for (const code of enabledLanguageCodes(requested)) {
-    if (supported.has(code)) applied.push(code)
-    else rejected.push(code)
-  }
-
-  return { applied, rejected }
+  return available.includes(pick)
+    ? { applied: [pick], rejected: [] }
+    : { applied: [], rejected: [pick] }
 }
 
 /**
@@ -366,24 +335,21 @@ export function adoptInterfaceDictionary(
   // 界面语言在我们这 24 门里没有对应（中文、日语…）→ 一个字节都不动。
   if (dictionary === null) return null
 
-  const entries = parseDictionaryList(requested)
+  const codes = parseDictionaryList(requested)
 
   /**
-   * 已经在清单里（**无论启不启用**）就不动它。
+   * 已经在清单里就不动它。
    *
-   * ⚠️ 这一条同时是"不跟用户抢"那条纪律的落点：他刚把这一门从清单里删掉、或者取消了勾选，
-   * 而界面语言并没有变 —— 我们没有任何理由把它塞回去（那正是 [ADR-0066] 那类"跟页面抢"的翻版）。
+   * ⚠️ 这一条同时是"不跟用户抢"那条纪律的落点：他刚把这一门从清单里删掉，而界面语言并没有变 ——
+   * 我们没有任何理由把它塞回去（那正是 [ADR-0066] 那类"跟页面抢"的翻版）。
    */
-  if (entries.some((entry) => entry.code === dictionary)) return null
+  if (codes.includes(dictionary)) return null
 
   /**
    * 清单还**恰好**是 {@link DEFAULT_SPELLCHECK_LANGUAGES} 这一门：它是"用户从没定过"的最强判据
-   * （他一旦动过，要么门数变了、要么开关变了），因此直接换掉 —— 这就是 [ADR-0088] 要取代的那件事。
+   * （他一旦动过，门数或内容就变了），因此直接换掉 —— 这就是 [ADR-0088] 要取代的那件事。
    */
-  const only = entries.length === 1 ? entries[0] : undefined
-  if (only !== undefined && only.enabled && only.code === DEFAULT_SPELLCHECK_LANGUAGES) {
-    return dictionary
-  }
+  if (codes.length === 1 && codes[0] === DEFAULT_SPELLCHECK_LANGUAGES) return dictionary
 
   /**
    * 剩下的只有"界面语言**刚刚**变了"那一次：把它补进清单的**第一位**（"首先和界面语言匹配的
@@ -394,5 +360,5 @@ export function adoptInterfaceDictionary(
    */
   if (!onLanguageChange) return null
 
-  return formatDictionaryList([{ code: dictionary, enabled: true }, ...entries])
+  return formatDictionaryList([dictionary, ...codes])
 }

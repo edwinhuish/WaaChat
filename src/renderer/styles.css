@@ -404,22 +404,9 @@ ul.archive li:last-child {
 }
 
 /*
- * 停用的那一门（[ADR-0087]）：它还在清单里，只是不参与检查 —— 名字与语言码淡一档是它唯一的记号
- * （那条进度条整条不画，见 `views/settings.ts`：一门没在查的词典不欠任何人一条进度）。
+ * 行上**没有**开关了（[ADR-0089]）：每一门参不参与检查不再由用户逐门决定 —— 实际在查的**只有一门**，
+ * 由界面语言从这张候选清单里挑（匹配不上时用排在最前面的那一门）。
  */
-.setting .language-item[data-enabled='false'] .language-name,
-.setting .language-item[data-enabled='false'] .language-code {
-  color: var(--muted);
-}
-
-/*
- * 行上的开关（[ADR-0087]）。尺寸与配色沿用 `.setting input[type='checkbox']`，这里只抹掉那条
- * `margin-top: 3px` —— 它是给"单行开关与说明文字对齐"写的，而这一行是 `align-items: center`。
- */
-.setting .language-toggle {
-  flex: 0 0 auto;
-  margin: 0;
-}
 
 /* 长名字（"葡萄牙语（巴西）"）省略，而不是把语言码与 `⋯` 挤出这一行。 */
 .setting .language-name {

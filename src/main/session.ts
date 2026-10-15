@@ -192,7 +192,7 @@ export async function configureSession(ses: Session, getSettings: () => Settings
    * ⚠️ 它**不**破坏 [ADR-0073] 那条时序：词典事件的订阅仍然紧跟着 `session.fromPartition()`，
    * 由 `index.ts` 在任何 `await` 之前接上。这里晚的是"把语言列表交上去"，那一步随时可以做。
    */
-  const pageLanguage = await followPageLanguage(ses, getSettings)
+  await followPageLanguage(ses, getSettings)
 
   /**
    * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效
@@ -205,12 +205,11 @@ export async function configureSession(ses: Session, getSettings: () => Settings
 
   /**
    * 界面语言**变了**时再跟一次（[ADR-0088]）：页面登录之后会写下账号语言，用户在手机上改了语言
-   * 也会走到这里。`pageLanguage` 是上面刚读到的那个值，用来把页面的**同值重写**挡掉
-   * （§4.5 实测它会反复重写，不过滤的话每次登录都会动一遍用户的清单）。
+   * 也会走到这里。
    *
    * ⚠️ 同样必须早于任何窗口：页面装载之后几秒内就会写那条 cookie。
    */
-  watchPageLanguage(ses, getSettings, pageLanguage)
+  watchPageLanguage(ses, getSettings)
 
   /**
    * 兜底重播（[ADR-0073]）：回头看一眼"该有状态的语言里还有谁没有"。正常路径下**一个都没有**

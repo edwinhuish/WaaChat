@@ -5,9 +5,10 @@
  * 表里写错一个语言码，症状是"勾了却不查"（红波浪线照样出现，只是划分得不对）；写进一个内核
  * 没有的码，那一项永远不生效。因此这里断言的是**表本身的性质**，而不是某一次调用的返回值。
  *
- * [ADR-0087] 之后这里还测两件**看着差不多**的事：清单的**次序**（拖动与「上移 / 下移」都算它）
- * 与每一项的**开关**（`-` 前缀）。它们错一格都不会报错，只会让人觉得"拖完了位置不对"，
- * 或者"我关掉的那一门怎么又在查了"。
+ * [ADR-0087] 之后这里还测清单的**次序**（拖动与「上移 / 下移」都算它）—— 它错一格都不会报错，
+ * 只会让人觉得"拖完了位置不对"。[ADR-0089] 之后次序**真的有用**了：它是"界面语言匹配不上时"的
+ * 回落顺序（{@link pickSpellcheckLanguage} 的第 2 段），因此那几条用例从"看着差不多"变成了
+ * 真会影响查哪一门的东西。
  *
  * 历史：这个文件也测过**界面语言**那张表（`--lang` 的规范化、网页版那条偏好 cookie 的写法）。
  * [ADR-0066] 撤掉那一整项之后，那些用例与被测的代码一起删掉了 —— 实测结论留在
@@ -20,26 +21,20 @@ import {
   DEFAULT_SPELLCHECK_LANGUAGES,
   SPELLCHECK_LANGUAGES,
   adoptInterfaceDictionary,
-  enabledLanguageCodes,
-  ensureEnabledDictionary,
   formatDictionaryList,
   isLanguageCode,
   matchDictionaryLanguage,
   moveDictionary,
   normalizeSpellcheckLanguages,
   parseDictionaryList,
+  pickSpellcheckLanguage,
   resolveSpellcheckLanguages,
   stepDictionary,
-  type SpellcheckEntry,
 } from '../../src/shared/language'
 
 describe('parseDictionaryList / formatDictionaryList', () => {
   it('按逗号切分，去空白、去空项、去重且保序', () => {
-    expect(parseDictionaryList('en-US, de-DE ,,en-US,fr-FR')).toEqual([
-      { code: 'en-US', enabled: true },
-      { code: 'de-DE', enabled: true },
-      { code: 'fr-FR', enabled: true },
-    ])
+    expect(parseDictionaryList('en-US, de-DE ,,en-US,fr-FR')).toEqual(['en-US', 'de-DE', 'fr-FR'])
   })
 
   it('空串得到空数组', () => {
@@ -47,56 +42,26 @@ describe('parseDictionaryList / formatDictionaryList', () => {
     expect(parseDictionaryList(' , , ')).toEqual([])
   })
 
-  it('往返一致（含每一项的开关）', () => {
-    for (const value of ['en-US,de-DE', 'en-US,-de', '-de,-fr', 'de']) {
+  it('往返一致', () => {
+    for (const value of ['en-US,de-DE', 'de,en-US', 'es,en-US,fr']) {
       expect(formatDictionaryList(parseDictionaryList(value))).toBe(value)
     }
   })
 
-  it('`-` 前缀表示"留在清单里但不参与检查"，重复的码只留第一次出现的那个状态', () => {
-    expect(parseDictionaryList('-de,de')).toEqual([{ code: 'de', enabled: false }])
-  })
-
   it('只有一个 `-`（没有码）的那一项丢掉，而不是变成一个叫 "-" 的语言', () => {
-    expect(parseDictionaryList('en-US,-')).toEqual([{ code: 'en-US', enabled: true }])
+    expect(parseDictionaryList('en-US,-')).toEqual(['en-US'])
   })
 
-  it('enabledLanguageCodes 只挑出参与检查的那些，且保序', () => {
-    expect(enabledLanguageCodes('en-US,-de,fr')).toEqual(['en-US', 'fr'])
-    expect(enabledLanguageCodes('-de')).toEqual([])
-  })
-})
-
-describe('ensureEnabledDictionary', () => {
-  it('一门启用的都没有时，把第一项打开（而不是把清单丢掉重新来过）', () => {
-    expect(ensureEnabledDictionary(parseDictionaryList('-de,-fr'))).toEqual([
-      { code: 'de', enabled: true },
-      { code: 'fr', enabled: false },
-    ])
-  })
-
-  it('已经有一门启用时一个字节都不动', () => {
-    const entries = parseDictionaryList('-de,en-US')
-    expect(ensureEnabledDictionary(entries)).toEqual(entries)
-  })
-
-  it('第一项停用、后面有一门启用时**不许**把第一项打开', () => {
-    // 这条正是"门开在哪儿"的坑：判据必须是"清单里有没有启用的"，而不是"第一项是不是启用的" ——
-    // 后者会顺手把用户刚关掉的那一门重新打开。
-    expect(ensureEnabledDictionary(parseDictionaryList('-de,en-US,-fr'))).toEqual([
-      { code: 'de', enabled: false },
-      { code: 'en-US', enabled: true },
-      { code: 'fr', enabled: false },
-    ])
-  })
-
-  it('空清单保持空（回落默认值是 normalizeSpellcheckLanguages 的事）', () => {
-    expect(ensureEnabledDictionary([])).toEqual([])
+  it('旧值里那个"停用"记号（`-`）被去掉，而不是把那一门丢掉（[ADR-0089]）', () => {
+    // 既有的 `settings.json` 里可能有 `"en-US,-de"`：那一门曾经是"留在清单里但不参与检查"。
+    // 现在没有逐门开关了，最不该发生的是"升级之后用户发现自己少了一门"。
+    expect(parseDictionaryList('en-US,-de')).toEqual(['en-US', 'de'])
+    expect(parseDictionaryList('-de')).toEqual(['de'])
   })
 })
 
 describe('moveDictionary', () => {
-  const entries: SpellcheckEntry[] = parseDictionaryList('en-US,de,fr,ko')
+  const entries = parseDictionaryList('en-US,de,fr,ko')
 
   it('往下拖：插到目标那一行的后面', () => {
     expect(formatDictionaryList(moveDictionary(entries, 'en-US', 'fr', true))).toBe(
@@ -120,17 +85,10 @@ describe('moveDictionary', () => {
       'en-US,de,fr,ko',
     )
   })
-
-  it('被挪的那一项的开关跟着它一起走（`moveDictionary` 认的是语言码，不带 `-`）', () => {
-    const withDisabled = parseDictionaryList('en-US,-de,fr')
-    expect(formatDictionaryList(moveDictionary(withDisabled, 'de', 'en-US', false))).toBe(
-      '-de,en-US,fr',
-    )
-  })
 })
 
 describe('stepDictionary', () => {
-  const entries: SpellcheckEntry[] = parseDictionaryList('en-US,de,fr')
+  const entries = parseDictionaryList('en-US,de,fr')
 
   it('往后一格', () => {
     expect(formatDictionaryList(stepDictionary(entries, 'en-US', 1))).toBe('de,en-US,fr')
@@ -205,63 +163,80 @@ describe('normalizeSpellcheckLanguages', () => {
     }
   })
 
-  it('停用的那一门留在清单里，连它前面那个 `-` 一起（[ADR-0087]）', () => {
-    expect(normalizeSpellcheckLanguages('en-US,-de')).toBe('en-US,-de')
-    expect(normalizeSpellcheckLanguages('-de,en-US')).toBe('-de,en-US')
-  })
-
-  it('别的门被剔掉时，剩下那一门的开关跟着它走', () => {
-    expect(normalizeSpellcheckLanguages('en-US,-de,xx-XX')).toBe('en-US,-de')
-  })
-
-  it('全都被停用时把**第一项**打开，而不是整体回落成默认值', () => {
-    // 回落成默认值会连着把用户排的清单与次序一起丢掉 —— 那看起来像"它自己变回去了"。
-    expect(normalizeSpellcheckLanguages('-de,-fr')).toBe('de,-fr')
-  })
-
-  it('空清单与"全都停用"是两回事：前者回落默认，后者保住清单', () => {
-    expect(normalizeSpellcheckLanguages('')).toBe(DEFAULT_SPELLCHECK_LANGUAGES)
+  it('旧值里那个"停用"记号（`-`）在收敛时被抹掉，那一门保住（[ADR-0089]）', () => {
+    // 升级路径：既有的 `settings.json` 里可能是 `"en-US,-de"`。逐门开关没有了，那一门因此
+    // 回到"一直参与候选" —— 它不该被当成表外的值剔掉（那会让人以为"升级之后少了一门"）。
+    expect(normalizeSpellcheckLanguages('en-US,-de')).toBe('en-US,de')
     expect(normalizeSpellcheckLanguages('-de')).toBe('de')
   })
 })
 
+describe('pickSpellcheckLanguage', () => {
+  it('界面语言匹配到的那一门**在清单里**时就是它（哪怕它排在后面）', () => {
+    expect(pickSpellcheckLanguage('en-US,es', 'es_LA')).toBe('es')
+    // 区域也要认：界面是英式英语、清单里也有 `en-GB` 时，挑的是它而不是排第一的 `en-US`。
+    expect(pickSpellcheckLanguage('en-US,en-GB,fr', 'en_GB')).toBe('en-GB')
+  })
+
+  it('匹配不上时用**清单的第一门**（次序就是回落顺序，[ADR-0087] + [ADR-0089]）', () => {
+    expect(pickSpellcheckLanguage('es,en-US', 'zh_CN')).toBe('es')
+    expect(pickSpellcheckLanguage('es,en-US', 'ja')).toBe('es')
+  })
+
+  it('匹配到的那一门**不在清单里**时也不动清单 —— 只按次序回落（补清单是 adoptInterfaceDictionary 的事）', () => {
+    // ⚠️ 这一条是"只挑一门"能不能站住的关键：挑的那一步**不许**顺手改设置。
+    expect(pickSpellcheckLanguage('en-US,de', 'es_LA')).toBe('en-US')
+  })
+
+  it('界面语言还不知道时按次序回落', () => {
+    expect(pickSpellcheckLanguage('es,en-US', null)).toBe('es')
+  })
+
+  it('清单是空的就什么都没有（设置层保证至少一门，这一格因此只是兜底）', () => {
+    expect(pickSpellcheckLanguage('', 'es')).toBeNull()
+  })
+
+  it('**至多一门**：交多门会回到并集语义（[ADR-0075]）', () => {
+    const picked = pickSpellcheckLanguage('es,en-US,de', 'es')
+    expect(picked === null || typeof picked === 'string').toBe(true)
+    expect(picked).toBe('es')
+  })
+})
+
 describe('resolveSpellcheckLanguages', () => {
-  it('按内核实际支持的清单对账，分成"用得上"与"内核没有"两组', () => {
-    const resolved = resolveSpellcheckLanguages('en-US,fr,de', ['en-US', 'de', 'es'])
-
-    expect(resolved.applied).toEqual(['en-US', 'de'])
-    expect(resolved.rejected).toEqual(['fr'])
-  })
-
-  it('两边都不去重之外的加工：输入里的重复项不会让同一个码出现两次', () => {
-    const resolved = resolveSpellcheckLanguages('en-US,en-US', ['en-US'])
-
-    expect(resolved.applied).toEqual(['en-US'])
-    expect(resolved.rejected).toEqual([])
-  })
-
-  it('内核一个词典都没有时，全部落进 rejected（而不是悄悄什么都不做）', () => {
-    const resolved = resolveSpellcheckLanguages('en-US', [])
-
-    expect(resolved.applied).toEqual([])
-    expect(resolved.rejected).toEqual(['en-US'])
-  })
-
-  it('空列表两边都空', () => {
-    expect(resolveSpellcheckLanguages('', ['en-US'])).toEqual({ applied: [], rejected: [] })
-  })
-
-  it('被停用的那一门不交给内核，也不算"内核没有"（[ADR-0087]）', () => {
-    // ⚠️ 它不能落进 `rejected`：那条日志是给"用户勾了、但内核没有这门词典"用的静默失效入口，
-    // 把用户自己关掉的码混进去就会把它埋掉。
-    expect(resolveSpellcheckLanguages('en-US,-de', ['en-US'])).toEqual({
-      applied: ['en-US'],
+  it('挑中的那一门内核有时进 applied', () => {
+    expect(resolveSpellcheckLanguages('en-US,es', 'es_LA', ['en-US', 'es'])).toEqual({
+      applied: ['es'],
       rejected: [],
     })
-    expect(resolveSpellcheckLanguages('-de', ['en-US', 'de'])).toEqual({
+  })
+
+  it('挑中的那一门内核没有时进 rejected（而不是悄悄什么都不做）', () => {
+    // 这一支是静默失效的入口：清单里排着法语、内核没有那门词典，于是所有词全被画上红线。
+    expect(resolveSpellcheckLanguages('en-US,fr', 'fr_FR', ['en-US'])).toEqual({
+      applied: [],
+      rejected: ['fr'],
+    })
+  })
+
+  it('内核一个词典都没有时，挑中的那一门落进 rejected', () => {
+    expect(resolveSpellcheckLanguages('en-US', null, [])).toEqual({
+      applied: [],
+      rejected: ['en-US'],
+    })
+  })
+
+  it('空清单两边都空', () => {
+    expect(resolveSpellcheckLanguages('', 'es', ['en-US'])).toEqual({
       applied: [],
       rejected: [],
     })
+  })
+
+  it('**只交一门**：清单里排着好几门，也只有挑中的那门进 applied', () => {
+    // ⚠️ 多门并用会回到 [ADR-0075] 实测的并集语义 —— 那正是"界面是西语、却给我英语建议"的根因。
+    const resolved = resolveSpellcheckLanguages('es,en-US,de', 'es', ['es', 'en-US', 'de'])
+    expect(resolved.applied).toEqual(['es'])
   })
 })
 
@@ -312,9 +287,9 @@ describe('adoptInterfaceDictionary', () => {
     expect(adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, 'de', true)).toBe('de')
   })
 
-  it('已经是那一门时什么都不做（含"被停用"：那是用户自己的开关）', () => {
+  it('已经在清单里时什么都不做（无论它排在第几位）', () => {
     expect(adoptInterfaceDictionary('es', 'es', true)).toBeNull()
-    expect(adoptInterfaceDictionary('-es,de', 'es', true)).toBeNull()
+    expect(adoptInterfaceDictionary('de,es', 'es', true)).toBeNull()
   })
 
   it('界面语言在我们这 24 门里没有对应时，一个字节都不动', () => {
@@ -323,17 +298,18 @@ describe('adoptInterfaceDictionary', () => {
 
   it('启动那一次不碰用户排过的清单（拿**上次**的语言去改它就是在跟用户抢）', () => {
     expect(adoptInterfaceDictionary('en-US,de', 'es', false)).toBeNull()
-    expect(adoptInterfaceDictionary('-de,fr', 'es', false)).toBeNull()
+    expect(adoptInterfaceDictionary('de,fr', 'es', false)).toBeNull()
   })
 
   it('界面语言**真的变了**时，把它补进第一位，其余一个字节都不动', () => {
+    // ⚠️ 补进第一位不是装饰：[ADR-0089] 之后清单的次序就是"匹配不上时的回落顺序"，
+    // 而界面语言那门一旦进了清单，{@link pickSpellcheckLanguage} 就会挑中它。
     expect(adoptInterfaceDictionary('en-US,de', 'es', true)).toBe('es,en-US,de')
-    // 停用的那些连 `-` 一起原样留着（[ADR-0087]）。
-    expect(adoptInterfaceDictionary('-de,fr', 'es', true)).toBe('es,-de,fr')
+    expect(adoptInterfaceDictionary('de,fr', 'es', true)).toBe('es,de,fr')
   })
 
-  it('换掉默认值那一格也要求"恰好一门、而且启着" —— 单门停用不是默认值', () => {
-    expect(adoptInterfaceDictionary('-de', 'es', false)).toBeNull()
-    expect(adoptInterfaceDictionary('-de', 'es', true)).toBe('es,-de')
+  it('换掉默认值那一格要求"恰好只有那一门" —— 用户排过的清单不换', () => {
+    expect(adoptInterfaceDictionary('de', 'es', false)).toBeNull()
+    expect(adoptInterfaceDictionary('de', 'es', true)).toBe('es,de')
   })
 })
