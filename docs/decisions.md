@@ -6096,7 +6096,9 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
 4. **必须有一条不用鼠标的路。** 拖动是本条唯一的新手势，而"只能用鼠标做"等于对不用鼠标的人不存在。
    因此 `⋯` 里加「上移 / 下移」两项 —— 它落在 [ADR-0070](#adr-0070) 已经划好的那个位置上
    （"这一行能对它自己做什么"），而不是给每行再加两颗箭头按钮。⚠️ 但**不加**「移到顶部」：一次跳六格
-   是一个不容易看见的改动，而它省下的几次点击不值得为它多一项。
+   是一个不容易看见的改动，而它省下的几次点击不值得为它多一项。⚠️ 这两项与「移除」之间有一条**分隔线**：
+   它们动的是这一门在清单里的**位置**，「移除」动的是它还在不在**清单里** —— 挨在一起时三项看起来是
+   同一串（都"让清单换个样子"），而那是两件不同量级的事（与托盘菜单、应用菜单里分组的那条规矩同源）。
 5. **新记号跟着新的状态走。** 有了一条"这一门在清单里但不查"的状态，就必须能一眼看出**哪几门在查**：
    停用的那一行淡一档，并且**不画**它那条下载进度（一条走满的蓝条说的是"这一门已经装好、正在用它查"，
    在一门没在查的词典上等于说反了话 —— 与"整块拼写检查关着时不画进度"是同一条规矩，[ADR-0071](#adr-0071)）。
@@ -6138,8 +6140,9 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
   挂在**清单容器**上（它们都冒泡，一行挂一遍既重复又容易漏）；新增视图状态 `draggedLanguage` /
   `draggedLanguageRow` / `dropLanguageRow` / `dropLanguageAfter`，并在 `render()` 里与 `⋯` 菜单一起收掉
   （子树被换掉之后那次拖动其实已经被浏览器取消，留着状态会让下一次 `dragover` 按一个不存在的行算落点）。
-- `src/renderer/styles.css`：`.language-handle` / `.language-toggle` 与三条状态选择器
-  （`[draggable='true']` / `[data-dragging]` / `[data-drop]` / `[data-enabled='false']`）。
+- `src/renderer/styles.css`：`.language-handle` / `.language-toggle` / `.language-menu-separator`
+  （`⋯` 里那两组动作之间）与状态选择器（`[draggable='true']` / `[data-dragging]` / `[data-drop]` /
+  `[data-enabled='false']`）。
 - `test/unit/language.test.ts`：解析 / 组装 / 排序 / 兜底的用例（次序与开关各有一组边界）。
 - `scripts/check-capture.ts` 第 19 节：形态断言的类名集合加上新两类，另加"停用不外泄到内核"、
   "全停用时打开第一项"、"落点线两边对得上"三条断言，并把"至少要留一门"那条扩成两个闸门。

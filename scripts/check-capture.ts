@@ -1466,6 +1466,7 @@ const LANGUAGE_UI_CLASSES = [
   'language-menu-button',
   'language-menu',
   'language-menu-item',
+  'language-menu-separator',
   'language-dialog',
   'language-search',
   'language-list',

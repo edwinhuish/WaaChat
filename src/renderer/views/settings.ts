@@ -1185,6 +1185,14 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       { class: 'language-menu', dataRole: 'language-menu' },
       nudgeItem('上移', -1, options.atTop, '已经在最上面了'),
       nudgeItem('下移', 1, options.atBottom, '已经在最下面了'),
+      /**
+       * 分隔线分的是**两类动作**（与托盘菜单分组同一条规矩）：上面两项动的是"这一门在清单里的
+       * **位置**"，下面那一项动的是"它还在不在**清单里**"。挨在一起时它们看起来是同一串
+       * （三项都能让清单换个样子），而删掉一门与挪一门是两件不同量级的事。
+       *
+       * `<hr>` 而不是一个空的 `div`：它自己就带着"分隔"的语义，不需要我们再声明一次。
+       */
+      h('hr', { class: 'language-menu-separator' }),
       h('button', {
         class: 'language-menu-item',
         type: 'button',
