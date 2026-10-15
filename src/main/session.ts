@@ -21,6 +21,7 @@ import { attachCiphertextCache } from './capture/protocol'
 import { CHANNELS } from './ipc/channels'
 import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy } from './notice'
 import { logger } from './logger'
+import { followPageLanguage, watchPageLanguage } from './page-language'
 import { isPermissionAllowed } from './permissions'
 import { quietState } from './quiet'
 import {
@@ -123,8 +124,12 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 只是启动时的首次装配。
   //
   // **界面语言**曾经也在这里落（`--lang` + 请求头 + 网页版那条偏好 cookie，[ADR-0063] /
-  // [ADR-0065]）。[ADR-0066] 把那一项整个撤掉了：登录之后语言由**账号**决定，我们做的任何固定
-  // 都会被页面改回去，于是连 UA 之外的那些会话级语言设置也一并去掉。
+  // [ADR-0065]）。[ADR-0066] 把"改它"那一项整个撤掉了：登录之后语言由**账号**决定，我们做的任何
+  // 固定都会被页面改回去，于是连 UA 之外的那些会话级语言设置也一并去掉。
+  //
+  // ⚠️ 那件事在 [ADR-0088] 之后回来了**一半**：我们仍然不改页面的语言，但会**读**它自己记着的那
+  // 一条（`wa_web_lang_pref`，见下面"语言与输入"那一节），用它选出拼写检查的默认词典。写它仍然是
+  // 禁止的（自检第 19 节有一条负向断言看着这件事）。
   const settings = getSettings()
 
   // --- 权限 -----------------------------------------------------------------
@@ -177,13 +182,35 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   applyUserAgent(ses)
 
   /**
+   * 内嵌页面的界面语言 → 拼写检查的默认词典（[ADR-0088]）。**只读**那条 cookie，从不写它
+   * （[ADR-0066] 撤掉的是"改页面语言"这件事）。
+   *
+   * ⚠️ **必须早于下面那次 `applySpellcheck()`**，而且下面那次传的必须是 `getSettings()` 而不是
+   * 上面那份 `settings` 快照：这一支可能刚把清单换掉（首次运行那条路），拿动身前的那一份去装配
+   * 会让内核查的语言与设置里显示的不是同一个，顺带还让内核白下一门 `en-US`（[ADR-0072]）。
+   *
+   * ⚠️ 它**不**破坏 [ADR-0073] 那条时序：词典事件的订阅仍然紧跟着 `session.fromPartition()`，
+   * 由 `index.ts` 在任何 `await` 之前接上。这里晚的是"把语言列表交上去"，那一步随时可以做。
+   */
+  const pageLanguage = await followPageLanguage(ses, getSettings)
+
+  /**
    * 拼写检查只需要在启动时装配一次：`setSpellCheckerLanguages()` 对已存在的输入框**立即**生效
    * （拼写检查是每一次输入时向内核要素材的，不是页面自己渲染的），因此它不需要重载页面。
    *
    * 事件订阅**不在这里** —— 它必须早得多（见 {@link attachDictionaryWatch}，[ADR-0073]），
    * 因此由 `index.ts` 在会话被创建之后立刻接上。这一层只负责把用户勾的那一组交上去。
    */
-  applySpellcheck(ses, settings)
+  applySpellcheck(ses, getSettings())
+
+  /**
+   * 界面语言**变了**时再跟一次（[ADR-0088]）：页面登录之后会写下账号语言，用户在手机上改了语言
+   * 也会走到这里。`pageLanguage` 是上面刚读到的那个值，用来把页面的**同值重写**挡掉
+   * （§4.5 实测它会反复重写，不过滤的话每次登录都会动一遍用户的清单）。
+   *
+   * ⚠️ 同样必须早于任何窗口：页面装载之后几秒内就会写那条 cookie。
+   */
+  watchPageLanguage(ses, getSettings, pageLanguage)
 
   /**
    * 兜底重播（[ADR-0073]）：回头看一眼"该有状态的语言里还有谁没有"。正常路径下**一个都没有**

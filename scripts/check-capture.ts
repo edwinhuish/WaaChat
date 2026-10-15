@@ -81,7 +81,9 @@ import {
 import {
   DEFAULT_SPELLCHECK_LANGUAGES,
   SPELLCHECK_LANGUAGES,
+  adoptInterfaceDictionary,
   formatDictionaryList,
+  matchDictionaryLanguage,
   normalizeSpellcheckLanguages,
   parseDictionaryList,
   resolveSpellcheckLanguages,
@@ -1407,6 +1409,64 @@ check(
 )
 
 /**
+ * **词典的默认值跟随内嵌页面的界面语言**（[ADR-0088]）。
+ *
+ * 这条路每一格出错都是安静的，因此把两件最容易写错的事钉住：
+ *
+ *   - **匹配的顺序**：先认区域、再按表里的顺序落回基础语言。反了（或写成"列表里先出现的"）
+ *     的症状是"英式英语的界面配上了美式词典"这类看着像对的错；而界面语言是我们这 24 门以外的
+ *     （中文、日语）必须是 `null` —— 那一路"选一门近似的"会安静地给用户配错语言；
+ *   - **动手的分寸**：只有"清单还停在写死的默认值上"才换掉它，用户排过的一律不动；启动那一次
+ *     **连补都不补**（磁盘上那条 cookie 是**上次**留下的值，拿它改用户排过的清单就是跟用户抢）。
+ */
+check(
+  '界面语言 → 词典：先认区域，其次按表里的顺序落回基础语言，认不出的是 `null`',
+  matchDictionaryLanguage('en_GB') === 'en-GB' &&
+    matchDictionaryLanguage('EN_us') === 'en-US' &&
+    matchDictionaryLanguage('es_LA') === 'es' &&
+    matchDictionaryLanguage('de_DE') === 'de' &&
+    matchDictionaryLanguage('pt_PT') === 'pt-BR' &&
+    matchDictionaryLanguage('en_AU') === 'en-US' &&
+    matchDictionaryLanguage('zh_CN') === null &&
+    matchDictionaryLanguage('ja') === null &&
+    matchDictionaryLanguage('  ') === null,
+  '匹配的顺序或回落点变了：区域对不上时会安静地配上一门别的语言',
+)
+check(
+  '只有"清单还停在写死的默认值上"才换掉它；用户排过的不动，启动那一次连补都不补',
+  adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, 'es', false) === 'es' &&
+    adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, 'en-US', false) === null &&
+    adoptInterfaceDictionary('en-US,de', 'es', false) === null &&
+    adoptInterfaceDictionary('en-US,de', 'es', true) === 'es,en-US,de' &&
+    adoptInterfaceDictionary('-es,de', 'es', true) === null &&
+    adoptInterfaceDictionary('en-US,de', null, true) === null,
+  '要么把用户排过的清单覆盖了，要么把"界面语言变了"该补的那一门丢了',
+)
+
+const pageLanguageSource = source('../src/main/page-language.ts')
+check(
+  '跟随界面语言那条路只**读** cookie（[ADR-0066] 的写入例外不许从这条路上回来）',
+  pageLanguageSource.includes('cookies.get(') && !pageLanguageSource.includes('cookies.set('),
+  '它要么不读那条 cookie（功能等于没做），要么写了它（那是 ADR-0066 撤掉的那件事）',
+)
+check(
+  '那条 cookie 的名字只有一个来源：两个读者都不自己写字符串',
+  !pageLanguageSource.includes("'wa_web_lang_pref'") &&
+    !source('../src/main/dev-probe-lang.ts').includes("'wa_web_lang_pref'"),
+  '又出现了一份字面量：改名字时另一个读者会静默地什么都观察不到',
+)
+check(
+  '跟随界面语言早于那次装配，且装配传的是刚读到的设置（拿快照去装配会让内核与设置不一致）',
+  sessionSource.includes('await followPageLanguage(ses, getSettings)') &&
+    sessionSource.indexOf('await followPageLanguage(ses, getSettings)') <
+      sessionSource.indexOf('applySpellcheck(ses, getSettings())') &&
+    sessionSource.indexOf('applySpellcheck(ses, getSettings())') <
+      sessionSource.indexOf('watchPageLanguage(ses, getSettings, pageLanguage)') &&
+    !sessionSource.includes('applySpellcheck(ses, settings)'),
+  '顺序反了，或者又把动身前那份快照传给了 applySpellcheck()',
+)
+
+/**
  * 「立即重启」这条链（[ADR-0064]）与「界面语言已撤」的回归守卫（[ADR-0066]）。
  *
  * 它们有同一类**静默**的坏法，都靠下面的断言挡住：
@@ -1836,11 +1896,15 @@ check(
   '有一个入口只改了设置值而没有落到窗口上 —— 那正是"改了没反应"',
 )
 check(
-  '菜单改完设置会推给设置窗口（否则那一行显示的是陈旧的值）—— 推送三处齐全',
+  '不经过界面的设置改动都会推给设置窗口（否则那一行显示的是陈旧的值）—— 推送三处齐全',
   channelsSource.includes("settingsChanged: 'settings:changed'") &&
     bridgeSource.includes('onSettingsChanged(') &&
     preloadSource.includes('CHANNELS.settingsChanged') &&
-    zoomMainSource.includes('CHANNELS.settingsChanged'),
+    // 主进程自己改设置的两个入口（菜单里的缩放 [ADR-0079]、词典跟随界面语言 [ADR-0088]）
+    // 都走 `window.ts` 那**一处**发送方 —— 各写一份的话，其中一处很容易在某次重构里消失。
+    zoomMainSource.includes('pushSettingsToSettingsWindow(') &&
+    pageLanguageSource.includes('pushSettingsToSettingsWindow(') &&
+    windowSource.includes('CHANNELS.settingsChanged'),
   '桥 / preload / 通道表 / 主进程发送方这一条链少了某一处（症状是设置页那一行永远停在旧值）',
 )
 check(

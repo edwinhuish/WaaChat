@@ -10,11 +10,9 @@
  */
 
 import { DEFAULT_ZOOM_FACTOR, formatZoomPercent, zoomStepDown, zoomStepUp } from '../shared/zoom'
-import type { Settings } from '../shared/types'
-import { CHANNELS } from './ipc/channels'
 import { logger } from './logger'
 import { getSettings, updateSettings } from './settings'
-import { applyZoomToAllWindows, getSettingsWindow } from './window'
+import { applyZoomToAllWindows, pushSettingsToSettingsWindow } from './window'
 
 /** 走一档。`1` = 放大，`-1` = 缩小。 */
 export function stepZoom(direction: 1 | -1): void {
@@ -40,20 +38,7 @@ function applyZoom(factor: number): void {
   const next = updateSettings({ zoomFactor: factor })
 
   applyZoomToAllWindows()
-  pushSettings(next)
+  pushSettingsToSettingsWindow(next)
 
   logger.info('zoom changed from the menu', { percent: formatZoomPercent(factor) })
-}
-
-/**
- * 把改完的设置推给设置窗口 —— 那一行必须跟着变（见 `ipc/channels.ts` 的 `settingsChanged`）。
- *
- * 窗口还不存在（或已关掉）时**什么都不做**：设置已经在主进程里，等设置窗口打开时由
- * `settings:get` 一次性读走（与词典状态那一条是同一种处理）。
- */
-function pushSettings(settings: Settings): void {
-  const window = getSettingsWindow()
-  if (window === null || window.isDestroyed()) return
-
-  window.webContents.send(CHANNELS.settingsChanged, settings)
 }

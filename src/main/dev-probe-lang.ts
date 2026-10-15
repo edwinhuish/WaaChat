@@ -35,29 +35,28 @@
 
 import { app, type Cookie, type Session } from 'electron'
 
+import { PAGE_LANGUAGE_COOKIE, isLanguageCode } from '../shared/language'
 import { isUpstreamOrigin } from '../shared/upstream'
 import { failureReason } from './errors'
 import { logger } from './logger'
 
 /**
- * 被观察的那条 cookie：**上游自己的**名字（实测，`docs/research/lang-preference.md` §4.4）。
+ * 被观察的那条 cookie 是**上游自己的**名字（实测，`docs/research/lang-preference.md` §4.4）：
+ * 常量与"看起来就是语言码"那条判据都在 `shared/language.ts`。
  *
- * 常量就放在这里：[ADR-0066] 之后 `src/` 里没有任何地方会去写它，因此"两处各写一份会分家"
- * 这个风险不存在了 —— 探针是唯一提到它的地方，也是唯一该提到它的地方。
- */
-const LANG_PREF_COOKIE = 'wa_web_lang_pref'
-
-/**
- * "看起来就是语言码"的判据：`zh-CN` / `en` / `pt_BR` / `zh-Hans-CN`。
+ * ⚠️ 它原来就写在这个文件里，理由是"[ADR-0066] 之后 `src/` 里没有任何地方会去写它，因此探针是
+ * 唯一该提到它的地方"。那个前提今天不成立了 —— [ADR-0088] 之后 `main/page-language.ts` **读**
+ * 同一个名字（只读，一个字节都不写）。两处各写一份的话，名字一改，探针会**静默地**什么都不观察，
+ * 而它正是我们看清上游何时改版的唯一眼睛。因此那条判据与那个名字都只有一份。
  *
- * ⚠️ 与 `test/fixtures/probe-lang-pref.js` 里同名的那一条**必须一致**（夹具不能 `import`，
- * 只能各写一份）：判据不同就会出现"主进程打了、页面没打"这种对不上的报告 —— **改一处记得改另一处**。
+ * ⚠️ `isLanguageCode()` 与 `test/fixtures/probe-lang-pref.js` 里同名的那一条**必须一致**
+ * （夹具不能 `import`，只能各写一份）：判据不同就会出现"主进程打了、页面没打"这种对不上的报告
+ * —— **改一处记得改另一处**。
  */
-const LANGUAGE_CODE = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/
 
 /** 值 → 可打印的形状。**只有语言码原样报出**，其余一律只报长度。 */
 function safeValue(value: string): string {
-  return LANGUAGE_CODE.test(value) ? value : `len=${value.length}`
+  return isLanguageCode(value) ? value : `len=${value.length}`
 }
 
 /** 一条 cookie 里可以进日志的那部分（没有值，除非它看起来就是语言码）。 */
@@ -138,7 +137,7 @@ export function attachLangProbeSession(ses: Session): void {
    * 因此这里只把它当**线索**记下来，判据看下面那条 `Set-Cookie` 的观察。
    */
   ses.cookies.on('changed', (_event, cookie, cause, removed) => {
-    if (cookie.name !== LANG_PREF_COOKIE) return
+    if (cookie.name !== PAGE_LANGUAGE_COOKIE) return
 
     logger.info('lang probe: cookie changed', {
       cause,
@@ -158,7 +157,7 @@ export function attachLangProbeSession(ses: Session): void {
     try {
       if (isUpstreamOrigin(details.url)) {
         for (const line of setCookieLines(details.responseHeaders ?? {})) {
-          if (!writesCookie(line, LANG_PREF_COOKIE)) continue
+          if (!writesCookie(line, PAGE_LANGUAGE_COOKIE)) continue
 
           const where = safeLocation(details.url)
           if (reported.has(where)) break
@@ -183,7 +182,9 @@ export function attachLangProbeSession(ses: Session): void {
     callback({})
   })
 
-  logger.info('lang probe: watching the language cookie (dev only)', { cookie: LANG_PREF_COOKIE })
+  logger.info('lang probe: watching the language cookie (dev only)', {
+    cookie: PAGE_LANGUAGE_COOKIE,
+  })
 
   void readLangCookies(ses)
 }
@@ -195,7 +196,7 @@ export function attachLangProbeSession(ses: Session): void {
  */
 async function readLangCookies(ses: Session): Promise<void> {
   try {
-    const cookies = await ses.cookies.get({ name: LANG_PREF_COOKIE })
+    const cookies = await ses.cookies.get({ name: PAGE_LANGUAGE_COOKIE })
 
     logger.info('lang probe: the language cookie as it stands now', {
       count: cookies.length,

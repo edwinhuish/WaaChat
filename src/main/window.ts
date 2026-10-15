@@ -19,9 +19,11 @@ import { BrowserWindow, app, shell } from 'electron'
 
 import { UPSTREAM_URL } from '../shared/constants'
 import { chatUrl, isChatLink, normalizeChatTarget } from '../shared/deep-link'
+import type { Settings } from '../shared/types'
 import { isUpstreamPage } from '../shared/upstream'
 import { defaultIconPath, effectiveAppIcon } from './integration/appicon'
 import { instanceLabel, sessionPartition } from './instance'
+import { CHANNELS } from './ipc/channels'
 import { logger } from './logger'
 import { getSettings } from './settings'
 import { currentWindowBackground } from './theme'
@@ -396,6 +398,24 @@ export function getFilesWindow(): BrowserWindow | null {
  */
 export function getSettingsWindow(): BrowserWindow | null {
   return settingsWindow
+}
+
+/**
+ * 把**主进程自己**改掉的设置推给设置窗口 —— 那几行必须跟着变（见 `ipc/channels.ts` 的
+ * `settingsChanged`）。
+ *
+ * ⚠️ 界面自己发起的 `settings:set` **不走这里**：那个调用的返回值里就是完整设置，再推一次等于
+ * 同一件事说两遍。这条路只服务"不经过界面"的那些改动：菜单里的缩放（[ADR-0079]）与"词典清单
+ * 跟随内嵌页面的界面语言"（[ADR-0088]）。
+ *
+ * 窗口还不存在（或已关掉）时**什么都不做**：设置已经在主进程里，等设置窗口打开时由
+ * `settings:get` 一次性读走（与词典状态那一条是同一种处理）。
+ */
+export function pushSettingsToSettingsWindow(settings: Settings): void {
+  const window = settingsWindow
+  if (window === null || window.isDestroyed()) return
+
+  window.webContents.send(CHANNELS.settingsChanged, settings)
 }
 
 /**

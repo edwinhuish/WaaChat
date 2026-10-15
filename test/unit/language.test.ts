@@ -19,9 +19,12 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SPELLCHECK_LANGUAGES,
   SPELLCHECK_LANGUAGES,
+  adoptInterfaceDictionary,
   enabledLanguageCodes,
   ensureEnabledDictionary,
   formatDictionaryList,
+  isLanguageCode,
+  matchDictionaryLanguage,
   moveDictionary,
   normalizeSpellcheckLanguages,
   parseDictionaryList,
@@ -259,5 +262,78 @@ describe('resolveSpellcheckLanguages', () => {
       applied: [],
       rejected: [],
     })
+  })
+})
+
+describe('isLanguageCode', () => {
+  it('认得出语言码的形状，认不出别的', () => {
+    for (const value of ['en', 'en_US', 'zh-Hans-CN', 'pt_BR']) {
+      expect(isLanguageCode(value)).toBe(true)
+    }
+
+    // 它只用来决定"这条 cookie 的值能不能进日志"，因此宁可少认也不要多认。
+    for (const value of ['', '1234', 'a'.repeat(40), 'en-US-extra-long-region']) {
+      expect(isLanguageCode(value)).toBe(false)
+    }
+  })
+})
+
+describe('matchDictionaryLanguage', () => {
+  it('先认区域：条目里真有那门区域变体时用它，而不是表里排第一的那一门', () => {
+    expect(matchDictionaryLanguage('en_GB')).toBe('en-GB')
+    expect(matchDictionaryLanguage('en-US')).toBe('en-US')
+    expect(matchDictionaryLanguage('pt_BR')).toBe('pt-BR')
+  })
+
+  it('大小写与 `_`/`-` 都不影响判定（值由上游写，形状不该是前提）', () => {
+    expect(matchDictionaryLanguage('EN_gb')).toBe('en-GB')
+    expect(matchDictionaryLanguage('  es-la  ')).toBe('es')
+  })
+
+  it('区域是我们没有的那一个时，按表里的顺序落回基础语言', () => {
+    // `en_AU` 落回 `en-US` 而不是 `en-GB`：表里 `en-US` 在前。这条断言钉的是"表顺序是判据的
+    // 一部分"，而不是某一次巧合。
+    expect(matchDictionaryLanguage('en_AU')).toBe('en-US')
+    expect(matchDictionaryLanguage('de_DE')).toBe('de')
+    expect(matchDictionaryLanguage('es_419')).toBe('es')
+    expect(matchDictionaryLanguage('pt_PT')).toBe('pt-BR')
+  })
+
+  it('我们这 24 门里没有这一门时返回 `null`（中文、日语都不是遗漏）', () => {
+    for (const value of ['zh_CN', 'zh-Hans-CN', 'ja', 'ja_JP', '', '   ']) {
+      expect(matchDictionaryLanguage(value)).toBeNull()
+    }
+  })
+})
+
+describe('adoptInterfaceDictionary', () => {
+  it('清单还停在写死的默认值上时，直接换成界面语言那一门（取代 en-US）', () => {
+    expect(adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, 'es', false)).toBe('es')
+    expect(adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, 'de', true)).toBe('de')
+  })
+
+  it('已经是那一门时什么都不做（含"被停用"：那是用户自己的开关）', () => {
+    expect(adoptInterfaceDictionary('es', 'es', true)).toBeNull()
+    expect(adoptInterfaceDictionary('-es,de', 'es', true)).toBeNull()
+  })
+
+  it('界面语言在我们这 24 门里没有对应时，一个字节都不动', () => {
+    expect(adoptInterfaceDictionary(DEFAULT_SPELLCHECK_LANGUAGES, null, true)).toBeNull()
+  })
+
+  it('启动那一次不碰用户排过的清单（拿**上次**的语言去改它就是在跟用户抢）', () => {
+    expect(adoptInterfaceDictionary('en-US,de', 'es', false)).toBeNull()
+    expect(adoptInterfaceDictionary('-de,fr', 'es', false)).toBeNull()
+  })
+
+  it('界面语言**真的变了**时，把它补进第一位，其余一个字节都不动', () => {
+    expect(adoptInterfaceDictionary('en-US,de', 'es', true)).toBe('es,en-US,de')
+    // 停用的那些连 `-` 一起原样留着（[ADR-0087]）。
+    expect(adoptInterfaceDictionary('-de,fr', 'es', true)).toBe('es,-de,fr')
+  })
+
+  it('换掉默认值那一格也要求"恰好一门、而且启着" —— 单门停用不是默认值', () => {
+    expect(adoptInterfaceDictionary('-de', 'es', false)).toBeNull()
+    expect(adoptInterfaceDictionary('-de', 'es', true)).toBe('es,-de')
   })
 })

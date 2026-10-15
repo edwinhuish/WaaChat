@@ -26,6 +26,11 @@
  * 诊断函数）。[ADR-0066] 把「界面语言」这一项整个撤掉了 —— 实测证明登录之后语言由**账号**决定，
  * 我们在会话层做的任何固定都会被页面改回去（`docs/research/lang-preference.md` §4.5），
  * 连 INV-1 的写入例外也随之一并退休。那批代码与决定都留在 git 历史与 ADR 里。
+ *
+ * ⚠️ 界面语言自 [ADR-0088] 起**又回来了**，但这次只做一件事、而且只**读**：让**首次**的词典清单
+ * 跟随内嵌页面的界面语言（`wa_web_lang_pref`，判据见 {@link matchDictionaryLanguage} 与
+ * {@link adoptInterfaceDictionary}）。这不是 [ADR-0066] 的反悔 —— 那时我们试图**改**页面的语言
+ * （三轮都失败，最后一轮还撞在 INV-1 上），现在我们只是把它**读**出来选一门词典。
  */
 
 /** 拼写检查可选的一门词典。 */
@@ -90,9 +95,16 @@ export const SPELLCHECK_LANGUAGES: readonly SpellcheckLanguage[] = [
 /**
  * 默认词典：英语（美国）。
  *
+ * ⚠️ 它只是**起点**，不是终局：**首次**运行时（以及此后每次启动，只要清单还停留在这一门上）
+ * [ADR-0088] 会用**内嵌页面的界面语言**那一门把它换掉（判据与实现在
+ * {@link adoptInterfaceDictionary} 与 `main/page-language.ts`）。取代它的判据是"清单恰好只剩
+ * 这一门" —— 用户一旦自己排过清单，这条路就永久让开（见那条函数上的说明）。
+ *
  * 为什么不跟随**系统语言**：输入内容的语言与系统/界面的语言是两件事 —— 一台切到日语的机器上，
  * 用户照样可能在用英语打字。把两者绑在一起会得到"系统改了、拼写检查跟着变"这种没人要的联动，
  * 而联动本身**看不出来**，用户只会觉得拼写检查坏了。因此默认值写死，改由用户自己勾。
+ * 内嵌页面的界面语言是另一回事：它由**账号**决定，说话的是"你这个人在用哪种语言"，而不是
+ * "这台机器装的是哪个 locale"。
  */
 export const DEFAULT_SPELLCHECK_LANGUAGES = 'en-US'
 
@@ -279,4 +291,108 @@ export function resolveSpellcheckLanguages(
   }
 
   return { applied, rejected }
+}
+
+/**
+ * 网页版记「界面语言」的那条 cookie 的名字（实测，`docs/research/lang-preference.md` §4.4）。
+ *
+ * ⚠️ 我们**只读**它，**从不写**（[ADR-0066]：写下的值会在 2–3 秒内被页面按账号语言改回去，
+ * 而与它抢是 [ADR-0066] 已经否决过的做法）。名字放在这里而不是某个模块里，是因为它今天有
+ * **两个**读者：只读探针（`main/dev-probe-lang.ts`，未打包时才装）与"词典默认值跟随界面语言"
+ * 那条路（[ADR-0088]，`main/page-language.ts`）。两处各写一份的话，名字一改，探针会**静默地**
+ * 什么都观察不到 —— 而它正是我们看清上游何时改版的唯一眼睛。
+ */
+export const PAGE_LANGUAGE_COOKIE = 'wa_web_lang_pref'
+
+/**
+ * 一个"看起来就是语言码"的形状（`zh_CN` / `en` / `pt_BR` / `zh-Hans-CN`）。
+ *
+ * 只有一个用途：**日志**。那条 cookie 的值可能是凭据（`docs/security.md` T4），因此只有这个形状
+ * 的值才原样打出来，其余一律只报"认不出"。它与 `test/fixtures/probe-lang-pref.js` 里同名的那一条
+ * **必须一致**（夹具不能 `import`，只能各写一份）—— 判据不同就会出现"主进程打了、页面没打"
+ * 这种对不上的报告，改一处记得改另一处。
+ */
+export function isLanguageCode(value: string): boolean {
+  return /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/.test(value)
+}
+
+/**
+ * 网页版那条界面语言 cookie 的值 → {@link SPELLCHECK_LANGUAGES} 里的哪一门（[ADR-0088]）。
+ *
+ * 两段，先后顺序就是它们的重要性：
+ *
+ *   1. **先认区域**：把 `en_GB` 的 `_` 归一成 `-` 之后与表里的码逐字比（大小写不敏感）。命中就
+ *      返回它 —— 界面是英式英语时，用得上的正是 `en-GB` 那一门，而不是表里排第一的 `en-US`；
+ *   2. **再按基础语言落回表里的顺序**：`en_AU` / `pt_PT` / `de_DE` 这类我们没有的区域变体，
+ *      取表里**第一门**同基础语言的（`en` → `en-US`，`pt` → `pt-BR`，`de` → `de`）。
+ *      "表里的顺序"是判据的一部分，不是巧合：它是我们**没有任何偏好**时唯一的确定性来源。
+ *
+ * 都命中不了（`zh_CN` / `ja_JP`）返回 `null`。那是"我们这 24 门里没有这一门"，**不是错误** ——
+ * 中文根本没有 Hunspell 词典（见 {@link SPELLCHECK_LANGUAGES}），而 `null` 的后果只是"清单保持
+ * 原样"，不是"选了一门错的"。
+ */
+export function matchDictionaryLanguage(pageLanguage: string): string | null {
+  const normalized = pageLanguage.trim().replace(/_/g, '-').toLowerCase()
+  if (normalized === '') return null
+
+  const exact = SPELLCHECK_LANGUAGES.find((entry) => entry.code.toLowerCase() === normalized)
+  if (exact !== undefined) return exact.code
+
+  const base = normalized.split('-')[0]
+  const byBase = SPELLCHECK_LANGUAGES.find(
+    (entry) => entry.code.split('-')[0]?.toLowerCase() === base,
+  )
+
+  return byBase?.code ?? null
+}
+
+/**
+ * 词典清单要不要跟着内嵌页面的界面语言动一次；返回**要写回的那一串**，`null` = 什么都不做
+ * （[ADR-0088]）。
+ *
+ * 纯函数，因为这条路上每一格出错都是安静的：多帮你选一门是"它自己又变回去了"，少一次是
+ * "功能没做"，而**跟用户抢**（把他删掉的那门塞回去）是这三者里最糟的一种。
+ *
+ * @param requested 当前清单（设置里那一份，已过 {@link normalizeSpellcheckLanguages}）
+ * @param dictionary {@link matchDictionaryLanguage} 的结果
+ * @param onLanguageChange `true` = 这条 cookie **真的变了**（页面登录之后写下账号语言、或用户在
+ *   手机上改了语言）；`false` = 启动时读到的那一次 —— 那时它是**上次**留下的值
+ */
+export function adoptInterfaceDictionary(
+  requested: string,
+  dictionary: string | null,
+  onLanguageChange: boolean,
+): string | null {
+  // 界面语言在我们这 24 门里没有对应（中文、日语…）→ 一个字节都不动。
+  if (dictionary === null) return null
+
+  const entries = parseDictionaryList(requested)
+
+  /**
+   * 已经在清单里（**无论启不启用**）就不动它。
+   *
+   * ⚠️ 这一条同时是"不跟用户抢"那条纪律的落点：他刚把这一门从清单里删掉、或者取消了勾选，
+   * 而界面语言并没有变 —— 我们没有任何理由把它塞回去（那正是 [ADR-0066] 那类"跟页面抢"的翻版）。
+   */
+  if (entries.some((entry) => entry.code === dictionary)) return null
+
+  /**
+   * 清单还**恰好**是 {@link DEFAULT_SPELLCHECK_LANGUAGES} 这一门：它是"用户从没定过"的最强判据
+   * （他一旦动过，要么门数变了、要么开关变了），因此直接换掉 —— 这就是 [ADR-0088] 要取代的那件事。
+   */
+  const only = entries.length === 1 ? entries[0] : undefined
+  if (only !== undefined && only.enabled && only.code === DEFAULT_SPELLCHECK_LANGUAGES) {
+    return dictionary
+  }
+
+  /**
+   * 剩下的只有"界面语言**刚刚**变了"那一次：把它补进清单的**第一位**（"首先和界面语言匹配的
+   * 那一门"），其余一个字节都不动。
+   *
+   * 启动时那一次到此为止：拿**上次**的语言去改一份用户排过的清单，就是在跟用户抢。它也有副作用
+   * 之外的第二个理由 —— 启动时页面还没跟服务端说过话，cookie 里那个值随时可能在几秒后被改掉。
+   */
+  if (!onLanguageChange) return null
+
+  return formatDictionaryList([{ code: dictionary, enabled: true }, ...entries])
 }

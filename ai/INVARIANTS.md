@@ -44,6 +44,10 @@
   ⚠️ 而**覆盖 `navigator.language` 本身**那一类做法（往页面里塞脚本改 `navigator`）**不在此列**。
 - **用内核自己的既有能力**：拼写检查（[ADR-0061](../docs/decisions.md#adr-0061)）连页面都不碰 ——
   红线由渲染进程自己画，纠错建议是主进程弹出的原生菜单。
+- **读会话自己存储里的东西**（cookie / Local Storage 的既有键）：读的是 `Session` 的存储，页面里一个
+  字节都不动。今日有两处：账号标识（`wa_ul` / 页面记下的 WID，[ADR-0039](../docs/decisions.md#adr-0039)）
+  与拼写词典的默认值（内嵌页面的**界面语言**那条 `wa_web_lang_pref`，[ADR-0088](../docs/decisions.md#adr-0088)）。
+  ⚠️ 它**只读** —— 写它就是下面那条已被撤销的口子。
 
 ⚠️ 反过来，"**改了页面已经渲染出来的东西**"无论用什么手段（`insertCSS`、`executeJavaScript`、
 CDP）都还是注入，上面几条不是它们的挡箭牌。
