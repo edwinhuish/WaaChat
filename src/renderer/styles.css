@@ -363,6 +363,64 @@ ul.archive li:last-child {
   border-top: 1px solid var(--border);
 }
 
+/*
+ * 拖动把手（[ADR-0087]）与"这一行可以拖"这件事。
+ *
+ * 能拖的是**整行**（`draggable` 在 `.language-item` 上），这个符号因此不是"唯一的抓手"，而是那条
+ * 规矩**看得见的说明** —— 没有它，用户没有任何理由去试鼠标能不能拖。光标也只在这两种情况下变成
+ * `grab`：整块拼写检查关着时清单是死的（那时 `h()` 根本不给 `draggable`，属性选择器自然不命中）。
+ */
+.setting .language-item[draggable='true'] {
+  cursor: grab;
+}
+
+.setting .language-handle {
+  flex: 0 0 auto;
+  color: var(--muted);
+  user-select: none;
+}
+
+/*
+ * 拖动中的那一行淡下去。它自己那份"影子"由浏览器画（原生 HTML5 拖放的默认行为），因此这里只
+ * 需要说清"被拖的是这一行" —— 不然影子与本体长得一样，看上去像两行。
+ */
+.setting .language-item[data-dragging='true'] {
+  opacity: 0.4;
+}
+
+/*
+ * 落点那条线（[ADR-0087]）：`data-drop` 是 `before` / `after`，画在那一行的**上 / 下边缘**。
+ *
+ * 用 `box-shadow` 而不是 `border`：边框会把这 2px 加进布局，拖着鼠标经过时整张清单会跟着上下跳
+ * —— 而"松手会落在哪里"正是这一刻唯一要看的东西。而它必须**看得见**：拖了一路却不知道会落在哪，
+ * 就是这个手势最难用的时候。
+ */
+.setting .language-item[data-drop='before'] {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.setting .language-item[data-drop='after'] {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/*
+ * 停用的那一门（[ADR-0087]）：它还在清单里，只是不参与检查 —— 名字与语言码淡一档是它唯一的记号
+ * （那条进度条整条不画，见 `views/settings.ts`：一门没在查的词典不欠任何人一条进度）。
+ */
+.setting .language-item[data-enabled='false'] .language-name,
+.setting .language-item[data-enabled='false'] .language-code {
+  color: var(--muted);
+}
+
+/*
+ * 行上的开关（[ADR-0087]）。尺寸与配色沿用 `.setting input[type='checkbox']`，这里只抹掉那条
+ * `margin-top: 3px` —— 它是给"单行开关与说明文字对齐"写的，而这一行是 `align-items: center`。
+ */
+.setting .language-toggle {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 /* 长名字（"葡萄牙语（巴西）"）省略，而不是把语言码与 `⋯` 挤出这一行。 */
 .setting .language-name {
   flex: 1;

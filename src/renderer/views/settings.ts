@@ -35,7 +35,15 @@ import {
   type DictionaryStatus,
   type DictionaryStatusMap,
 } from '../../shared/dictionary-status'
-import { SPELLCHECK_LANGUAGES, formatLanguageList, parseLanguageList } from '../../shared/language'
+import {
+  SPELLCHECK_LANGUAGES,
+  ensureEnabledDictionary,
+  formatDictionaryList,
+  moveDictionary,
+  parseDictionaryList,
+  stepDictionary,
+  type SpellcheckEntry,
+} from '../../shared/language'
 import { describeMigrationFailure, describeMigrationProgress } from '../../shared/migration'
 import { SETTINGS_SECTIONS, type SettingsRowKey } from '../../shared/settings-sections'
 import {
@@ -308,6 +316,23 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    */
   let languageMenu: HTMLElement | null = null
 
+  /**
+   * 正在被拖动的那一门与它所在的行（`null` = 没在拖），[ADR-0087]。
+   *
+   * 拖动是**浏览器自己的**状态：`draggable` 的那个元素一旦离开文档，这次拖动就结束了。因此
+   * `render()`（它会把 `root` 的子树整个换掉）也要把这两处清掉 —— 否则下一次 `dragover` 会拿一个
+   * 已经不在屏幕上的行去算落点。清的理由与 `⋯` 菜单完全相同（见 {@link languageMenu}）。
+   *
+   * 被拖的是**语言码**而不是元素引用：拖动中间可能来一次重画（下载状态推送），而重画之后
+   * 屏幕上的行已经换了一批节点，认码才不会认错。
+   */
+  let draggedLanguage: string | null = null
+  let draggedLanguageRow: HTMLElement | null = null
+
+  /** 拖动经过时算出来的落点（`null` = 还没落到任何一行上）。 */
+  let dropLanguageRow: HTMLElement | null = null
+  let dropLanguageAfter = false
+
   /** 读待生效状态。失败退化为"没有"（见 {@link restartState} 的说明）。 */
   async function readRestartState(): Promise<RestartState> {
     return bridge()
@@ -342,8 +367,12 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     /**
      * ⚠️ 先收掉 `⋯` 菜单：它挂在行元素里面，下面这一句会把整棵子树换掉 —— 元素跟着消失，
      * 但**状态与那两条 `document` 监听器不会自己消失**（[ADR-0070]）。
+     *
+     * 拖着的那一行同理（[ADR-0087]）：换了一批节点之后，那次拖动其实已经被浏览器取消了，而
+     * 我们这边记着的语言码与行引用还停留在旧树上 —— 下一次 `dragover` 会拿它算出一个不存在的落点。
      */
     closeLanguageMenu()
+    finishLanguageDrag()
 
     const current = settings
     const restartNotice = pendingRestartRow()
@@ -936,24 +965,42 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * ⚠️ 清单显示的是**已保存**的那一组，不是对话框里的草稿 —— 本文件开头第 1 条：界面显示的
    * 就是实际生效的（草稿不是）。
    *
-   * 每一行还带一条**下载进度**（[ADR-0071]）：内核只发事件、不给百分比，所以它表达的是状态
-   * 而不是"下了百分之几"（映射见 {@link dictionaryProgressNode}）。这一格存在的理由是"过了
-   * 好久才显示下载失败"那件事的另一半 —— 等待期间要看得见它在动。
+   * 每一行带三样东西，后两样是 [ADR-0087] 加的：
    *
-   * 拼写检查关着时整块禁用，提示语也换成"这一行跟着停用"：一份"给谁查"的清单离开了那个开关就
-   * 读不懂。要停用整个功能，请用上面那个开关（它同时还意味着不去下载词典）。
+   *   1. 一条**下载进度**（[ADR-0071]）：内核只发事件、不给百分比，所以它表达的是状态而不是
+   *      "下了百分之几"（映射见 {@link dictionaryProgressNode}）。这一格存在的理由是"过了好久
+   *      才显示下载失败"那件事的另一半 —— 等待期间要看得见它在动；
+   *   2. 一个**开关**：这一门要不要参与检查。取消勾选之后它**留在清单里**（用户不必回到对话框里
+   *      重新搜它），只是不交给内核、也不去下载它的词典；
+   *   3. 一个**拖动把手**（其实整行都可拖）：清单的次序由用户排、并原样存下。
+   *
+   * ⚠️ 次序**不是**优先级：内核把列出的语言当一**组**查（[ADR-0075] 的并集语义，实测），排第一
+   * 与排最后一门一样会被查。因此这一行上面**不许**出现"首选语言"之类的话 —— 那会让人以为改次序
+   * 能改变判定结果（[ADR-0070] 否决「移到顶部」时防的正是这件事；[ADR-0087] 接下"顺序可以自己排"
+   * 时划的边界也在这里）。
+   *
+   * 拼写检查关着时整块禁用（连拖动与每一门的开关一起停），提示语也换成"这一行跟着停用"：
+   * 一份"给谁查"的清单离开了那个开关就读不懂。要停用整个功能，请用上面那个开关（它同时还意味着
+   * 不去下载词典）。
    */
   function spellcheckLanguagesRow(current: Settings): HTMLElement {
-    const selected = parseLanguageList(current.spellcheckLanguages)
+    const entries = parseDictionaryList(current.spellcheckLanguages)
     const labelOf = new Map(SPELLCHECK_LANGUAGES.map((entry) => [entry.code, entry.label]))
     const off = !current.spellcheck
-    /**
-     * 只剩一门时不给移除 —— "至少要留一门"在**这一侧**的落点（另一侧在对话框里：草稿为空时
-     * 禁用「确定」）。两处都不重复：那一侧防的是"草稿被勾空"，这一侧删的是**已存下的**一组。
-     */
-    const removable = selected.length > 1
 
-    const items = selected.map((code) => {
+    /**
+     * 「至少要留一门」在**这一侧**的两个落点：只剩一门时不给「移除」，只剩一门**参与检查**时
+     * 不给停用它（另一侧在对话框里：草稿为空时禁用「确定」）。两处都不重复：那一侧防的是"草稿被
+     * 勾空"，这一侧动的是**已存下的**那一组。
+     *
+     * 两条同源：内核拿到一个空清单就等于"什么都不查"，而那与"功能坏了"在用户看来没有区别
+     * （[ADR-0070]；停用这一侧见 [ADR-0087]，兜底仍是 `normalizeSpellcheckLanguages()`）。
+     */
+    const removable = entries.length > 1
+    const enabledCount = entries.filter((entry) => entry.enabled).length
+
+    const items = entries.map((entry, index) => {
+      const code = entry.code
       const menuButton = h('button', {
         class: 'language-menu-button',
         type: 'button',
@@ -962,25 +1009,70 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         dataRole: 'language-menu-button',
         disabled: off,
         // 菜单挂在**这一行**里（行是它的定位参照），因此把触发它的那颗按钮当锚点传进去。
-        onClick: () => openLanguageMenu(menuButton, code, removable),
+        onClick: () =>
+          openLanguageMenu(menuButton, code, {
+            removable,
+            atTop: index === 0,
+            atBottom: index === entries.length - 1,
+          }),
       })
 
       /**
        * 整块停用时**不画**进度：一份下到哪了的报告离开了那个开关就没有对象 ——
-       * 而一条停在绿/红上的条子会让人以为"拼写检查关着，但词典还在用"。
+       * 而一条停在蓝/红上的条子会让人以为"拼写检查关着，但词典还在用"。
+       *
+       * 这一门**自己**被停用时同理（[ADR-0087]）：它此刻没有在被下载，留一条走满的蓝条等于说反了
+       * 话（蓝条的意思是"这一门已经装好、正在用它查"）。
        */
       const status = dictionaryStatuses[dictionaryKey(code)] ?? 'unknown'
+      const stoppable = !(entry.enabled && enabledCount === 1)
 
       return h(
         'div',
-        { class: 'language-item' },
+        {
+          class: 'language-item',
+          dataRole: 'language-item',
+          data: { code, enabled: entry.enabled ? 'true' : 'false' },
+          // 整块停用时也不给拖：这一行既然"跟着停用"，能拖就是在说它还是一件活的东西。
+          draggable: !off,
+        },
+        /**
+         * 拖动把手：一个**位置**（这一行的左边缘），不是一颗按钮 —— 能拖的是**整行**（行里有两三个
+         * 可点的子控件，只让把手能拖会把"抓哪儿"变成一道要试的题），而把手是那条规矩看得见的说明。
+         */
+        h('span', {
+          class: 'language-handle',
+          title: off ? '拼写检查关着' : '拖动这一行可以改变清单的顺序',
+          text: '⠿',
+        }),
         h('span', { class: 'language-name', text: labelOf.get(code) ?? code }),
         /**
          * 语言码与名字并排，是因为**存下来的**就是它（`settings.json` 里是 `en-US,de`）——
          * 与内核、日志、上游文档对得上的是这一串，而不是我们的中文名。
          */
         h('span', { class: 'language-code', text: code }),
-        ...(off ? [] : dictionaryProgressNode(status)),
+        ...(off || !entry.enabled ? [] : dictionaryProgressNode(status)),
+        /**
+         * 这一门的开关。贴在 `⋯` 左边：它说的是"这一门**现在**参不参与检查"（状态），而 `⋯` 里是
+         * "对这一门做什么"（动作）—— 与其它行"控件在左、动作在右"是同一个方向感。
+         *
+         * 为什么是一个开关而不是"从清单里删掉"：停用是**可逆**的（"这一阵子先别用它查"），删掉之后
+         * 要再用它就得回到对话框里重新搜一遍。真的不要了，用 `⋯` 里的「移除」。
+         */
+        h('input', {
+          type: 'checkbox',
+          class: 'language-toggle',
+          checked: entry.enabled,
+          disabled: off || !stoppable,
+          title: !stoppable
+            ? '至少要留一门参与检查 —— 要整块停用，请用上面那个开关'
+            : entry.enabled
+              ? '这一门正在参与拼写检查：取消勾选可以暂时不用它（它会留在清单里）'
+              : '这一门没在参与：勾上它会立刻开始查（词典可能要先下载）',
+          onChange: (event) => {
+            void setDictionaryEnabled(code, (event.target as HTMLInputElement).checked)
+          },
+        }),
         menuButton,
       )
     })
@@ -1013,7 +1105,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
               class: 'hint',
               text: off
                 ? '拼写检查关着，这一行跟着停用 —— 开着它才会去下载词典。'
-                : '列出的每一门都会被查（内核不会自己判断你在打哪种语言）。词典由内核按需下载，没列出的语言不参与标注。',
+                : '勾上的每一门都会被查（内核不会自己判断你在打哪种语言）；取消勾选只是把它留在清单里，不再参与标注。清单的顺序由你自己排，它不影响判定 —— 内核把勾上的语言当一组一起查。',
             }),
           ),
           actionButton({
@@ -1022,7 +1114,25 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
             onClick: () => openLanguageDialog(),
           }),
         ),
-        h('div', { class: 'language-items' }, ...items),
+        /**
+         * 四个拖动事件挂在**容器**上而不是每一行上：它们都冒泡，而且拖动逻辑本来只有一套 ——
+         * 一行挂一遍的话，每次重画都得重新挂，漏一处就是"这一行拖不动"。
+         *
+         * ⚠️ 少任何一个都不会报错：没有 `draggable` 是拖不起来，`dragover` 里不 `preventDefault()`
+         * 是松手什么都不发生，没有 `drop` 是白拖一场。三者缺一都只表现为"这个功能好像有点怪"。
+         */
+        h(
+          'div',
+          {
+            class: 'language-items',
+            dataRole: 'language-items',
+            onDragStart: onLanguageDragStart,
+            onDragOver: onLanguageDragOver,
+            onDrop: onLanguageDrop,
+            onDragEnd: finishLanguageDrag,
+          },
+          ...items,
+        ),
       ),
     )
   }
@@ -1030,31 +1140,57 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   /**
    * 打开某一行的 `⋯` 菜单（[ADR-0070]）。
    *
-   * 今天只有一项「移除」—— 参考图 `⋯` 里的另外两项都不搬：「以这种语言显示」是 [ADR-0066] 撤掉的
-   * 界面语言，「移到顶部」对拼写检查没有意义（内核不按顺序查，排第一与排最后的一样会被查）。
-   * 仍然做成菜单而不是一颗裸按钮，是因为"这一行能对它自己做什么"是一个**位置**，不是一颗特定的
+   * 今天有三项：「上移」「下移」「移除」。前两项是[拖动]{@link onLanguageDrop}那条路的**键盘**
+   * 版本（[ADR-0087]）—— 一件只能用鼠标做的事，对不用鼠标的人等于不存在；而参考图里那第三项
+   * 「以这种语言显示」仍然不搬（那是 [ADR-0066] 撤掉的界面语言）。「移到顶部」也不搬：把它排到
+   * 第一**不改变任何判定**（内核按**一组**查，[ADR-0075]），而一个"按了什么都不影响"的项正是
+   * [ADR-0070] 当年要防的那件事；「上移 / 下移」不同，它们的产出是**看得到的次序**。
+   *
+   * 做成菜单而不是几颗裸按钮，是因为"这一行能对它自己做什么"是一个**位置**，不是一颗特定的
    * 按钮（理由写在 ADR 里）。
    *
    * 三条收尾的路：点菜单之外、`Esc`、以及**任何一次重画** —— 菜单挂在行元素里面，而 `render()`
    * 换掉的是整棵子树，因此它也必须在 `render()` 里被收掉（否则留下一个还挂在 `document` 上的
    * 监听器）。菜单也没有草稿，收起即无副作用 —— 这正是它不必做成 `<dialog>` 的原因。
    */
-  function openLanguageMenu(anchor: HTMLElement, code: string, removable: boolean): void {
+  function openLanguageMenu(
+    anchor: HTMLElement,
+    code: string,
+    options: { readonly removable: boolean; readonly atTop: boolean; readonly atBottom: boolean },
+  ): void {
     closeLanguageMenu()
+
+    /**
+     * 到头了的那一项**禁用**而不是隐藏：藏起来会让"为什么没有这一项"无从解释，而灰掉的那一项
+     * 本身就是那句解释（悬停有 `title`）。
+     */
+    function nudgeItem(
+      text: string,
+      delta: -1 | 1,
+      atEdge: boolean,
+      edgeTitle: string,
+    ): HTMLElement {
+      return h('button', {
+        class: 'language-menu-item',
+        type: 'button',
+        title: atEdge ? edgeTitle : `${text}一位`,
+        text,
+        disabled: atEdge,
+        onClick: () => nudgeDictionary(code, delta),
+      })
+    }
 
     const menu = h(
       'div',
       { class: 'language-menu', dataRole: 'language-menu' },
-      /**
-       * 只剩一门时**禁用**而不是隐藏：藏起来会让"为什么没有这一项"无从解释，而灰掉的那一项
-       * 本身就是那句解释（悬停有 `title`）。
-       */
+      nudgeItem('上移', -1, options.atTop, '已经在最上面了'),
+      nudgeItem('下移', 1, options.atBottom, '已经在最下面了'),
       h('button', {
         class: 'language-menu-item',
         type: 'button',
-        title: removable ? '不再查这一门' : '至少要留一门',
+        title: options.removable ? '不再查这一门' : '至少要留一门',
         text: '移除',
-        disabled: !removable,
+        disabled: !options.removable,
         onClick: () => removeDictionary(code),
       }),
     )
@@ -1101,22 +1237,198 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
+   * 清单此刻**已保存**的那一份（不是这一帧画出来的那一份）。
+   *
+   * 拖放 / 停用 / 上移下移 / 移除这四个动作都从它出发：作用对象是设置里的值，而在这期间 `settings`
+   * 可能已经被主进程推来的新值换过（[ADR-0079] 那条 `onSettingsChanged`）。按已保存的那一份算，
+   * 才不会把两次改动里较早的那一份写回去。
+   */
+  function currentEntries(): SpellcheckEntry[] {
+    return parseDictionaryList(settings?.spellcheckLanguages ?? '')
+  }
+
+  /**
+   * 写回一份新清单。
+   *
+   * 空清单当作"没发生"：它会被 `normalizeSpellcheckLanguages()` 收敛回默认值，看起来像"它自己
+   * 变回去了"。界面上的两个闸门（只剩一门时禁用「移除」、只剩一门参与检查时禁用开关）本来就
+   * 到不了这里，因此这一条是兜底而不是规则。
+   */
+  function commitLanguages(entries: readonly SpellcheckEntry[]): void {
+    if (entries.length === 0) return
+
+    void patch({ spellcheckLanguages: formatDictionaryList(entries) })
+  }
+
+  /**
    * `⋯` 里的「移除」：把这一门从**已保存**的那一组里拿掉（[ADR-0070]）。
    *
    * 它**不走草稿**：作用对象是已保存的值，而对话框里那份草稿要保住的是"改到一半改主意"。
-   * 顺序仍然是勾选时的**表**序（`parseLanguageList` 原样过滤，因此不会因为删掉一门而重排）。
+   * 顺序与**别的门的开关**都不动（原样过滤），因此删掉一门不会顺手重排或重启谁。
    */
   function removeDictionary(code: string): void {
     closeLanguageMenu()
+    commitLanguages(currentEntries().filter((entry) => entry.code !== code))
+  }
 
-    const kept = parseLanguageList(settings?.spellcheckLanguages ?? '').filter(
-      (item) => item !== code,
+  /**
+   * 停用 / 启用一门（[ADR-0087]）。
+   *
+   * ⚠️ 不从清单里删掉：停用是**可逆**的（"这一阵子先别用它查"），而删掉之后要再用它，得回到对话框
+   * 里在 24 门里重新找到它。「移除」是另一件事，在 `⋯` 里。
+   */
+  function setDictionaryEnabled(code: string, enabled: boolean): void {
+    commitLanguages(
+      currentEntries().map((entry) => (entry.code === code ? { code, enabled } : entry)),
     )
+  }
 
-    // 兜底：一门都不剩就不写（只剩一门时「移除」本来就是禁用的，走到这里说明状态已经不对）。
-    if (kept.length === 0) return
+  /**
+   * 拖动 / 放下事件落在哪一行上（`null` = 不在任何一行上：落在表头、行与行之间的缝、或窗口空白处）。
+   *
+   * ⚠️ 认的是**行元素**而不是"当前悬停的那个子节点"：指针多半落在名字或那条进度条上，而落点是按
+   * 整行的几何算的（见 {@link onLanguageDragOver}）。
+   */
+  function languageRowOf(event: Event): HTMLElement | null {
+    const target = event.target
+    if (!(target instanceof Element)) return null
 
-    void patch({ spellcheckLanguages: formatLanguageList(kept) })
+    return target.closest<HTMLElement>('[data-role="language-item"]')
+  }
+
+  /**
+   * 开始拖一行。
+   *
+   * 整行都可拖（`draggable` 在 `.language-item` 上），因此这里第一件事是认"拖的是哪一行"。行上带着
+   * 自己的语言码（`data-code`），拖动期间只认它 —— 重画会把元素换掉，认码才不会认错（见
+   * {@link draggedLanguage}）。
+   */
+  function onLanguageDragStart(event: Event): void {
+    if (!(event instanceof DragEvent)) return
+
+    const row = languageRowOf(event)
+    const code = row?.dataset['code']
+    if (row === null || code === undefined) return
+
+    // 菜单挂在行里，而这一行正要被挪走：拖着它的时候它没有意义。
+    closeLanguageMenu()
+    // 上一次拖动的残留（拖到一半被重画打断时 `dragend` 不会来）在这里收干净。
+    finishLanguageDrag()
+
+    draggedLanguage = code
+    draggedLanguageRow = row
+    row.dataset['dragging'] = 'true'
+
+    /**
+     * 拖拽数据本身我们**不用**（清单只在自己内部排，外部拖进来的东西一概不接），但 Chromium
+     * 要求至少有一项，否则这次拖动根本不会开始 —— 症状是"按住拖不动"，而且没有任何报错。
+     */
+    if (event.dataTransfer !== null) {
+      event.dataTransfer.setData('text/plain', code)
+      event.dataTransfer.effectAllowed = 'move'
+    }
+  }
+
+  /**
+   * 拖动经过某一行：算出"插到它前面还是后面"，并把那条线画出来。
+   *
+   * `dragover` 是唯一能把一行变成**合法落点**的事件 —— 不 `preventDefault()` 的话，松手时浏览器
+   * 什么都不做（而拖了一路却什么都没发生，看起来正像我们的 bug）。它每秒会来很多次，因此落点的
+   * DOM 只在**真的变了**的时候写（见 {@link setLanguageDropTarget}）。
+   */
+  function onLanguageDragOver(event: Event): void {
+    if (draggedLanguage === null || !(event instanceof DragEvent)) return
+
+    const row = languageRowOf(event)
+    const code = row?.dataset['code']
+    if (row === null || code === undefined) return
+
+    /**
+     * 落在自己身上：不接收、也不画线 —— "把 A 插到 A 前面"是空操作，而画一条线会让人以为松手之后
+     * 它会动一下。
+     */
+    if (code === draggedLanguage) {
+      clearLanguageDropTarget()
+      return
+    }
+
+    event.preventDefault()
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'move'
+
+    /**
+     * 指针在**上半行**就是插入到这一行**之前**。判据只看指针此刻的位置（不看"上一次落在谁身上"），
+     * 因此往回拖与往前拖走的是同一条判定 —— 两个方向各写一套的话，它们总有一边差一格。
+     */
+    const rect = row.getBoundingClientRect()
+    setLanguageDropTarget(row, event.clientY > rect.top + rect.height / 2)
+  }
+
+  /**
+   * 落点那条线用 `data-drop` 表达（`before` / `after`，样式画在那一行的**上 / 下边缘**）。
+   *
+   * 只在换了行或换了半边时才动 DOM：`dragover` 每次移动来一发，无条件重写属性会让整张清单跟着重画
+   * （而"落点在哪一行"正是这一刻唯一要看的东西）。
+   */
+  function setLanguageDropTarget(row: HTMLElement, after: boolean): void {
+    if (dropLanguageRow === row && dropLanguageAfter === after) return
+
+    clearLanguageDropTarget()
+    dropLanguageRow = row
+    dropLanguageAfter = after
+    row.dataset['drop'] = after ? 'after' : 'before'
+  }
+
+  function clearLanguageDropTarget(): void {
+    if (dropLanguageRow !== null) delete dropLanguageRow.dataset['drop']
+
+    dropLanguageRow = null
+    dropLanguageAfter = false
+  }
+
+  /**
+   * 收掉这一次拖动（幂等）。三个时机都要调：松手放下、拖动被取消（`dragend`）、以及**每一次
+   * `render()`** —— 后者换掉的是整棵子树，那两处状态必须跟着清，否则下一次 `dragover` 会拿一个
+   * 已经不在屏幕上的行去算落点（与 `⋯` 菜单同一条纪律，见 {@link languageMenu}）。
+   */
+  function finishLanguageDrag(): void {
+    if (draggedLanguageRow !== null) delete draggedLanguageRow.dataset['dragging']
+
+    draggedLanguageRow = null
+    draggedLanguage = null
+    clearLanguageDropTarget()
+  }
+
+  /**
+   * 放下一行（[ADR-0087]）：把被拖的那一门挪到落点那一行的前面 / 后面，然后写回设置。
+   *
+   * ⚠️ 落点必须在**清掉之前**读出来 —— {@link finishLanguageDrag} 会把那两处状态清空，而清空之后
+   * 这一次拖动就没留下任何东西了（紧接着还会来一次 `dragend`，它是幂等的）。
+   */
+  function onLanguageDrop(event: Event): void {
+    const code = draggedLanguage
+    const target = dropLanguageRow?.dataset['code']
+    const after = dropLanguageAfter
+
+    finishLanguageDrag()
+
+    if (code === null || target === undefined || code === target) return
+
+    // 落在这一行上就是一个合法动作（否则浏览器根本不会发 `drop`）；它的默认动作是把拖拽数据当
+    // 文本交给页面，而这里没有页面可交。
+    event.preventDefault()
+
+    commitLanguages(moveDictionary(currentEntries(), code, target, after))
+  }
+
+  /**
+   * `⋯` 里的「上移 / 下移」：拖动那条路的键盘版本（[ADR-0087]）。
+   *
+   * 到边界的那一项在菜单里是禁用的，因此这里不必再判一次 —— 与 {@link commitLanguages} 同一条
+   * "闸门挡在前面，后面只做兜底"的分工。
+   */
+  function nudgeDictionary(code: string, delta: -1 | 1): void {
+    closeLanguageMenu()
+    commitLanguages(stepDictionary(currentEntries(), code, delta))
   }
 
   /**
@@ -1127,13 +1439,21 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
    * **草稿**、按「确定」才写回；点遮罩**不**关 —— 那个手势会丢掉草稿，而退出的路子已经有取消 /
    * × / Esc 三条。
    *
+   * ⚠️ 对话框管的是"清单里**有哪几门**"，不是"哪几门在查"（那是清单行上那个开关的事，[ADR-0087]）：
+   * 这里勾上的每一门写回之后都**保持它原来的开关状态与位置**，头一次出现的那几门排在最后。
+   *
    * ⚠️ 对话框挂在 `document.body` 上，不是 `root` 里：`patch()` → `render()` 会把 `root` 的
    * 子树整个换掉，而它要活过任意次重画。
    */
   function openLanguageDialog(): void {
     if (languageDialog !== null || settings === null) return
 
-    const draft = new Set(parseLanguageList(settings.spellcheckLanguages))
+    /**
+     * 打开那一刻的清单。整个对话框（含写回）都以它为基准 —— 拖动 / 停用 / 上移下移不会与它同时
+     * 发生（那些控件被这层模态挡住），因此不需要每画一次再读一遍。
+     */
+    const current = parseDictionaryList(settings.spellcheckLanguages)
+    const draft = new Set(current.map((entry) => entry.code))
 
     const list = h('div', { class: 'language-list', dataRole: 'language-list' })
     const search = h('input', {
@@ -1196,13 +1516,29 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     const confirm = h('button', {
       ...actionButtonAttrs('确定'),
       onClick: () => {
-        // 写回时按**表**的顺序（与标签同一个来源）：勾选的先后不该改变存下来的值。
-        const codes = SPELLCHECK_LANGUAGES.filter((item) => draft.has(item.code)).map(
-          (item) => item.code,
-        )
+        /**
+         * 写回：**已经在清单里的那几门原样留着** —— 次序与各自的开关状态都不动（[ADR-0087]）；
+         * 新勾上的排在**最后**，一律参与检查。
+         *
+         * ⚠️ 这一条取代了 [ADR-0070] 的"写回时按 `SPELLCHECK_LANGUAGES` 那张表排"：清单的次序
+         * 现在是**用户**的（拖动排的），再按表排一次就会把他刚排好的次序抹掉 —— 而他是来"加一门
+         * 语言"的，不会想到顺手弄丢别的。
+         */
+        const known = new Set(current.map((entry) => entry.code))
+        const kept = current.filter((entry) => draft.has(entry.code))
+        const added = SPELLCHECK_LANGUAGES.filter(
+          (entry) => draft.has(entry.code) && !known.has(entry.code),
+        ).map((entry) => ({ code: entry.code, enabled: true }))
 
         dialog.close()
-        void patch({ spellcheckLanguages: formatLanguageList(codes) })
+
+        /**
+         * 结果里必须有**一门参与检查**的：草稿可以把唯一启用的那一门取消掉（只留下几门停用的），
+         * 而那与"什么都不查"是同一件事 —— 那条规则只在一个地方实现（[ADR-0070]）。
+         */
+        void patch({
+          spellcheckLanguages: formatDictionaryList(ensureEnabledDictionary([...kept, ...added])),
+        })
       },
     })
 

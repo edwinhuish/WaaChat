@@ -56,6 +56,14 @@ export interface ElementProps {
    */
   readonly hidden?: boolean
   /**
+   * 这一块能不能被鼠标拖着走（原生 HTML5 拖放，[ADR-0087]）。
+   *
+   * 它与下面那四个 `onDrag*` 是同一个手势的两半：`draggable` 让元素**可拖**，而"松开时会发生
+   * 什么"必须由 `dragover`（`preventDefault()`）与 `drop` 两处接住 —— 少任何一处都不会报错，
+   * 只是拖不动或者松手什么都不发生。目前唯一的用处是拼写词典那一张清单的排序。
+   */
+  readonly draggable?: boolean
+  /**
    * 事件回调的参数类型刻意是 `Event` 而不是 `MouseEvent`。
    *
    * 因为 `element` 的类型是 `HTMLElementTagNameMap[K]` 这样的泛型索引访问，
@@ -66,6 +74,17 @@ export interface ElementProps {
   readonly onClick?: (event: Event) => void
   readonly onChange?: (event: Event) => void
   readonly onInput?: (event: Event) => void
+  /**
+   * 拖动四个阶段。它们**都会冒泡**，因此拖一张清单时挂在容器上就够（不必每一行各挂一遍）。
+   *
+   * 参数是宽的 `Event`（见上），调用方要自己窄化成 `DragEvent` 才拿得到 `dataTransfer` 与指针
+   * 位置 —— 那一步 `instanceof` 是必要的：拖动的兄弟事件（`drag` / `dragleave`）形状相近，
+   * 而它们的字段并不是每个都可用。
+   */
+  readonly onDragStart?: (event: Event) => void
+  readonly onDragOver?: (event: Event) => void
+  readonly onDrop?: (event: Event) => void
+  readonly onDragEnd?: (event: Event) => void
 }
 
 type Child = Node | string | null | undefined | false
@@ -99,9 +118,14 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   if (props.checked === true) element.setAttribute('checked', '')
   if (props.selected === true) element.setAttribute('selected', '')
   if (props.hidden !== undefined) element.hidden = props.hidden
+  if (props.draggable !== undefined) element.draggable = props.draggable
   if (props.onClick !== undefined) element.addEventListener('click', props.onClick)
   if (props.onChange !== undefined) element.addEventListener('change', props.onChange)
   if (props.onInput !== undefined) element.addEventListener('input', props.onInput)
+  if (props.onDragStart !== undefined) element.addEventListener('dragstart', props.onDragStart)
+  if (props.onDragOver !== undefined) element.addEventListener('dragover', props.onDragOver)
+  if (props.onDrop !== undefined) element.addEventListener('drop', props.onDrop)
+  if (props.onDragEnd !== undefined) element.addEventListener('dragend', props.onDragEnd)
 
   for (const child of children) {
     if (child === null || child === undefined || child === false) continue

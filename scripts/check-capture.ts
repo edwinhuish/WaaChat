@@ -81,7 +81,9 @@ import {
 import {
   DEFAULT_SPELLCHECK_LANGUAGES,
   SPELLCHECK_LANGUAGES,
+  formatDictionaryList,
   normalizeSpellcheckLanguages,
+  parseDictionaryList,
   resolveSpellcheckLanguages,
 } from '../src/shared/language'
 import {
@@ -1317,6 +1319,34 @@ check(
     normalizeSpellcheckLanguages('de-DE') === DEFAULT_SPELLCHECK_LANGUAGES,
 )
 
+/**
+ * 「留在清单里但不参与检查」（`-` 前缀，[ADR-0087]）最关键的一格：那个记号只影响**交给内核**的
+ * 那一份，不影响清单本身。它两边的错法都完全静默 —— 滤少了是"这一门我关了，它还在查"，
+ * 滤多了是"这一门被静默删掉了"。
+ */
+check(
+  '停用的一门留在清单里、但不交给内核，也不算"内核没有这门词典"（[ADR-0087]）',
+  (() => {
+    const entries = parseDictionaryList('en-US,-de')
+    const resolved = resolveSpellcheckLanguages('en-US,-de', ['en-US', 'de'])
+
+    return (
+      entries.length === 2 &&
+      entries[1]?.enabled === false &&
+      formatDictionaryList(entries) === 'en-US,-de' &&
+      resolved.applied.join(',') === 'en-US' &&
+      resolved.rejected.length === 0
+    )
+  })(),
+  '停用没有生效：它要么照样被交给内核（关了还在查），要么连清单一并丢掉了',
+)
+check(
+  '至少要有一门参与检查：全都被停用时打开**第一项**，而不是把整份清单丢掉回落默认值',
+  normalizeSpellcheckLanguages('-de,-fr') === 'de,-fr' &&
+    normalizeSpellcheckLanguages('-de,en-US') === '-de,en-US',
+  '要么回落到了默认值（用户排的清单被抹掉），要么留下一份空清单（等于什么都不查）',
+)
+
 const spellcheckSection = sectionOfRow('spellcheckLanguages')
 check(
   '词典与拼写检查开关在同一个区域，且紧跟其后（清单离开开关就读不懂它是给谁查的）',
@@ -1416,20 +1446,23 @@ check(
 
 /**
  * 词典那一块的**形态**（[ADR-0070] / [ADR-0069]）：行上是"表头（「添加语言」+ 说明）+ 一张
- * 一门一行、每行一颗 `⋯` 的清单"，点开是一张带搜索的模态清单。
+ * 一门一行、每行一颗 `⋯` 的清单"，点开是一张带搜索的模态清单；每行还有一颗拖动把手（[ADR-0087]）
+ * 与一个"这一门参不参与检查"的开关。
  *
  * 它坏起来是静默的 —— 类名改了却忘了改样式表，控件照样能勾、能存，只是**看不出是个控件**
- * （没有边框，对话框既没有遮罩也没有尺寸）。因此把两边一起断言。
+ * （没有边框，对话框既没有遮罩也没有尺寸，把手只剩一个看不出能拖的符号）。因此把两边一起断言。
  */
 const LANGUAGE_UI_CLASSES = [
   'language-field',
   'language-head',
   'language-items',
   'language-item',
+  'language-handle',
   'language-name',
   'language-code',
   'language-progress',
   'language-status',
+  'language-toggle',
   'language-menu-button',
   'language-menu',
   'language-menu-item',
@@ -1439,11 +1472,28 @@ const LANGUAGE_UI_CLASSES = [
   'language-option',
 ]
 check(
-  '拼写词典是"表头 + 一门一行的清单（带下载进度）+ 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070] / [ADR-0071]）',
+  '拼写词典是"表头 + 一门一行的清单（拖动把手 + 下载进度 + 开关 + `⋯`）+ 一张可搜索的模态清单"，且每一处的样式都真的有定义（[ADR-0070] / [ADR-0071] / [ADR-0087]）',
   LANGUAGE_UI_CLASSES.every(
     (name) => settingsViewSource.includes(`'${name}'`) && stylesheet.includes(`.${name} {`),
   ),
   '类名与样式表对不上：控件会静默失去外观（或者那一整块根本没画出来）',
+)
+
+/**
+ * 拖动排序的两个记号（[ADR-0087]）：拖动中的那一行、以及落点那条线。
+ *
+ * 又一处**静默**的坏法：属性名改了却忘了改样式表，行照样能拖、松手照样会重排，只是全程没有
+ * 任何东西告诉用户"松手会落在哪里" —— 而"看不见落点"正是这个手势最没法用的时候。因此把视图里
+ * 写属性的那一句与样式表里的选择器一起钉住。
+ */
+check(
+  '拖动排序的两个记号（拖动中的行 / 落点线）在视图与样式表两边对得上（[ADR-0087]）',
+  settingsViewSource.includes("row.dataset['dragging'] = 'true'") &&
+    settingsViewSource.includes("row.dataset['drop'] = after ? 'after' : 'before'") &&
+    stylesheet.includes(".language-item[data-dragging='true']") &&
+    stylesheet.includes(".language-item[data-drop='before']") &&
+    stylesheet.includes(".language-item[data-drop='after']"),
+  '拖动的落点线画不出来：用户拖了一路却不知道松手会落在哪一行',
 )
 
 /**
@@ -1574,17 +1624,20 @@ check(
 )
 
 /**
- * 「至少要留一门」在**清单那一侧**的闸门（[ADR-0070]）：只剩一门时 `⋯` 里那一项是禁用的。
+ * 「至少要留一门」在**清单那一侧**的两个闸门（[ADR-0070] / [ADR-0087]）：只剩一门时 `⋯` 里的
+ * 「移除」是禁用的，而只剩一门**参与检查**时那一门的开关也是禁用的。
  *
- * 它与对话框里那条（草稿为空时禁用「确定」）是两个必须同时在位的落点 —— 少了这一条，用户能
- * 把清单删空，而空列表会被 `normalizeSpellcheckLanguages()` 收敛回默认值：看起来像"它自己变
- * 回去了"。这里只能做文本扫描，因此它挡的是**被人顺手删掉**，不是"逻辑写错了"。
+ * 它们与对话框里那条（草稿为空时禁用「确定」）是必须同时在位的落点 —— 少一个，用户就能把清单
+ * 删空或把每一门都关掉，而那个值会被 `normalizeSpellcheckLanguages()` 收敛回**默认值**：
+ * 看起来像"它自己变回去了"。这里只能做文本扫描，因此它挡的是**被人顺手删掉**，不是"逻辑写错了"。
  */
 check(
-  '「移除」在只剩一门时是禁用的（[ADR-0070]："至少要留一门"的另一处落点）',
-  settingsViewSource.includes('selected.length > 1') &&
-    settingsViewSource.includes('disabled: !removable'),
-  '「移除」的禁用条件不见了：删到一门都不剩时，设置会被悄悄收敛回默认值',
+  '「至少要留一门」的两个闸门都在位：只剩一门时「移除」禁用、只剩一门参与检查时开关禁用（[ADR-0070] / [ADR-0087]）',
+  settingsViewSource.includes('const removable = entries.length > 1') &&
+    settingsViewSource.includes('disabled: !options.removable') &&
+    settingsViewSource.includes('const stoppable = !(entry.enabled && enabledCount === 1)') &&
+    settingsViewSource.includes('disabled: off || !stoppable'),
+  '有一个闸门不见了：删到一门不剩、或把最后一门也停用时，设置会被悄悄收敛回默认值',
 )
 const restartSource = source('../src/main/restart.ts')
 

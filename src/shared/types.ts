@@ -143,11 +143,17 @@ export interface Settings {
    */
   readonly spellcheck: boolean
   /**
-   * 拼写检查要查哪些语言，逗号分隔（判据表在 `shared/language.ts`）。
+   * 拼写检查的词典清单，逗号分隔（判据表与解析都在 `shared/language.ts`）。
    *
-   * 为什么用字符串而不是数组：Electron 自己的 `acceptLanguages` 就是这个形状，而"查哪些语言"
-   * 是一组**顺序无关**的码 —— 一个形状表达两者，设置层便不必为"数组"这一种新类型单开一套
-   * 逐字段校验（`settings.ts` 的 `coerce()` 只按 `typeof` 比对）。
+   * 每一项是语言码，**前缀 `-` 表示这一门留在清单里、但不参与检查**（[ADR-0087]）——
+   * 例如 `"en-US,-de"`：德语留着，这一阵子不查它。
+   *
+   * 为什么用字符串而不是数组：Electron 自己的 `acceptLanguages` 就是这个形状，而这份值在设置层
+   * 是逐字段按类型校验的（`settings.ts` 的 `coerce()` 只按 `typeof` 比对）—— 为"数组"这一种
+   * 新类型单开一套校验不值当，而同一个字段又刚好能表达"次序 + 每一项的开关"。
+   *
+   * ⚠️ **次序由用户排、原样保留**（拖动整行或 `⋯` 里的上移下移，[ADR-0087]），但它不是优先级：
+   * 内核把列出的语言当**一组**查（[ADR-0075] 的并集语义），次序不影响判定结果。
    */
   readonly spellcheckLanguages: string
 }
