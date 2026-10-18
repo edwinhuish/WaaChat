@@ -21,6 +21,7 @@ import { applyTrayUnread, createTray } from './integration/tray'
 import { describeInstanceFailure, instanceId, resolveInstance, sessionPartition } from './instance'
 import { chatTargetFromArgv, registerChatProtocol } from './deep-link'
 import { attachFullscreenHint } from './fullscreen'
+import { applyGpuCrashTolerance } from './gpu-crash-limit'
 import { applyLinuxGpuSwitches } from './linux-gpu'
 import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
@@ -143,6 +144,22 @@ if (process.platform === 'linux') {
  */
 if (applySmoothScrolling(app.commandLine, getSettings().smoothScrolling)) {
   logger.info('smooth scrolling: off (setting), not requesting it from the kernel')
+}
+
+/**
+ * GPU 进程反复失败时**不要连带把应用打死**（[ADR-0090]）。
+ *
+ * 内核在 GPU 进程连续失败三次之后会 `LOG(FATAL)` 整个浏览器进程（`gpu_data_manager_impl_private.cc`
+ * 里那个 `GPU process isn't usable. Goodbye.`）。对一个"承载官方网页的壳"来说那是没有意义的
+ * 自杀，而它在一次真实的**会话注销**里正是这么死的：systemd 同时给整个 cgroup 发 SIGTERM，
+ * zygote 先没，主进程再用 34 ms 连试三次"起 GPU 进程"，然后库自己 FATAL —— apport 于是报了
+ * 一次「WaaChat 已意外关闭」（细节与取证见 [ADR-0090] 与 `gpu-crash-limit.ts`）。
+ *
+ * 与上面两段同类：都是**启动期一次性的内核开关**，必须早于 `whenReady`。它不改变 GPU 是否
+ * 被使用、也不改变后端选择（那是 `linux-gpu.ts` 的事），只是把"崩溃计数"这一条开关关掉。
+ */
+if (applyGpuCrashTolerance(app.commandLine)) {
+  logger.info('gpu: process failures will no longer terminate the app')
 }
 
 /**

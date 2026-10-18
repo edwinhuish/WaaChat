@@ -497,6 +497,33 @@ waachat 2>&1 | grep -i vulkan   # 应当看不到那行 ERROR（我们的开关�
 >
 > 为什么代价是"WebGPU 换后端"：Chrome 那行报错的来源那条路，只有 `--use-webgpu-adapter=opengles` 能关掉（它不是可以用 `--disable-features` 关的 feature），而它换来的是 WebGPU 在 Wayland 上改走 ANGLE/GL —— 仍是 GPU 加速，只是不走原生 Vulkan。
 
+### 注销 / 重新登录后提示「WaaChat 已意外关闭」
+
+**先确定一件事：这不是你操作错了，也没有丢东西。** 归档、登录态、设置都在磁盘上，这个弹窗来自
+系统（apport）对"进程死于信号"的例行上报。
+
+发生经过只有 34 毫秒：注销时 systemd 给会话里**所有**进程同时发 SIGTERM，于是 zygote、网络服务、
+GPU 进程一起没了；主进程这边正在走 Chromium 的退出流程，它看到的是"子进程全丢了"，于是连试几次
+"再起一个 GPU 进程"—— 每次都失败，然后内核那条「GPU 进程连续失败三次就 FATAL」的规则把整个
+浏览器进程打死了（`gpu_data_manager_impl_private.cc:417] GPU process isn't usable. Goodbye.`）。
+弹窗里那个 `SIGTRAP` 是二级现象，不用管它（那是 FATAL 之后写日志时撞上 libc++ 的硬化断言）。
+
+**从 [ADR-0090](decisions.md#adr-0090) 起不会再有这个弹窗**：我们启动时关掉了那条计数
+（`--disable-gpu-process-crash-limit`），GPU 进程起不来时就退回软件渲染，应用不再跟着自杀。
+（这同时治了另一种情形：显卡驱动把 GPU 进程打崩三次，从前也是应用直接消失、日志里一个字都没有。）
+
+想在日志里确认是哪一种：注销前后那几秒会连着一串（按时间顺序）
+
+```
+Failed to send GetTerminationStatus message to zygote
+Network service crashed or was terminated, restarting service.
+GPU process launch failed: error_code=1002
+FATAL:…/gpu_data_manager_impl_private.cc:417] GPU process isn't usable. Goodbye.
+```
+
+在没有这个开关的旧版本上，**你能做的只有忽略它**（或者打补丁前每次注销都看一次这个框）。
+`/var/crash/_opt_WaaChat_waachat.1000.crash` 是那份报告的原文，可以删掉，不影响任何数据。
+
 ### 「浏览器不受支持」
 
 上游的检测变化。请提 issue 并附上系统信息。

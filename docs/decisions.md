@@ -6407,3 +6407,87 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
    `"en-US,de"`（德语那一行还在，只是没有开关了）。
 4. **拖动真的改变查哪一门**：界面语言是我们这 24 门之外时（中文界面），把西语拖到第一行，输入框里的
    西语错词应当开始被标红。
+
+---
+
+## ADR-0090
+
+**决定**：启动期追加一个内核开关 `--disable-gpu-process-crash-limit`（`src/main/gpu-crash-limit.ts`），
+让"GPU 进程连续失败三次"**不再 `LOG(FATAL)` 掉整个浏览器进程**。
+
+**状态**：已生效（新增；不动 [ADR-0036](#adr-0036) / [ADR-0038](#adr-0038) 的后端选择，也不动
+[ADR-0081](#adr-0081) 的平滑滚动 —— 它只管"崩溃计数"这一条）
+
+**背景**：2026-10-18 23:22:31 用户**注销会话**后，下次登录时 apport 报「WaaChat 已意外关闭」
+（`waachat 1.1.3`，`SIGTRAP`）。取证链（全部来自本机，未做推测）：
+
+1. **journal 同一秒**：`pam_unix(gdm-password:session): session closed for user edwin` —— 是注销，
+   不是应用自己出事。紧接着 systemd 停掉 `app-…-waachat-45122.scope`（`KillMode=control-group`：
+   整个 cgroup 一起吃 SIGTERM，子进程与主进程同一刻收到）。
+2. **主进程这 34 ms 里看到的是「子进程全没了」**：
+
+   ```
+   23:22:31.426  Failed to send GetTerminationStatus message to zygote        ×4
+   23:22:31.439  Network service crashed or was terminated, restarting service.
+   23:22:31.458  GPU process launch failed: error_code=1002                  ×6
+   23:22:31.460  FATAL:…/gpu_data_manager_impl_private.cc:417] GPU process isn't usable. Goodbye.
+   ```
+
+3. **`.crash` 里的 core dump**（142 MB，解出 1.2 GB）反汇编确认：RIP 落在 `ud2`；上一帧是
+   `content/browser/gpu/gpu_data_manager_impl_private.cc` 的 `LOG(FATAL) << "GPU process isn't
+   usable. Goodbye."`（`0x1a1` = 417 行）；再往下是 `__libcpp_verbose_abort("string_view::substr")`。
+   ⇒ **SIGTRAP 是二级现象**：FATAL 的那行日志已经打出来了，之后的清理路径上 libc++ 的硬化断言
+   把它变成了 `int3`。追那个 `substr` 没有意义。
+
+也就是说：**注销时应用本来就要退出，但 Chromium 在退出路径上"再起一个 GPU 进程 → 失败 → 计数"，
+数到 3 就自己 FATAL**。对这个"承载官方网页的壳"来说，这是一次没有意义的自杀。
+
+**理由**：
+
+1. **这条计数器有两个受害者，注销只是其中之一。** 显卡驱动把 GPU 进程打崩三次（视频通话、
+   频道里的媒体渲染都可能），从前同样是**应用无日志地消失** —— 用户看到的还是「意外关闭」。
+   关掉它，两种情形都变成"退回软件渲染，应用继续在"。
+2. **它是命令行上唯一拦得住那条 FATAL 的东西，而且正好挡在它前面。** 本机 Electron 44.7.0
+   反汇编核对（`gpu_data_manager_impl_private` 里 FATAL 之前那段）：
+
+   ```
+   call CommandLine::ForCurrentProcess()
+   lea  rsi, "disable-gpu-process-crash-limit"
+   call HasSwitch            ← 有开关就直接跳过下面的 FATAL
+   test al, al / jne <skip>
+   cmp  [gpu_process_crash_count_], 3
+   jl   <skip>               ← 次数 < 3 也跳过
+   LOG(FATAL) << "GPU process isn't usable. Goodbye."
+   ```
+
+   开关名同样在二进制里核对过（`strings … | grep -c` = 1，且全库只有这一处引用）—— 上游改名的
+   症状会是"这一条从此静默不生效"，因此取证留在 `gpu-crash-limit.ts` 的注释里。
+3. **它不动任何别的东西**：不改变 GPU 是否被使用、不改变后端选择、不影响渲染质量。GPU 进程
+   起不来时内核照旧按退避重试，日志里也照旧有 `GPU process launch failed` —— 只是不再自杀。
+
+**被否决的替代方案**：
+
+- **收到 SIGTERM 立刻 `app.exit(0)`**：探针实测 `process.on('SIGTERM')` 确实能从 Chromium 手里
+  抢到处理权（注册在 `whenReady` 之后，handler 在 789 ms 处触发、`before-quit` 不再发出），
+  但 zygote 死到 FATAL 只有 **34 ms**，这是一场赛跑；而且它跳过 `before-quit`，把
+  `wipeArchiveOnExit`（隐私承诺）与 `closeArchiveStore()` 一起丢掉。**用约束解决，不用赛跑解决。**
+- **把 `/opt/WaaChat/waachat` 加进 `~/.apport-ignore.xml`**：只是不再弹窗，崩溃照旧；而且忽略条目
+  绑在可执行文件的 mtime 上，下一次升级自动失效 —— 用户于是要在"又弹了"与"真崩了也不弹"之间来回。
+- **让 `GpuDataManager` 在退出路径上不再重试**：那是 Chromium 内部状态，外部够不着。
+- **`--disable-gpu`**：拿掉整条 GPU 加速去换"注销时不崩"，代价与收益完全不成比例。
+
+**已知限制**：
+
+1. **只能在启动期生效**：正在跑的进程不会因为升级而改变，重启之后才有。
+2. **GPU 进程真的坏掉时应用不再退出**，而是退回软件渲染并按退避重试 —— 这是有意的取舍
+   （聊天、语音、通话不该因为 GPU 抖动就整窗消失），但排障时要记得"应用还活着"不等于"GPU 是好的"。
+3. **本条的终局验证只能在真机上做**：注销一次之后 `/var/crash` 不应再新增
+   `_opt_WaaChat_waachat.1000.crash`，登录后也不该再弹「已意外关闭」。沙箱里复现不了注销
+   （`/dev/shm` 只有 10 MB，内核会先撞上 `font_data_service` 的 `ENOSPC`，那是另一个崩溃）。
+
+**怎么验证（本地能做的部分）**：
+
+1. `pnpm run check` 通过；
+2. `test/unit/gpu-crash-limit.test.ts` 三条断言（默认加上 / 用户写了就不动 / 幂等）通过；
+3. 启动后日志里出现 `INFO gpu: process failures will no longer terminate the app`
+   —— 构建产物实测有这一行；装上新版本（下一次发版）之后生效。
