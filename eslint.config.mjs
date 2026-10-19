@@ -163,6 +163,13 @@ export default new FlatConfigComposer()
       'coverage/**',
       'build/**',
       '.workbuddy/**',
+      /**
+       * `.tmp/` 是**项目自己声明的**临时目录（`.gitignore` 里那一条：`/tmp` 是小 tmpfs 时
+       * 用 `TMPDIR=$PWD/.tmp`），`pnpm run clean` 也会清它。里面放的是排查用的脚本与产物，
+       * 不该按源码的标准 lint —— 而且它会让一次正常的 `pnpm run lint` 因为一份丢弃过一次的
+       * 探针脚本而变红（实测：`node script.js` 里当然没有 `process` / `__dirname` 的类型信息）。
+       */
+      '.tmp/**',
     ],
   })
   .append({
