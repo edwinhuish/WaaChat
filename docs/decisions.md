@@ -99,6 +99,7 @@
 | [0089](#adr-0089) | **一次只交给内核一门词典**：撤掉清单里每一行的「参与检查」勾选框（连同存储上那个 `-` 前缀），清单从"一组同时生效的词典"变成**候选池** —— 每一时刻按①界面语言（`wa_web_lang_pref`，只读）匹配到的那一门（且它**在清单里**）、②否则清单的**第一门**，挑出**一门**交给 `setSpellCheckerLanguages()` | 已生效（**取代** [ADR-0087](#adr-0087) 的"逐门停用"那半个功能与 [ADR-0075](#adr-0075) 里"按页面语言自动只交一门"那条否决；**不动** [ADR-0087](#adr-0087) 的拖动排序 —— 它现在是**回落顺序**；清单的**次序**与 [ADR-0088](#adr-0088) 的"补一门"都保留） |
 | [0090](#adr-0090) | 启动期追加内核开关 `--disable-gpu-process-crash-limit`：GPU 进程**连续失败三次不再 `LOG(FATAL)` 掉整个浏览器进程**（`src/main/gpu-crash-limit.ts`，幂等、用户自己写了就不动）。注销时 systemd 停 cgroup 的那 34 ms 里，内核在退出路径上"再起 GPU 进程 → 失败 → 计数"，数到 3 就自杀 ⇒ apport 报「已意外关闭」；驱动把 GPU 打崩三次是同一个计数器的第二个受害者。开关名与 FATAL 前的 `HasSwitch` 分支在本机二进制里核对过，取证留在源码注释里 | 已生效（新增；**不动** [ADR-0036](#adr-0036) / [ADR-0038](#adr-0038) 的后端选择与 [ADR-0081](#adr-0081) 的平滑滚动 —— 只管"崩溃计数"这一条；否决了"抢 SIGTERM 立刻 `app.exit(0)`"那条赛跑式解法（会跳过 `before-quit`，丢掉 `wipeArchiveOnExit`）。⚠️ **终局验证只能上真机**：注销一次后 `/var/crash` 不应再新增条目） |
 | [0091](#adr-0091) | 词典下载状态从**四态**扩到**五态**，并给"内核一直不说话"补一条自己动手的路：①新增 `pending`（已交给内核、还没等到第一条消息）与 `queued` 事件（`applySpellcheck()` 交出语言后记一笔）；②**看门狗** —— 交出后 8 秒 / 30 秒各回头一次，仍停在 `pending` 就"清空再设回"，60 秒后再没动静记成 `failed`；③`unknown` 重新解释为"候选（不会被下载）"，界面画成**虚线空槽 + 「待选」**、`pending` 画成**走满的淡蓝 + 「等待中…」**，五态各有一句话；④失败那一行多一颗「重试」，走新通道 `settings:dictionary-retry`（无参数，重试前作废旧判决并清掉重试预算） | 已生效（新增；**不动** [ADR-0071](#adr-0071) 的事件含义与两条通道、[ADR-0072](#adr-0072) 的退避、[ADR-0074](#adr-0074) 的「下载中 / 已就绪」外观、[ADR-0089](#adr-0089) 的"只交一门"。**补上** [ADR-0089](#adr-0089) 已知限制 2 与 4 的一半：那一格不再是一条说不清状态的灰槽，"正在等待 / 下载 / 失败"的那一行就是被选中的那一门。否决了"新增一条当前生效语言的通道""给灰槽换个更深的灰""失败后无限重试"。⚠️ 看门狗只认 `pending`：`download-begin` 之后卡死仍然看不出来；真机验证待做） |
+| [0092](#adr-0092) | **点击通知 → 把窗口带到用户面前**由我们自己写：`show()` 给每个 `Notification` 绑 `click`（并用 `live` 集合持有引用 —— 对象被 GC 之后事件永远不会再来），目的地由装配处注入（`main` / `settings`，词典失败指向设置页，那里才有 [ADR-0091](#adr-0091) 的「重试」）。**修正** [ADR-0086](#adr-0086) 里"由内核承担"那句判断：Linux 上 Electron 的网页通知点击只派发给页面（`NotificationDelegateImpl::NotificationClick()` → `DispatchNonPersistentClickEvent`），主进程通知也只有一条 `click` 事件，两边都没有激活窗口的默认行为；页面自己的 `window.focus()` 实测也无效（`BrowserWindow::OnActivateContents` 只隐藏菜单） | 已生效（新增；**不动** [ADR-0086](#adr-0086) 的"不拦截、不自建"与 [ADR-0084](#adr-0084) 的判据。⚠️ 页面自己发的**消息通知**点击仍然不会激活窗口 —— 在 [INV-1](#adr-0057) 下没有可用信号，写进 `usage.md` 当已知限制；否决了"加 preload 监听 `notificationclick`""自己发通知""D-Bus 旁听 `ActionInvoked`"三条路。真机点一次待验证） |
 
 ---
 
@@ -6608,3 +6609,99 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
    `下载中…` 是一段在走的蓝、就绪是走满的纯蓝、`下载失败` 是走满的纯红 + 右侧「重试」。
 3. 真机（待做）：断开网络 → 加一门新词典 → 那一行应当先「等待中…」，约 100 秒后变成
    「下载失败」+「重试」；恢复网络点「重试」→「等待中…」→「下载中…」→ 走满的蓝条。
+
+## ADR-0092
+
+**决定**：**点击通知 → 把那扇窗口带到用户面前**这件事由我们自己写，但只对**我们自己发的**三种
+通知负责（接管失效 / 词典下载失败 / 全屏退出）。页面自己发的消息通知**不在**这一条里 —— 它的
+点击到不了主进程，这是**记录在案的已知限制**，不是待办。
+
+**状态**：已生效（新增；**修正** [ADR-0086](#adr-0086) 里"点击通知把窗口带到前台由**内核**承担"
+那句判断 —— 它不成立；**不动** [ADR-0086](#adr-0086) 的"页面通知我们不拦截、不自建"，
+也不动 [ADR-0084](#adr-0084) 的全屏提示判据。）
+
+**背景**：用户报"点击通知，WaaChat 不会激活窗口（最小化状态下不会显示到前台）"。
+`docs/usage.md` 当时还写着"点击它把窗口带回前台…都由内核与桌面负责"，于是这个预期是被我们自己
+的文档写出来的。[ADR-0086](#adr-0086) 的原文是"由**内核**承担"—— 查下来内核并不承担。
+
+**证据**（源码 + 本机实测，不是推断）：
+
+1. **网页通知的点击只派发给页面。** `shell/browser/notifications/platform_notification_service.cc`
+   里 `NotificationDelegateImpl::NotificationClick()` 的全部内容是
+   `content::NotificationEventDispatcher::GetInstance()->DispatchNonPersistentClickEvent(...)`；
+   再往上 `linux/libnotify_notification.cc` 的 `OnNotificationView()` 只做两件事：把
+   `g_get_activation_token(notification)` 拿到的 token 塞进进程（`base::nix::SetActivationToken`），
+   然后 `NotificationClicked()`。**没有任何一处调用窗口的 Activate / Show / Restore。**
+2. **主进程的 `Notification` 只有一条 `click` 事件**，也没有默认行为。`notification.cc` 的
+   `NotificationClicked()` 只是 `delegate()->NotificationClick()` 然后 `Destroy()`。
+   也就是说：两边都"只告诉你被点了"，之后什么都不做。
+3. **页面自己也救不回来。** 实测（本机 Wayland）：窗口 `minimize()` 之后从渲染进程调
+   `window.focus()`，`isMinimized` 仍为 `true`、`isVisible()` 仍为 `false`、`isFocused()` 仍为
+   `false` —— 一个事件都没发。因为 `WebContentsDelegate::ActivateContents` 在 Electron 里走到
+   `BrowserWindow::OnActivateContents()`，而它只**隐藏自动隐藏的菜单**。
+4. **"谁来激活"这条链本身是通的。** `electron_api_web_contents.cc` 的 `WebContents::Focus()`
+   在 Linux 上显式调用 `owner_window()->Focus(true)`；实测 `win.webContents.focus()` 让最小化的
+   窗口恢复并聚焦（`win:restore` + `win:focus` 两个事件都到）。`presentWindow()` 用的
+   `restore() + show() + focus()` 同样有效（同一台机器上重复验证过）。
+   ⇒ **缺的只是"有人调用它"**，不是"调用了也没用"。
+
+**理由**：
+
+1. **自有通知有 `click` 事件可挂，那就必须挂。** 这三条通知的正文本身就在说"出事了，去看看"
+   （接管失效要重新下载、词典失败要重试、全屏要退出来），点它却没有反应，等于把用户送到
+   一半就松手。
+2. **目的地按"点开之后能干什么"分，而不是一律打开聊天。** 词典失败那一行才有「重试」
+   （[ADR-0091](#adr-0091)），把它指到聊天窗口等于让用户自己再找一遍设置。
+3. **`Notification` 对象必须保持引用。** 主进程对象被 GC 之后 `click` 事件**永远不会再来**
+   —— 症状是"通知还挂在屏幕上，点它毫无反应"，而且只在大约几十条之后、GC 跑过的时候出现。
+   这是这次实现里最容易踩空的一点，写进了注释，也写进了自检。
+4. **网页通知这一层不硬做。** 唯一的入口是"往页面里塞东西"（[INV-1](#adr-0057) 禁止）或者
+   "自己发通知"（需要先读到消息内容 —— 同样要读页面）。这与 [ADR-0086](#adr-0086) 的
+   "不拦截、不自建"是同一条边界，不是为了省事。
+
+**被否决的替代方案**：
+
+- **给主窗口加 preload 监听页面的 `notificationclick`**：`window.focus()` 实测无效（见证据 3），
+  而且 preload 本身就是注入 —— [INV-1](#adr-0057) 的红线，`webPreferences` 里没有 preload 正是
+  "远程内容触达本地能力在结构上不可能"这条保证的落点。
+- **自己发通知（主进程 `Notification`）**：要拿到消息内容就得读页面。`permissions.ts` 放行
+  `notifications` 权限、不拦截、不自建，是 [ADR-0086](#adr-0086) 已经定下的边界。
+- **D-Bus 旁听 `ActionInvoked`**：技术上可行（这就是"点击"在总线上的形状），但要 `BecomeMonitor`
+  持续解析消息、跟踪 `Notify` 的 sender 与返回的 id 才能判断"这条是不是我们的"，否则会把**别人**
+  的通知点击也当成自己的。跨 D-Bus 实现（dbus-daemon / dbus-broker）行为不一致，而且本机沙箱
+  里连不上通知服务、无法端到端验证 —— 一个没法验证的旁路，比一条写清楚的限制更糟。
+- **用命令行开关 / `--disable-features` 让内核自己激活**：不存在这样的开关。
+- **把「最小化」改成「隐藏」以避免最小化状态**：不解决"点击信号到不了主进程"，只是把症状换个
+  形状，还改变了用户对最小化按钮的预期。
+
+**影响**：
+
+- `src/main/notice.ts`：`show()` 多了 `target: NoticeTarget`（`main` / `settings`），
+  每个 `Notification` 绑 `click` 并放进 `live` 集合（持有引用，`close` 时移除，64 条上限）；
+  新增 `setNoticeActivation()` 由装配处注入两个目的地的实现。
+- `src/main/index.ts`：在**第一条通知可能发出来之前**（全屏提示之前）注入
+  `main → presentWindow(getMainWindow())`、`settings → presentWindow(getSettingsWindow() ??
+  createSettingsWindow())`。
+- `scripts/check-capture.ts`：新增「通知点击」一节 —— 钉住"绑了 click + 持有引用"与"两处注入
+  齐全"，以及"词典那条指向设置"。这三个失效**都不报错、不进日志**。
+- `docs/usage.md`：把"点击它把窗口带回前台…由内核负责"改成事实（自有通知会激活、页面通知不会）。
+
+**已知限制**：
+
+1. **页面自己发的消息通知，点击仍然不会激活窗口。** 它会展开/关闭，或者由页面自己的脚本处理；
+   应用这一侧没有任何可用信号。用户想让窗口回来，走托盘 /  Dock 图标 / 再启动一次
+   （`second-instance` 那条路，[ADR-0083](#adr-0083)）。
+2. **同一个通知被点两次不会发生任何事**（第一次点击后对象已 `Destroy()`，Electron 的规则）。
+3. **`close` 在 Linux 上不保证发出**，所以 `live` 集合可能留下几条已经消失的通知对象；上限 64
+   是防泄漏用的，不是语义。被上限挤掉的那一条如果还挂在通知中心里，点击会无效。
+4. **激活请求仍然受合成器裁决**：Wayland 下 `focus()` 只是"请求"。但点击通知本身带来了
+   activation token（证据 1），所以这一次请求是**有凭据**的，与"后台进程凭空抢焦点"不同。
+
+**怎么验证**：
+
+1. `pnpm run check` 通过（含新增的「通知点击」三条断言）。
+2. 真机：最小化聊天窗口 → 触发一条自有通知（最省事的是 `Alt` → `视图` → 「重新加载页面」后进
+   一次图片全屏的 HTML 全屏提示；或断网加一门新词典等约 100 秒）→ 点通知 → 窗口应当恢复并
+   到前台；点词典那条应当打开**设置**。
+3. 反向确认：最小化后点一条**消息**通知 —— 窗口不会回来。这一条是限制，不是回归
+   （[ADR-0086](#adr-0086) 的边界）。

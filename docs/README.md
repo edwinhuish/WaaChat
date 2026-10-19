@@ -119,7 +119,7 @@ waachat/
 │   │   ├── settings.ts             配置持久化 + 进程内实时读取
 │   │   ├── logger.ts               日志（含敏感信息脱敏约定）
 │   │   ├── errors.ts               失败原因取 errno（fs 错误的 name 恒为 `Error`，说不清处境）
-│   │   ├── notice.ts               主动提示用户：系统通知 + 节流（接管失效）
+│   │   ├── notice.ts               主动提示用户：系统通知 + 节流 + 点击激活窗口（ADR-0092）
 │   │   ├── account.ts              账号标识：读页面记下的 WID / `wa_ul` cookie（ADR-0039）
 │   │   ├── paths.ts                目录布局：归档位置、账号层次目录、缓存根与索引路径
 │   │   ├── permissions.ts          权限白名单（来源 + 类型，双向；纯模块可单测，见 T5）
