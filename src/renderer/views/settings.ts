@@ -191,6 +191,21 @@ const DICTIONARY_STATUS_TITLES: Readonly<Record<DictionaryStatus, string>> = {
 }
 
 /**
+ * 每一态在条子右边那**一句话**（[ADR-0091]）。
+ *
+ * 五种状态里有四种必须说出来 —— 只剩颜色的话，"等待中"与"已就绪"在关掉动效、或者用户
+ * 不盯着这一格的时候分不开，而"待选"根本无颜色可看（虚线空槽靠这句才读得懂）。
+ * `ready` 是唯一空着的：走满的蓝条本身就是结论，再写一句"已就绪"只是噪音。
+ */
+const DICTIONARY_STATUS_TEXTS: Readonly<Record<DictionaryStatus, string>> = {
+  unknown: '待选',
+  pending: '等待中…',
+  downloading: '下载中…',
+  ready: '',
+  failed: '下载失败',
+}
+
+/**
  * 行的身份。区域与顺序**不在这里** —— 它们是数据（`shared/settings-sections.ts`），
  * 因为"哪些项该在一起"这种约定要能被离线断言，而不是靠人盯屏幕。
  */
@@ -924,25 +939,25 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
   }
 
   /**
-   * 一门词典的下载进度（[ADR-0071]）。
+   * 一门词典的下载进度（[ADR-0071]；五态见 [ADR-0091]）。
    *
-   * 两块：一条**进度条**（四态见 `DictionaryStatus`）+ 一句**只在需要解释时才出现的**文字。
+   * 两块：一条**进度条**（五态见 `DictionaryStatus`）+ 一句**说明它此刻在干什么**的文字。
    * 分工是这样定的：
    *
    *   - `ready` **只有**一条走满的蓝条 —— "走满"就是这件事的全部结论，再写一句"已就绪"
    *     只是噪音（而它不会再变回别的样子，见 `nextDictionaryStatus()`）；
-   *   - `downloading` / `failed` 各带一句话：这两种情况**都要用户等一下或做点什么**。条本身
-   *     分得出"正在下"（一段蓝在走）与"下好了"（走满的蓝），但那句"下载中…"是给**不盯着这一格**
-   *     的人读的（关掉动效时两态只差浓淡，那句话就更是唯一的抓手），`failed` 那句则要把
-   *     "这门语言不会被标注"说出来；
-   *   - `unknown` 是一条**空槽**：它不是失败，是"还没听到关于它的任何消息"。
+   *   - `unknown` 是**虚线空槽 + 「待选」**：这一门没被选中，永远不会去下载（[ADR-0089] 只交
+   *     一门）。它此前是一条空心的灰条，而灰条与"坏了"长得一模一样 —— [ADR-0091] 修的正是
+   *     这个：形状与文字都要说清"这里本来就没有进度"；
+   *   - `pending` / `downloading` / `failed` 各带一句话：这三种情况**都要用户等一下或做点什么**。
+   *     条本身分得出"在等"（淡蓝）/"正在下"（一段蓝在走）/"下好了"（走满的蓝），但那句话是
+   *     给**不盯着这一格**的人读的（关掉动效时几态只差浓淡），`failed` 那句则要把
+   *     "这门语言不会被标注"说出来。
    *
-   * 那个文字节点**总是**画出来（`ready` / `unknown` 时是空串）：它占着一份固定的宽度，
+   * 那个文字节点**总是**画出来（`ready` 时是空串）：它占着一份固定的宽度，
    * 于是状态变化时后面那颗 `⋯` 不会左右跳。
    */
   function dictionaryProgressNode(status: DictionaryStatus): HTMLElement[] {
-    const text = status === 'downloading' ? '下载中…' : status === 'failed' ? '下载失败' : ''
-
     return [
       h('span', {
         class: 'language-progress',
@@ -952,7 +967,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
       h('span', {
         class: 'language-status',
         data: { state: status },
-        text,
+        text: DICTIONARY_STATUS_TEXTS[status],
       }),
     ]
   }
@@ -1076,7 +1091,7 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
               class: 'hint',
               text: off
                 ? '拼写检查关着，这一行跟着停用 —— 开着它才会去下载词典。'
-                : '这是一张**候选清单**：每一时刻真正用来查错别字的只有**一门** —— 与内嵌页面界面语言匹配的那门（它跟随你的账号）；匹配不上时用**排在最前面**的那一门，所以拖动排的顺序就是回落顺序。只交一门是刻意的：交多门时内核把几门的词表合成一组，纠错建议也会掺进别的语言。只有当前那一门会在下载词典，其余几门那一格是空的 —— 它们等着被选中。',
+                : '这是一张**候选清单**：每一时刻真正用来查错别字的只有**一门** —— 与内嵌页面界面语言匹配的那门（它跟随你的账号）；匹配不上时用**排在最前面**的那一门，所以拖动排的顺序就是回落顺序。只交一门是刻意的：交多门时内核把几门的词表合成一组，纠错建议也会掺进别的语言。只有当前那一门会去下载词典；其余几门那一格是虚线，写着「待选」—— 它们等着被选中。',
             }),
           ),
           actionButton({

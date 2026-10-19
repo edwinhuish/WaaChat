@@ -425,12 +425,17 @@ ul.archive li:last-child {
  * 不给字节数（词典请求由浏览器进程发出，不经过我们的协议层与 `webRequest`，[ADR-0068]）。
  * 因此四态各有一种样子 —— 画一条假的百分比会比它更糟。
  *
- * 四态的视觉必须**一眼分得开**，因为这一格回答的正是"它到底在不在下"：
+ * 五态的视觉必须**一眼分得开**，因为这一格回答的正是"它到底在不在下"：
  *
- *   `unknown`      空槽（只剩下面那层 `--border`）—— "还没听到关于它的消息"，**不是**失败；
+ *   `unknown`      **虚线空槽**（没有填充）—— "这一门没被选中，不会去下载"，**不是**失败；
+ *   `pending`      **走满的淡蓝**（`--accent` 三成浓）—— "已经交给内核，还在等它的第一条消息"；
  *   `downloading`  **一段实心蓝**从左划到右（**在动 = 没停**）；
  *   `ready`        **走满的纯蓝**（`--accent`）—— 这一格的全部结论，也是终局；
  *   `failed`       **走满的纯红**（`--danger`）—— 红只在"真的取不回来"时出现。
+ *
+ * ⚠️ `unknown` 曾经只是一层 `--border`（浅灰轨道）+ 零宽填充，于是它读起来就是"一条灰槽"，
+ * 与"坏了"没有区别 —— 那正是 [ADR-0091] 要修的东西。虚线描边是"**空位**"，与"正在下"和
+ * "下好了"在形状上就不同，不必靠颜色去猜。
  *
  * 两条取舍：一是"在动"由**位置**表达（一段在走的条），不再靠纹理 —— 蓝现在同时是"已完成"的
  * 颜色，"下载中"因此必须靠另一个维度与它分开；二是只**朝一个方向**走、不来回，来回摆动读起来
@@ -483,6 +488,34 @@ ul.archive li:last-child {
   animation: dictionary-downloading 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/*
+ * 「没被选中 / 不会去下载」（[ADR-0091]）：**虚线空槽**。
+ *
+ * 这一态此前与"什么消息都还没来"共用一条浅灰轨道，看起来就是一条没有颜色的灰条 —— 而设置页
+ * 上多数行在多数时候都是这一态（[ADR-0089] 只交一门，清单里其余几门永远不会有进度）。用户
+ * 看到的因此是"一堆坏掉的进度条"。
+ *
+ * 换成虚线描边之后它读作**一个空位**，而不是"进度为零"：形状本身就是那句话，因此不必去猜
+ * 颜色。描边用 `--muted`（六个单位里最深的那档灰）而不是 `--border`：后者在白底上几乎看不见。
+ */
+.setting .language-progress[data-state='unknown'] {
+  background: transparent;
+  border: 1px dashed var(--muted);
+}
+
+/*
+ * 「已经交给内核，还在等它的第一条消息」（[ADR-0091]）：**走满的淡蓝**。
+ *
+ * 它与 `downloading` 的区别是"动没动"，与 `ready` 的区别是浓淡 —— 与 [ADR-0074] 给关掉动效
+ * 时 `downloading` 定的那套判据同一个形状。这里刻意**不**做成一段停在左边的短条：那等于
+ * 假装有百分比，而这一格最不该做的就是这件事（[ADR-0071] 理由 1）。
+ */
+.setting .language-progress[data-state='pending']::after {
+  background: var(--accent);
+  opacity: 0.3;
+  transform: scaleX(1);
+}
+
 /* 下好了就是一条**走满的纯蓝** —— 那是这一格的全部结论（也是终局，不会再变）。 */
 .setting .language-progress[data-state='ready']::after {
   background: var(--accent);
@@ -529,14 +562,23 @@ ul.archive li:last-child {
 }
 
 /*
- * 状态文字（"下载中…" / "下载失败"）**总是**占着一份宽度，哪怕这一态没有话说 ——
- * 不这样的话，状态一变，后面那颗 `⋯` 会跟着左右跳。
+ * 状态文字（"待选" / "等待中…" / "下载中…" / "下载失败"）**总是**占着一份宽度，哪怕这一态
+ * 没有话说 —— 不这样的话，状态一变，后面那颗 `⋯` 会跟着左右跳。
  */
 .setting .language-status {
   flex: 0 0 auto;
   min-width: 4.5rem;
   font-size: 12px;
   color: var(--muted);
+}
+
+/*
+ * 蓝 = 正在路上（等回音 / 在下），红 = 真的失败。两种都**必须**与默认的灰分开：`--muted`
+ * 那一档在浅色底上读起来就是"次要信息"，而"正在下"与"下不下来"都不是次要信息（[ADR-0091]）。
+ */
+.setting .language-status[data-state='pending'],
+.setting .language-status[data-state='downloading'] {
+  color: var(--accent);
 }
 
 .setting .language-status[data-state='failed'] {
