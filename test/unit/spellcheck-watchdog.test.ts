@@ -67,7 +67,11 @@ afterEach(() => {
 describe('词典下载看门狗', () => {
   it('内核一直不说话：8 秒 / 30 秒各再要一次，一分钟后再没动静就记成失败', () => {
     const { session, setLanguages } = fakeSession(['en-US'])
-    watchSpellcheck(session, () => settingsWith('en-US'), () => {})
+    watchSpellcheck(
+      session,
+      () => settingsWith('en-US'),
+      () => {},
+    )
 
     applySpellcheck(session, settingsWith('en-US'))
     expect(setLanguages).toHaveBeenCalledTimes(1)
@@ -91,7 +95,11 @@ describe('词典下载看门狗', () => {
 
   it('内核已经有回音（开始下载）时不再打扰它 —— 重试会把那条下载打断', () => {
     const { session, setLanguages, emit } = fakeSession(['de'])
-    watchSpellcheck(session, () => settingsWith('de'), () => {})
+    watchSpellcheck(
+      session,
+      () => settingsWith('de'),
+      () => {},
+    )
 
     applySpellcheck(session, settingsWith('de'))
     expect(dictionaryStatusSnapshot().de).toBe('pending')
