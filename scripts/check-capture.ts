@@ -2317,6 +2317,45 @@ check(
 )
 
 /**
+ * 通知点击（[ADR-0092]）。
+ *
+ * Linux 上 Electron **不会**因为点击通知而激活窗口：网页通知的点击只派发给页面
+ * （`NotificationDelegateImpl::NotificationClick()` → `DispatchNonPersistentClickEvent`），
+ * 主进程通知也只有一条 `click` 事件。因此"点它有没有反应"完全取决于两处我们自己的代码：
+ *
+ *   1. `notice.ts` 给每一个 Notification 绑了 click，**并且持有引用** —— 主进程对象被 GC
+ *      之后事件永远不会再来；
+ *   2. `index.ts` 把"带到哪扇窗口"注入进去了。
+ *
+ * 漏掉任何一处，症状都是"通知还挂在屏幕上，点它毫无反应"。而它**不报错、不进日志**：
+ * 通知显示得很正常，只有点击那一下是死的。
+ */
+
+section('通知点击')
+
+const noticeIoSource = source('../src/main/notice.ts')
+
+check(
+  '每条通知都绑了 click，并且持有引用（被 GC 掉之后 click 永远不会再来）',
+  noticeIoSource.includes("notification.on('click'") &&
+    noticeIoSource.includes('live.add(notification)'),
+  '点击通知会变成毫无反应 —— 不报错，也不进日志',
+)
+check(
+  '装配处注入了两扇窗口的激活回调（漏一处 = 那一类通知点不动）',
+  entrySource.includes('setNoticeActivation(') &&
+    entrySource.includes('main:') &&
+    entrySource.includes('settings:'),
+  '注入缺席时点击落在一个空函数上 —— 看起来和"没修"一模一样',
+)
+check(
+  '词典下载失败的那条指向**设置**（「重试」按钮在那一行上，见 [ADR-0091]）',
+  noticeIoSource.includes('spellcheckDictionaryFailureBody(languageCode)') &&
+    noticeIoSource.includes("'settings',"),
+  '点开之后是一扇没事可做的窗口，用户还得自己去找设置',
+)
+
+/**
  * 应用菜单（`src/main/menu.ts`）。
  *
  * 我们不调用 `Menu.setApplicationMenu()` 时，Electron 会装**它自己**那份默认菜单：文案是英文、
