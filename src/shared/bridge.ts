@@ -136,7 +136,8 @@ export interface WaaChatBridge {
    * 协议层与 `webRequest`，[ADR-0068]）。
    *
    * ⚠️ 它**不是**一个能力：渲染进程无法用它触发任何下载。词典的触发点是
-   * `setSpellCheckerLanguages()`，也就是 `setSettings()` 那条路。
+   * `setSpellCheckerLanguages()`，也就是 `setSettings()` 那条路。唯一一个例外是
+   * {@link retryDictionaries}，而它也不指定"下什么"。
    */
   getDictionaryStatuses(): Promise<DictionaryStatusMap>
   /**
@@ -149,6 +150,19 @@ export interface WaaChatBridge {
    * 几个点 —— 轮询要么错过它们，要么一直在没事的时候白问。
    */
   onDictionaryStatusChange(listener: (statuses: DictionaryStatusMap) => void): () => void
+
+  /**
+   * 再向下载源要一次词典（[ADR-0091]）。设置页那颗「重试」唯一在做的事。
+   *
+   * 为什么界面需要一个按钮：内核把一次"下载失败"当**终局** —— 把同一个语言列表再设一遍，
+   * 它什么都不做（[ADR-0072] 实测）。应用自己会退避重试两次，两次都失败之后就再没有别的路了，
+   * 而用户手里唯一可能的变量（网络好了、代理开了）**只有他自己知道**。
+   *
+   * 这是渲染进程能触发的**唯一**一个与下载有关的动作，边界就写在这里：它不指定下哪一门、
+   * 不构造任何 URL、不带任何参数 —— 用的永远是设置里那几门与写死的下载源。结果也不由返回值
+   * 告知，仍然由 {@link onDictionaryStatusChange} 推过来。
+   */
+  retryDictionaries(): Promise<void>
 
   /**
    * 订阅"设置被主进程自己改掉了"（[ADR-0079]）。

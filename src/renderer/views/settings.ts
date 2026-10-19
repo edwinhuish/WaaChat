@@ -969,6 +969,28 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
         data: { state: status },
         text: DICTIONARY_STATUS_TEXTS[status],
       }),
+      /**
+       * 失败时给一颗「重试」（[ADR-0091]）。
+       *
+       * 为什么必须有：内核把"下载失败"当**终局**（再设一遍同一个列表是 no-op，[ADR-0072] 实测），
+       * 应用自己退避重试两次之后就再没有别的路了 —— 而"网络好了 / 代理开了"这个变量只有用户知道。
+       * 没有这颗按钮，一次失败就是**整个运行期**的失败，唯一出路是重启应用。
+       *
+       * 它是唯一一颗出现在清单行里的按钮（`⋯` 之外），因此形制也刻意不同：红描边小按钮，
+       * 一眼看出"这是要你做点什么的"，而不是又一个操作入口。
+       */
+      ...(status === 'failed'
+        ? [
+            h('button', {
+              class: 'language-retry',
+              type: 'button',
+              title: '再向下载源要一次这一门词典',
+              text: '重试',
+              dataRole: 'dictionary-retry',
+              onClick: () => void retryDictionaries(),
+            }),
+          ]
+        : []),
     ]
   }
 
@@ -1251,6 +1273,21 @@ export function mountSettingsView(root: HTMLElement): SettingsView {
     if (codes.length === 0) return
 
     void patch({ spellcheckLanguages: formatDictionaryList(codes) })
+  }
+
+  /**
+   * 让主进程再向下载源要一次词典（[ADR-0091]）。
+   *
+   * 不 `await` 之后重画：结果不从这里回去，主进程随后会把新的状态推过来（失败会立刻变成
+   * "等待中"，因为主进程在重试前先把旧判决作废了）。因此这里失败时也只是日志里一条
+   * —— 界面上那颗按钮不会因此消失，用户还能再点。
+   */
+  async function retryDictionaries(): Promise<void> {
+    try {
+      await bridge().retryDictionaries()
+    } catch {
+      // 主进程那边已经把原因写进日志了；这里不做任何"看起来成功了"的补偿。
+    }
   }
 
   /**

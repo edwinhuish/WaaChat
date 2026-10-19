@@ -366,7 +366,53 @@ function armDictionaryWatchdog(ses: Session, languageCode: string): void {
  * ⚠️ 代价是那一瞬间没有任何语言在被检查（清空与设回之间没有别的动作，因此只在同一轮事件循环里）。
  * 这是唯一能用的杠杆，因此接受。
  */
-export function retryDictionaryDownload(ses: Session, getSettings: () => Settings): void {
+/**
+ * 作废"已经失败 / 还在等"的那些判决，`ready` 不动（[ADR-0091]）。
+ *
+ * 为什么重试之前必须做：状态机的规则是 `queued` **不把 `failed` 洗白**（见
+ * `shared/dictionary-status.ts` 规则 3，理由是"再设一遍同一个列表是 no-op"）。而这里恰好不是
+ * 那条路 —— 我们马上要"清空再设回"，内核**真的会**重新取一次。不清的话，按下「重试」之后那一条
+ * 仍然是红的（或者灰的），直到内核回第一条消息：用户会以为没点上，然后再点几次。
+ *
+ * `ready` 留着：那些词确实已经在磁盘上，没有理由因为兄弟词典在重试就一起变回"待选"。
+ */
+function forgetPendingVerdicts(): void {
+  let changed = false
+
+  for (const [key, status] of dictionaryStatuses) {
+    if (status === 'ready') continue
+    dictionaryStatuses.delete(key)
+    changed = true
+  }
+
+  if (!changed) return
+
+  const snapshot = dictionaryStatusSnapshot()
+  for (const listener of statusListeners) listener(snapshot)
+}
+
+/** {@link retryDictionaryDownload} 的选项。 */
+export interface DictionaryRetryOptions {
+  /**
+   * 用户按下了「重试」：把重试预算一起清掉。
+   *
+   * 自动重试（失败事件、看门狗）**不能**传它 —— 那个预算正是"别无限重试"的那道闸
+   * （[ADR-0072]）；而用户明确要求再来一次时，清掉它才是他要的。
+   */
+  readonly fresh?: boolean
+}
+
+export function retryDictionaryDownload(
+  ses: Session,
+  getSettings: () => Settings,
+  { fresh = false }: DictionaryRetryOptions = {},
+): void {
+  if (fresh) {
+    dictionaryFailures.clear()
+    dictionaryQuietChecks.clear()
+  }
+
+  forgetPendingVerdicts()
   ses.setSpellCheckerLanguages([])
   applySpellcheck(ses, getSettings())
 }

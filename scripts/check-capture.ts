@@ -1539,6 +1539,7 @@ const LANGUAGE_UI_CLASSES = [
   'language-code',
   'language-progress',
   'language-status',
+  'language-retry',
   'language-menu-button',
   'language-menu',
   'language-menu-item',
@@ -1673,6 +1674,25 @@ check(
   '状态表的键在两处都经过 `dictionaryKey()` 归一（少一处 = 那一格永远停在"未开始"）',
   spellcheckSource.includes('dictionaryKey(') && settingsViewSource.includes('dictionaryKey('),
   '大小写没有归一：内核事件里的码与设置里存的码将彼此看不见',
+)
+
+/**
+ * 「重试」这条链（[ADR-0091]）。四处缺一，那颗按钮就是**假的** —— 点下去什么都不发生，
+ * 而界面上没有任何东西说它坏了（按钮照旧能按、照旧不变灰）。
+ *
+ * 它同时是"词典下载失败之后唯一的出路"：内核把失败当终局（[ADR-0072]），应用自己退避重试
+ * 两次之后就再没有别的路，重启应用是第二种。因此这条链比一般的一颗按钮更值得钉住。
+ */
+check(
+  '「重试」四处齐全：桥 / preload / 通道表 / 处理器，且界面真的画了那颗按钮（[ADR-0091]）',
+  bridgeSource.includes('retryDictionaries(): Promise<void>') &&
+    preloadSource.includes('CHANNELS.dictionaryRetry') &&
+    channelsSource.includes("dictionaryRetry: 'settings:dictionary-retry'") &&
+    ipcSource.includes('CHANNELS.dictionaryRetry,') &&
+    ipcSource.includes('retryDictionaryDownload(') &&
+    settingsViewSource.includes('bridge().retryDictionaries()') &&
+    settingsViewSource.includes("class: 'language-retry'"),
+  '有一处漏了：那颗「重试」按下去什么都不会发生，而它不会报错',
 )
 
 /**

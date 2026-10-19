@@ -82,6 +82,16 @@ export const CHANNELS = {
    */
   dictionaryStatus: 'settings:dictionary-status',
   /**
+   * 再向下载源要一次词典（[ADR-0091]）。
+   *
+   * 无参数、无返回值：它只做一件事 —— 把当前设置里那几门"清空再设回"（内核唯一认的杠杆，
+   * [ADR-0072]），结果由 {@link dictionaryStatusChanged} 推过来。设置页那颗「重试」用它。
+   *
+   * ⚠️ 与 {@link dictionaryStatus} 那句"不是能力"不冲突：它**不指定**下哪一门、也不构造
+   * URL，能做的只有"把同一件事再试一次"。
+   */
+  dictionaryRetry: 'settings:dictionary-retry',
+  /**
    * 拼写词典下载状态的变化（主进程 → 渲染进程的单向推送）。
    *
    * 推的是**整张快照**而不是"哪一门变了"：状态表的规模是"用户勾了几门"，最多十几项，

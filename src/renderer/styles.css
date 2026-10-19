@@ -604,6 +604,34 @@ ul.archive li:last-child {
 }
 
 /*
+ * 「重试」（[ADR-0091]）：只在**下载失败**那一行出现。
+ *
+ * 为什么这颗按钮长得跟 `⋯` 完全不同：`⋯` 是"对这一门做什么"的入口（可以一辈子不点），
+ * 而这颗是"现在有一件事卡住了，需要你决定"—— 两者混成一种形制，用户就会把失败当成又一条
+ * 普通操作。红描边、不填底：失败的颜色沿用它，但**不在静止状态下铺满**（那不是警告横幅，
+ * 只是一行清单）。
+ *
+ * 悬停时反色（红底白字）：这一行里只有它会在按下之后真的去联网，反馈必须明确。
+ */
+.setting .language-retry {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--danger);
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.setting .language-retry:hover {
+  color: var(--surface);
+  background: var(--danger);
+}
+
+/*
  * 那一行的菜单（[ADR-0070]）：绝对定位挂在行下面。它**没有草稿**，因此不需要 `<dialog>` 那套
  * 模态机制 —— 点别处 / `Esc` 由视图自己收起（`views/settings.ts` 的 dismissLanguageMenu）。
  */

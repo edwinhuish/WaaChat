@@ -63,7 +63,7 @@ import { logger } from '../logger'
 import { archiveDir } from '../paths'
 import { relaunchApp } from '../restart'
 import { getSettings, pendingRestart, updateSettings } from '../settings'
-import { applySpellcheck, dictionaryStatusSnapshot } from '../spellcheck'
+import { applySpellcheck, dictionaryStatusSnapshot, retryDictionaryDownload } from '../spellcheck'
 import { applyTheme } from '../theme'
 import { applyZoomToAllWindows, getFilesWindow, getSettingsWindow } from '../window'
 import { CHANNELS } from './channels'
@@ -820,6 +820,20 @@ export function registerIpcHandlers(): void {
    * `setSpellCheckerLanguages()` 的副作用（`settings:set` 那条路）。
    */
   guard(CHANNELS.dictionaryStatus, () => dictionaryStatusSnapshot())
+
+  /**
+   * 再向下载源要一次词典（[ADR-0091]）。
+   *
+   * 无参数：能用哪几门永远取自设置，渲染进程表达不了"我要下某一门"。`fresh` 让重试预算与
+   * "失败"那条判决一起作废 —— 用户按下「重试」时，他要的正是"当成第一次再来一遍"。
+   *
+   * 返回 `undefined`：结果不从这里回去，而是照旧由状态推送（`dictionaryStatusChanged`）说。
+   */
+  guard(CHANNELS.dictionaryRetry, () =>
+    retryDictionaryDownload(session.fromPartition(sessionPartition()), getSettings, {
+      fresh: true,
+    }),
+  )
 
   /**
    * 重启应用（[ADR-0064]）。

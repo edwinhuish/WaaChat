@@ -81,6 +81,12 @@ const bridge: WaaChatBridge = {
 
   getDictionaryStatuses: () => ipcRenderer.invoke(CHANNELS.dictionaryStatus),
 
+  /**
+   * 无参数转发（[ADR-0091]）：安全边界在主进程那一侧 —— 它能做的只有"把设置里那几门
+   * 再要一遍"，渲染进程没有"下哪一门"这个说法可传。
+   */
+  retryDictionaries: () => ipcRenderer.invoke(CHANNELS.dictionaryRetry),
+
   onDictionaryStatusChange: (listener: (statuses: DictionaryStatusMap) => void) => {
     // 与 `onArchiveMigration` 同一个理由：不包一层就会把 Electron 的 `event` 交给渲染侧代码。
     const wrapped = (_event: unknown, statuses: DictionaryStatusMap): void => listener(statuses)
