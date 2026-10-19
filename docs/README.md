@@ -104,7 +104,7 @@ waachat/
 │   │   ├── window.ts               窗口创建、两扇本地窗口的引用（UA 在会话上，见 session.ts）
 │   │   ├── session.ts              会话分区、协议层与下载层的注册入口（含会话级 UA）
 │   │   ├── instance.ts             当前实例：解析 argv、派生分区名与界面名（不导入 electron）
-│   │   ├── spellcheck.ts           内核自带的拼写检查：词典清单按内核实有者过滤（ADR-0061）
+│   │   ├── spellcheck.ts           内核自带的拼写检查：词典清单按内核实有者过滤、下载状态与看门狗（ADR-0061 / ADR-0091）
 │   │   ├── page-language.ts        内嵌页面的界面语言 → 词典的默认值（只读那条 cookie；ADR-0088）
 │   │   ├── context-menu.ts         承载页面的右键菜单：拼写建议 + 编辑动作（ADR-0061）
 │   │   ├── menu.ts                 应用菜单：替换 Electron 的默认菜单（ADR-0077）
@@ -188,7 +188,7 @@ waachat/
 │       ├── bridge.ts               渲染侧能看到的全部能力（纯类型）
 │       ├── format.ts               字节/时间格式化、失败原因的人话翻译
 │       ├── language.ts             拼写词典的判据表：收敛、次序、界面语言 → 挑一门（纯函数，可单测；ADR-0089）
-│       ├── dictionary-status.ts    词典下载的四态判据与键归一化（纯函数，可单测；ADR-0071 / ADR-0074）
+│       ├── dictionary-status.ts    词典下载的五态判据与键归一化（纯函数，可单测；ADR-0071 / ADR-0074 / ADR-0091）
 │       ├── instance.ts             实例标识：解析 --profile、净化、按实例派生名字（纯函数，可单测）
 │       ├── migration.ts            归档迁移的进度与失败文案（纯函数，可单测）
 │       ├── notice.ts               主动提示用户的文案与判据（接管失效 / 词典失败 / 全屏提示；纯函数，可单测）
