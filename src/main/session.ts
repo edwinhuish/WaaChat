@@ -212,9 +212,19 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   watchPageLanguage(ses, getSettings)
 
   /**
-   * 兜底重播（[ADR-0073]）：回头看一眼"该有状态的语言里还有谁没有"。正常路径下**一个都没有**
-   * —— 订阅早于内核那四条通知，因此它们都听见了；这一支只兜住"漏听"这一种情况，把那一格从
-   * 空槽救成蓝条（或红条），而不是让它在整个运行期里都读作"没下载"。
+   * 兜底重播（[ADR-0073]）：回头看一眼"该有状态的语言里还有谁没有"，把那一格从空槽救成蓝条
+   * （或红条），而不是让它在整个运行期里都读作"没下载"。
+   *
+   * 它命中的是**没听到回音**，而那个判据在 [ADR-0091] 之后是"没有键 **或** 还是 `pending`"
+   * （`languagesWithoutStatus()`）。于是正常路径上它有两种结局：
+   *
+   *   - **磁盘上已经有那一门** → 内核几毫秒内就发 `initialized`，状态已是 `ready` → 不动；
+   *   - **磁盘上没有** → `download-begin` 通常赶在 `configureSession()` 之前到达（那一支会拦住
+   *     它，见 `languagesWithoutStatus()` 的说明）；万一没赶上，这次"清空再设回"会把那条还没
+   *     跑起来的请求重发一次 —— 代价是一次多余的请求，换来的是"漏听"永远能自愈。
+   *
+   * 换句话说：它不只在漏听时动，也在"交上去了但内核还没回第一条消息"的那几毫秒里动。那是
+   * `pending` 被算作"还没有消息"的必然结果（否则漏听就无从判断），不是误伤。
    */
   replayMissingDictionaryStatus(ses, getSettings)
 
