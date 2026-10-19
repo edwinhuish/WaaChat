@@ -18,6 +18,7 @@ import {
 } from '../../src/shared/dictionary-status'
 
 const EVENTS: readonly DictionaryEvent[] = [
+  'queued',
   'download-begin',
   'download-success',
   'download-failure',
@@ -30,6 +31,25 @@ describe('nextDictionaryStatus', () => {
     expect(nextDictionaryStatus('unknown', 'download-begin')).toBe('downloading')
     // 内核在成功之前会**反复重试**：失败过不该让之后的尝试不再显示。
     expect(nextDictionaryStatus('failed', 'download-begin')).toBe('downloading')
+  })
+
+  it('交给内核 → 等待中（只从"没有消息"推进，绝不把别的状态往回拉）', () => {
+    expect(nextDictionaryStatus(undefined, 'queued')).toBe('pending')
+    expect(nextDictionaryStatus('unknown', 'queued')).toBe('pending')
+    expect(nextDictionaryStatus('pending', 'queued')).toBe('pending')
+
+    // 关键的一条：每次改设置／界面语言变化都会重跑 `applySpellcheck()`，它**不能**让那条正在
+    // 走的扫动条闪回"等待中"，也不能把一次失败画成"还在等"（再设一遍同一个列表是 no-op）。
+    expect(nextDictionaryStatus('downloading', 'queued')).toBe('downloading')
+    expect(nextDictionaryStatus('failed', 'queued')).toBe('failed')
+    expect(nextDictionaryStatus('ready', 'queued')).toBe('ready')
+  })
+
+  it('等待中之后的那三条消息各自落位', () => {
+    expect(nextDictionaryStatus('pending', 'download-begin')).toBe('downloading')
+    expect(nextDictionaryStatus('pending', 'download-success')).toBe('ready')
+    expect(nextDictionaryStatus('pending', 'initialized')).toBe('ready')
+    expect(nextDictionaryStatus('pending', 'download-failure')).toBe('failed')
   })
 
   it('拿到字节与装载完成都是"就绪"（磁盘上本来就有词典时只有后一个事件）', () => {
@@ -56,11 +76,17 @@ describe('nextDictionaryStatus', () => {
   })
 
   it('每一种状态 × 每一个事件都有定义（没有落空的组合）', () => {
-    const states: readonly DictionaryStatus[] = ['unknown', 'downloading', 'ready', 'failed']
+    const states: readonly DictionaryStatus[] = [
+      'unknown',
+      'pending',
+      'downloading',
+      'ready',
+      'failed',
+    ]
 
     for (const state of states) {
       for (const event of EVENTS) {
-        expect(['unknown', 'downloading', 'ready', 'failed']).toContain(
+        expect(['unknown', 'pending', 'downloading', 'ready', 'failed']).toContain(
           nextDictionaryStatus(state, event),
         )
       }
@@ -121,6 +147,15 @@ describe('languagesWithoutStatus', () => {
         de: 'failed',
       }),
     ).toEqual([])
+  })
+
+  it('`pending` 算"缺"：它只说明我们交上去了，内核一个字的回音都还没有（[ADR-0091]）', () => {
+    // 若是反过来（把 pending 当作"听到过"），这道兜底会**整条失效**：启动时
+    // `applySpellcheck()` 刚把语言交上去，每一门都正好是 pending。
+    expect(languagesWithoutStatus(['en-US'], { 'en-us': 'pending' })).toEqual(['en-US'])
+    expect(languagesWithoutStatus(['en-US', 'es'], { 'en-us': 'pending', es: 'ready' })).toEqual([
+      'en-US',
+    ])
   })
 
   it('只挑出缺的那几个，且保持传入的次序', () => {

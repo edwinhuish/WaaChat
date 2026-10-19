@@ -183,7 +183,8 @@ const SIZES: readonly SizeSpec[] = [
  * —— 因此还要一句话把差别说清（尤其是这两态**都不是**"正在下载"）。
  */
 const DICTIONARY_STATUS_TITLES: Readonly<Record<DictionaryStatus, string>> = {
-  unknown: '还没有这一门词典的下载消息（磁盘上本来就有它时，内核会直接装载而不下载）',
+  unknown: '这一门没被选中，因此不会去下载（只有当前用来查错别字的那一门才会下载词典）',
+  pending: '已经交给内核，还在等它的第一条消息（磁盘上没有这门词典时，它接下来就会去下载）',
   downloading: '正在从下载源取这一门词典',
   ready: '这一门词典已经装好，拼写检查会用它',
   failed: '这一门词典没能从下载源取回来，这门语言的拼写不会被标注',

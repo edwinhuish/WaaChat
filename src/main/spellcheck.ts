@@ -368,6 +368,19 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
   ses.setSpellCheckerEnabled(true)
   ses.setSpellCheckerLanguages([...applied])
 
+  /**
+   * 交上去的这一门（[ADR-0089] 之后**只有一门**）先进 `pending`（[ADR-0091]）。
+   *
+   * 为什么非要这一步：不记的话，被挑中的那一门与清单里其余几门在状态表里**长得一模一样**
+   * （都没有键 ⇒ 界面上都是 `unknown`），而两者的含义正好相反 —— 一个"内核马上要下载它"，
+   * 一个"它根本不会去下载"。看门狗也需要一个"从什么时候开始等的"起点，否则它无从判断
+   * "这条请求是不是停在半路了"（[ADR-0068] 实测过那种一个字都不回的失败）。
+   *
+   * ⚠️ 放在 `setSpellCheckerLanguages()` **之后**：它的语义是"已经交给内核了"。写在前面的话，
+   * 万一那个调用抛错，界面上会留下一条永远等不到回音的"等待中"。
+   */
+  for (const language of applied) recordDictionaryStatus(language, 'queued')
+
   logger.info('spellcheck: enabled', {
     languages: applied.join(','),
     pageLanguage: pageLanguage === null ? null : safeLanguage(pageLanguage),

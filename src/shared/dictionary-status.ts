@@ -14,14 +14,19 @@
 /**
  * 一门词典此刻的状态。
  *
- * - `unknown` —— 还没听到关于它的任何消息。**不是失败**：磁盘上本来就有这一门时，内核不会
- *   去下载，只会把它装载好（那时才发 `initialized`）。因此它读作"暂无状态"，而不是"没下载"。
+ * - `unknown` —— 还没听到关于它的任何消息，而且**它不会自己去下载**：只有被挑中的那一门会
+ *   （[ADR-0089]），清单里其余几门停在这里等着被选中。**不是失败**，但也不是"正在下"——
+ *   它是"这一格没有进度可言"，因此界面上必须与"空槽/灰槽"分开讲（[ADR-0091]）。
+ * - `pending` —— 我们**已经把它交给内核**（`setSpellCheckerLanguages([...])`），但还没听到
+ *   关于它的第一条消息。健康路径上它只活几毫秒（磁盘上有 → `initialized`，没有 → `download-begin`）；
+ *   它**停在这里不走**才是坏事：那条请求可能像 [ADR-0068] 实测的那样"停在半路"，内核一个字
+ *   都不说。因此这一态挂了看门狗（[ADR-0091]）。
  * - `downloading` —— 内核正在从下载源取它。
  * - `ready` —— 拿到了、并且已经交给检查器（或已经下好了）。
  * - `failed` —— 取不回来。这一支**没有别的症状**（设置页一切正常、输入框里却没有红线），
  *   因此它必须在界面上留下痕迹（[ADR-0061] 的已知限制）。
  */
-export type DictionaryStatus = 'unknown' | 'downloading' | 'ready' | 'failed'
+export type DictionaryStatus = 'unknown' | 'pending' | 'downloading' | 'ready' | 'failed'
 
 /**
  * 内核发出来的那四个事件里，与状态有关的那几点。
@@ -30,6 +35,15 @@ export type DictionaryStatus = 'unknown' | 'downloading' | 'ready' | 'failed'
  * {@link watchSpellcheck} 里那一串订阅与这里的映射是逐条对得上的。
  */
 export type DictionaryEvent =
+  /**
+   * 我们把某一门交给了内核，但还没听到关于它的任何消息（[ADR-0091]）。
+   *
+   * ⚠️ 这不是内核发的事件，而是**我们自己的一个动作**在状态表里留下的记号。加它的理由很实际：
+   * 若不在这一步记一笔，被挑中的那一门与清单里其余几门**都是 `unknown`** —— 而两者的含义
+   * 完全不同（一个"马上要下"，一个"根本不会下"）。界面上分不开，看门狗也没有"从什么时候
+   * 开始等的"这个起点。
+   */
+  | 'queued'
   /** `spellcheck-dictionary-download-begin`：内核开始从下载源取这一门。 */
   | 'download-begin'
   /** `spellcheck-dictionary-download-success`：字节拿到了。 */
@@ -42,7 +56,7 @@ export type DictionaryEvent =
 /**
  * 状态迁移。
  *
- * 两条规则值得写下来：
+ * 三条规则值得写下来：
  *
  *  1. **`download-begin` 把 `failed` 拉回 `downloading`。** 内核在成功之前会**反复重试**
  *     （每次输入时一次，见 `shared/notice.ts`），而"失败过"不该让之后的每一次尝试都不再显示 ——
@@ -50,6 +64,12 @@ export type DictionaryEvent =
  *  2. **`ready` 不被降级。** 已经装载好的词典再收到一条失败消息是**说不通**的（文件就在磁盘上），
  *     而把**已经就绪**的一门改回失败会让用户以为一块正常的词典坏了（画面上就是那条走满的蓝条
  *     忽然变成红条）。"就绪是终局"因此写在这里，而不是靠调用点保证。
+ *  3. **`queued` 只从"没有消息"推进到 `pending`，绝不把别的状态往回拉。** 每次改设置、每次
+ *     界面语言变化都会重跑一遍 `applySpellcheck()`，若它无条件把 `downloading` 改成 `pending`，
+ *     那条正在走的扫动条会一秒钟闪回"等待中"；而无条件把 `ready` 改回去就更糟（见规则 2）。
+ *     它同样**不动 `failed`** —— 把同一个列表再设一遍是 no-op（[ADR-0072] 实测），所以
+ *     "重新交给内核"并不会让一次失败重新开始，把它画成"等待中"只是在骗人。真正能让它重来的
+ *     只有"先清空再设回"（`main/spellcheck.ts` 的 `retryDictionaryDownload()`）。
  *
  * @param current 这一门此刻的状态；`undefined` 表示还没听到过它（等价于 `unknown`）
  */
@@ -60,6 +80,8 @@ export function nextDictionaryStatus(
   if (current === 'ready' && event !== 'download-begin') return 'ready'
 
   switch (event) {
+    case 'queued':
+      return current === 'downloading' || current === 'failed' ? current : 'pending'
     case 'download-begin':
       return 'downloading'
     case 'download-success':
@@ -127,6 +149,10 @@ export type DictionaryStatusMap = Readonly<Record<string, DictionaryStatus>>
  * 杠杆是"把**整组**语言清空再设回去"（`main/spellcheck.ts` 的 `retryDictionaryDownload()`）
  * —— 对已经在下的一门再播一次会把它的下载打断。
  *
+ * ⚠️ **`pending` 不算"有状态"**（[ADR-0091]）：它只说明"我们把它交上去了"，内核一个字的回音
+ * 都还没有 —— 那正是这一支要找的东西。把它算作"听到过"，兜底就整条失效了：启动时
+ * `applySpellcheck()` 刚把语言交上去，每一门都是 `pending`。
+ *
  * 纯函数：调用方把 `applied`（真正交给内核的那一组）与一份状态快照传进来。⚠️ 传入的那个列表的
  * 码**不必**归一（查询这一侧会过 {@link dictionaryKey}），但**状态表的键假定已经归一**
  * —— 写入方（`main/spellcheck.ts`）每一处都过它，这正是"两张表要用同一个键"那条纪律的落点。
@@ -135,5 +161,8 @@ export function languagesWithoutStatus(
   languages: readonly string[],
   statuses: DictionaryStatusMap,
 ): string[] {
-  return languages.filter((language) => statuses[dictionaryKey(language)] === undefined)
+  return languages.filter((language) => {
+    const status = statuses[dictionaryKey(language)]
+    return status === undefined || status === 'pending'
+  })
 }
