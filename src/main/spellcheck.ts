@@ -16,6 +16,11 @@
  * 本模块另外持有**每一门词典的下载状态**（{@link dictionaryStatuses}，[ADR-0071]）：内核只发
  * 事件、不给百分比，而设置页上那一格要显示"正在下 / 下好了 / 没下下来"。状态留在这里（判据），
  * 推给界面那一步由装配处接上（`session.ts`）。
+ *
+ * 还有一条**看门狗**（{@link armDictionaryWatchdog}，[ADR-0091]）：内核既不成功也不失败时
+ * （请求停在半路，[ADR-0068] 实测过），状态会永远停在 `pending`，而用户看到的就是一条不动的
+ * "等待中"。它负责在这种时候自己再要一次，并在几次之后认栽 —— 否则那一门**永远**缺着，而
+ * 界面上没有任何东西提示。
  */
 
 import type { Session } from 'electron'
@@ -227,6 +232,128 @@ function scheduleDictionaryRetry(
 }
 
 /**
+ * 挂着的那一次"看门狗"（进程里同样只允许有一次）。
+ *
+ * 它与 {@link dictionaryRetryTimer} 是两件事，因此各有一个定时器：
+ *
+ *   - `dictionaryRetryTimer` 由**内核明说失败**触发（`…-download-failure`）；
+ *   - 这一个由**内核什么都不说**触发 —— 那条请求可能像 [ADR-0068] 实测的那样"停在半路"，
+ *     既不成功也不失败，于是状态永远停在 `pending`（[ADR-0091]）。
+ *
+ * 两者的杠杆是同一个（清空再设回），因此**错开**就够了：一个排着时另一个不必再排。
+ */
+let dictionaryWatchdogTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 每一门"回头看了几次还没动静"（键同 {@link dictionaryStatuses}）。
+ *
+ * 只在**就绪**时清零：成功之后重新计数，否则用户下次改设置时这一门会带着旧账开始。
+ * ⚠️ 它与 {@link dictionaryFailures} 分开，理由同上 —— 一个数"失败了几次"，一个数"问了几遍"。
+ */
+const dictionaryQuietChecks = new Map<string, number>()
+
+/**
+ * 看门狗回头看的节奏（[ADR-0091]）。
+ *
+ * 三个数各有分工，不是随便排的：
+ *
+ *   - **8 秒** —— 第一次回头看。健康路径上 `pending` 只活几毫秒（磁盘上有 → `initialized`，
+ *     没有 → `download-begin`），8 秒还没动静就说明这条请求没有被发出去（[ADR-0072] 那条
+ *     "源设晚了"的时序就是这个形状）；
+ *   - **30 秒** —— 重新要过一次之后，给它一次网络抖动的时间；
+ *   - **60 秒** —— 最后一次机会。到点还没动静就是**认栽**：记成失败，让界面红起来
+ *     （"一直在等"没有任何出路，而失败至少能重试）。
+ *
+ * 三次之后停手：一直问下去只会把日志变成噪音，而 `retryDictionaryDownload()` 的代价是
+ * 那一瞬间一门词典都不在查。
+ */
+const DICTIONARY_QUIET_CHECK_DELAYS_MS: readonly number[] = [8_000, 30_000, 60_000]
+
+/**
+ * `watchSpellcheck()` 收到的那份"设置怎么读"。
+ *
+ * 为什么要在这儿存一份：看门狗是在定时器里跑起来的，那时 `applySpellcheck()` 早就返回了，
+ * 手里只剩一个语言码。而重试必须用**当时**的设置（用户可能刚改过清单）—— 存一份快照是
+ * 另一种错法（`settings.ts` 里"读当前值而不是注册时的那一份"是同一条理由）。
+ *
+ * 不 import `./settings` 进来取它：那个模块 import 了 `app` 的运行时，而本文件"只 `import type`
+ * electron"是它能被离线自检引用的前提（见文件头）。
+ */
+let dictionarySettings: (() => Settings) | null = null
+
+/** 撤掉挂着的那次回头看（关掉功能、内核还没给出清单、一门都装不上时都要撤）。 */
+function disarmDictionaryWatchdog(): void {
+  if (dictionaryWatchdogTimer === null) return
+
+  clearTimeout(dictionaryWatchdogTimer)
+  dictionaryWatchdogTimer = null
+}
+
+/**
+ * 交出语言之后，安排一次"回头看一眼它动了没有"（[ADR-0091]）。
+ *
+ * 这是"**检测到词典还没下载就自动重新取一遍**"那条要求的落点。它要解决的问题与
+ * {@link scheduleDictionaryRetry} 不同：那一条等的是内核**说**失败，而这条等的是内核
+ * **什么都不说** —— 那种情况下界面上只有一条永远不动的"等待中"，而输入框里一条红线都没有。
+ *
+ * 到点之后先看状态再动手，因此**只有仍然停在 `pending` 时才重试**：已经在下载的（`downloading`）
+ * 别去打断它，已经就绪的更不该动。
+ */
+function armDictionaryWatchdog(ses: Session, languageCode: string): void {
+  disarmDictionaryWatchdog()
+
+  const key = dictionaryKey(languageCode)
+  const checks = dictionaryQuietChecks.get(key) ?? 0
+  const delay = DICTIONARY_QUIET_CHECK_DELAYS_MS[checks]
+
+  /**
+   * 正常情况下到不了这里（每一次重试都会重新 arm 一轮，而最后一轮的到点分支会直接收尾）。
+   * 留着是为了让"计数被别处清掉/推高"这种意外**不表现为一个永不结束的循环**。
+   */
+  if (delay === undefined) return
+
+  dictionaryWatchdogTimer = setTimeout(() => {
+    dictionaryWatchdogTimer = null
+
+    const status = dictionaryStatuses.get(key)
+
+    // 有回音了：事件那条路接手（下载中 / 就绪 / 已失败都算"听见了"）。
+    if (status !== undefined && status !== 'pending') {
+      dictionaryQuietChecks.delete(key)
+      return
+    }
+
+    dictionaryQuietChecks.set(key, checks + 1)
+
+    if (checks + 1 >= DICTIONARY_QUIET_CHECK_DELAYS_MS.length) {
+      logger.warn('spellcheck: giving up on a dictionary the kernel never answered for', {
+        language: languageCode,
+        checks: checks + 1,
+      })
+      /**
+       * 记成失败，而不是让它永远停在"等待中"：界面上这两种状态能做的事**是同一件**
+       * （重试），但"一直在等"没有出路，而 [ADR-0068] 实测过的那种失败**一个字都不会说**。
+       * 内核之后若真的把它装好了，`initialized` 会把这一条改回就绪（`ready` 之外都能升级）。
+       */
+      recordDictionaryStatus(languageCode, 'download-failure')
+      return
+    }
+
+    const getSettings = dictionarySettings
+    if (getSettings === null) return
+
+    logger.info('spellcheck: no news about the dictionary, asking the kernel again', {
+      language: languageCode,
+      checks: checks + 1,
+    })
+    retryDictionaryDownload(ses, getSettings)
+  }, delay)
+
+  /** 与重试那条同一个理由：挂着的定时器不该成为"进程还活着"的理由。 */
+  dictionaryWatchdogTimer.unref()
+}
+
+/**
  * 让内核**重新**去取一遍词典（[ADR-0072]）。
  *
  * 杠杆是"先清空再设回去"。实测三件事：
@@ -281,9 +408,11 @@ export function replayMissingDictionaryStatus(ses: Session, getSettings: () => S
   retryDictionaryDownload(ses, getSettings)
 }
 
-/** 这一门已经好了（拿到字节或者装载完成）—— 把它的失败计数清掉。 */
+/** 这一门已经好了（拿到字节或者装载完成）—— 把它的失败计数与"问了几遍"一起清掉。 */
 function clearDictionaryFailures(languageCode: string): void {
-  dictionaryFailures.delete(dictionaryKey(languageCode))
+  const key = dictionaryKey(languageCode)
+  dictionaryFailures.delete(key)
+  dictionaryQuietChecks.delete(key)
 }
 
 /**
@@ -297,6 +426,11 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
   if (!settings.spellcheck) {
     awaitingDictionaries = false
     ses.setSpellCheckerEnabled(false)
+    /**
+     * 关掉功能就撤掉回头看的定时器：它唯一的作用是"把词典取回来"，而这一支明确不要它了
+     * （`Settings.spellcheck` 关着同时就是"不要发起这个请求"的开关，见文件头）。
+     */
+    disarmDictionaryWatchdog()
     logger.info('spellcheck: disabled')
     return
   }
@@ -328,6 +462,11 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
   if (available.length === 0) {
     awaitingDictionaries = true
     ses.setSpellCheckerEnabled(true)
+    /**
+     * 撤掉回头看：这一支**什么都没交上去**，等的是内核把清单说出来（`initialized` 之后会
+     * 重跑本函数并重新 arm）。留着定时器只会在什么都没发生的时候反复"重试"。
+     */
+    disarmDictionaryWatchdog()
     logger.warn('spellcheck: the kernel reported no dictionaries yet; keeping its defaults')
     return
   }
@@ -361,6 +500,7 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
    */
   if (applied.length === 0) {
     ses.setSpellCheckerEnabled(false)
+    disarmDictionaryWatchdog()
     logger.warn('spellcheck: no usable dictionary, the checker stays off')
     return
   }
@@ -380,6 +520,14 @@ export function applySpellcheck(ses: Session, settings: Settings): void {
    * 万一那个调用抛错，界面上会留下一条永远等不到回音的"等待中"。
    */
   for (const language of applied) recordDictionaryStatus(language, 'queued')
+
+  /**
+   * 从这一刻起开始计时（[ADR-0091]）：健康路径上几毫秒内就会有回音，`pending` 停着不走才是
+   * 我们要抓的那种"请求停在半路"。只对**被挑中的那一门** arm —— 清单里其余几门根本不会去下载，
+   * 对它们计时等于永远超时。
+   */
+  const [picked] = applied
+  if (picked !== undefined) armDictionaryWatchdog(ses, picked)
 
   logger.info('spellcheck: enabled', {
     languages: applied.join(','),
@@ -427,6 +575,12 @@ export function watchSpellcheck(
   getSettings: () => Settings,
   onDictionaryFailure: (languageCode: string) => void,
 ): void {
+  /**
+   * 记下"设置怎么读"：看门狗是在定时器里跑起来的，那时手里只剩一个语言码，而重试必须读
+   * **当时**的设置（用户可能刚改过清单）。见 {@link dictionarySettings}。
+   */
+  dictionarySettings = getSettings
+
   ses.on('spellcheck-dictionary-initialized', (_event, languageCode) => {
     logger.info('spellcheck: the kernel has a dictionary ready', { language: languageCode })
     recordDictionaryStatus(languageCode, 'initialized')
