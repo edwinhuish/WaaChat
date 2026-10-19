@@ -26,6 +26,7 @@ import { applyLinuxGpuSwitches } from './linux-gpu'
 import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
 import { installApplicationMenu } from './menu'
+import { setNoticeActivation } from './notice'
 import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
@@ -37,6 +38,7 @@ import {
   createMainWindow,
   createSettingsWindow,
   getMainWindow,
+  getSettingsWindow,
   isQuitting,
   openChat,
   presentWindow,
@@ -377,6 +379,27 @@ app.whenReady().then(async () => {
 
   // 右键菜单：唯一的内容是拼写检查的建议（Electron 不像浏览器自带菜单，见 context-menu.ts）。
   attachContextMenu(mainWindow)
+
+  /**
+   * 点击通知要打开哪扇窗口（[ADR-0092]）。
+   *
+   * 必须在**第一条通知可能发出来之前**注入 —— 全屏提示就在下面几行装上。Linux 上 Electron
+   * 不会替我们做这件事：主进程通知只有一条 `click` 事件、没有任何默认行为；网页通知的点击
+   * 它只派发给页面，连页面自己的 `window.focus()` 都不生效（最小化时 `visible` 都不会变）。
+   *
+   * 两扇窗口各有各的用处：聊天是应用的主体；而"词典下载失败"只有设置页能处理 —— 那一行
+   * 才有「重试」（[ADR-0091]）。设置窗口在上面已经创建，但它按设计"关闭 = 隐藏"，引用仍
+   * 保留；`?? createSettingsWindow()` 是给"真的被销毁"那一种情况兜底。
+   */
+  setNoticeActivation({
+    main: () => {
+      const window = getMainWindow()
+      if (window !== null) presentWindow(window)
+    },
+    settings: () => {
+      presentWindow(getSettingsWindow() ?? createSettingsWindow())
+    },
+  })
 
   /**
    * 全屏的退出提示（[ADR-0084]）—— 浏览器里那个"按 Esc 退出全屏"的提示条在我们的窗口里不存在，

@@ -12,6 +12,10 @@
  *
  * 也不是弹窗：弹窗会打断且必须点掉，而这件事只是"提个醒"。这与页面自己的消息通知走同一条
  * 通道（`permissions.ts` 允许 `notifications`）。
+ *
+ * **点击通知 = 把那扇窗口带到用户面前**（[ADR-0092]）。这一条**必须我们自己写**：Linux 上
+ * Electron 不提供任何"点击通知 → 激活窗口"的默认行为，连网页通知被点击时它也只有一个
+ * "派发给页面"的动作。目的地由 `index.ts` 注入（见 `setNoticeActivation()`）。
  */
 
 import { Notification } from 'electron'
@@ -33,8 +37,58 @@ import { logger } from './logger'
 /** 已经提示过的**失效种类**。接管恢复正常时清空（见 `shared/notice.ts` 的两条规则）。 */
 let announcedFailures: ReadonlySet<string> = new Set()
 
+/**
+ * 点开通知之后要带到用户面前的那扇窗口。
+ *
+ * `main` 是聊天（应用的主体）；`settings` 是设置页 —— 只有它上面有"词典失败"那一行的
+ * 「重试」按钮（[ADR-0091]），把用户送到别处等于让他自己再找一遍。
+ */
+type NoticeTarget = 'main' | 'settings'
+
+/**
+ * 两个目的地的实现，**由装配处注入**（`index.ts`）。
+ *
+ * 为什么是注入而不是这里直接 import `./window`：本模块的职责是"弹什么"，窗口是另一件事。
+ * 这与 `watchSpellcheck()` 接受 `announceDictionaryFailure` 回调是同一种分工 —— 也避免了
+ * `notice → window → …` 这条 import 链在将来某次重构里绕回来。
+ */
+let activation: Record<NoticeTarget, () => void> = {
+  main: () => {},
+  settings: () => {},
+}
+
+/**
+ * 注入"点击通知之后做什么"。
+ *
+ * ⚠️ **必须自己注入并调用**：Linux 上 Electron **不会**因为点击通知而激活窗口。
+ * 网页通知的点击只派发给页面（`platform_notification_service.cc` 的
+ * `NotificationDelegateImpl::NotificationClick()` → `DispatchNonPersistentClickEvent`），
+ * 主进程通知也只有 `Notification` 的 `click` 事件 —— 两边都没有"把窗口带到前面"这一步。
+ * 页面侧的 `window.focus()` 也救不回来：实测窗口最小化时它连 `visible` 都不会变
+ * （`BrowserWindow::OnActivateContents()` 只隐藏自动隐藏的菜单）。
+ */
+export function setNoticeActivation(handlers: Record<NoticeTarget, () => void>): void {
+  activation = handlers
+}
+
+/**
+ * 还活着的通知。
+ *
+ * ⚠️ 这个集合是必需的，不是备忘：主进程的 `Notification` 一旦被 GC，`click` 事件就**再也
+ * 不会来**（JS 对象被回收后，C++ 那边回调无处可派）。症状是"通知还在屏幕上，点它毫无反应"
+ * —— 而且只在大约几十条之后、GC 跑过的时候才出现，最难查。
+ *
+ * `close` 会把它移出集合（Linux 上这个事件不保证发出，见 electron.d.ts），因此再加一道
+ * 上限：超了就丢掉最早的那一条。丢掉的那一条如果还挂在通知中心里，点击会无效，但 64 条
+ * 同存已经是极端情况（而对象本身只有几百字节，不丢也撑不爆）。
+ */
+const live = new Set<Notification>()
+
+/** 同时保留引用的通知条数上限，见 {@link live}。 */
+const LIVE_LIMIT = 64
+
 /** 弹一条通知。返回是否真的弹了 —— 桌面没有通知服务时不算弹过。 */
-function show(title: string, body: string): boolean {
+function show(title: string, body: string, target: NoticeTarget = 'main'): boolean {
   try {
     if (!Notification.isSupported()) {
       // 纯 WM 的会话、容器里跑：记一条日志，而不是假装提示过了。
@@ -42,7 +96,32 @@ function show(title: string, body: string): boolean {
       return false
     }
 
-    new Notification({ title, body }).show()
+    const notification = new Notification({ title, body })
+
+    if (live.size >= LIVE_LIMIT) {
+      const oldest = live.values().next().value
+      if (oldest !== undefined) live.delete(oldest)
+    }
+    live.add(notification)
+
+    const forget = (): void => {
+      live.delete(notification)
+    }
+
+    /**
+     * 点击 = "让我看看"。这是这一条通道**唯一**的出路：通知本来就只说一句"出事了"，
+     * 用户点它是因为想处理，而不是想再看一遍那行字。窗口收在哪（最小化 / 关闭到托盘）
+     * 由 `presentWindow()` 两步都试，这里不重复判断。
+     */
+    notification.on('click', () => {
+      forget()
+      activation[target]()
+    })
+
+    // Linux 上不保证发出（electron.d.ts 的原话），所以它只是"顺手清一下"。
+    notification.on('close', forget)
+
+    notification.show()
     return true
   } catch (error) {
     logger.warn('notice: could not show a notification', { reason: (error as Error).name })
@@ -100,7 +179,13 @@ export function announceDictionaryFailure(languageCode: string): void {
 
   if (!tracking.announce) return
 
-  if (show(SPELLCHECK_DICTIONARY_FAILED_TITLE, spellcheckDictionaryFailureBody(languageCode))) {
+  if (
+    show(
+      SPELLCHECK_DICTIONARY_FAILED_TITLE,
+      spellcheckDictionaryFailureBody(languageCode),
+      'settings',
+    )
+  ) {
     logger.info('notice: told the user that a spellcheck dictionary could not be downloaded', {
       language: languageCode,
     })
