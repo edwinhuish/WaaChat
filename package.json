@@ -66,11 +66,11 @@
     "eslint-flat-config-utils": "^3.2.0",
     "eslint-plugin-unused-imports": "^4.4.1",
     "globals": "^17.13.0",
-    "prettier": "^3.9.9",
+    "prettier": "^3.9.10",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.71.1",
+    "typescript-eslint": "^8.71.2",
     "vite": "^7.3.7",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.5"
   }
 }
