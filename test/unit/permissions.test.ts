@@ -109,4 +109,31 @@ describe('isPermissionAllowed', () => {
       )
     })
   })
+
+  describe('页面通知已被替代（[ADR-0093]）', () => {
+    const replaced = { notificationsReplaced: true }
+
+    it('通知一律拒绝 —— 否则用户会收到两份，而只有一份点得动', () => {
+      expect(isPermissionAllowed('notifications', UPSTREAM, replaced)).toBe(false)
+    })
+
+    it('别的权限一个都不受影响（它只是"这条通道换了人发"，不是收紧权限）', () => {
+      for (const permission of ['media', 'fullscreen', 'persistent-storage']) {
+        expect(isPermissionAllowed(permission, UPSTREAM, replaced)).toBe(true)
+      }
+    })
+
+    it('它不能把"来源判据"放宽', () => {
+      expect(isPermissionAllowed('notifications', 'https://example.com/', replaced)).toBe(false)
+    })
+
+    it('免打扰与它同时在场，结果一样是拒绝（两个理由、同一个落点）', () => {
+      expect(
+        isPermissionAllowed('notifications', UPSTREAM, {
+          notificationsMuted: true,
+          notificationsReplaced: true,
+        }),
+      ).toBe(false)
+    })
+  })
 })

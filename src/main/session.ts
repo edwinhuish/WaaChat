@@ -23,6 +23,7 @@ import { announceCaptureFailure, announceDictionaryFailure, markCaptureHealthy }
 import { logger } from './logger'
 import { followPageLanguage, watchPageLanguage } from './page-language'
 import { isPermissionAllowed } from './permissions'
+import type { PermissionOptions } from './permissions'
 import { quietState } from './quiet'
 import {
   applySpellcheck,
@@ -76,14 +77,21 @@ export function attachDictionaryWatch(ses: Session, getSettings: () => Settings)
 }
 
 /**
- * 「免打扰」（[ADR-0082]）交给权限判据的那一份运行期覆盖。
+ * 交给权限判据的运行期覆盖（[ADR-0082] / [ADR-0093]）。
  *
- * **每次调用都重新读**，而不是在装配时取一份快照：托盘里那个勾随时可以变，而权限判据是
- * **每一次请求**都要过的一道闸。取快照的症状是"勾了免打扰，通知照旧弹"，且只有在重启之后
- * 才会"自己好了"—— 那是最难查的一类。
+ * 两个字段的来源不同，但都必须在**每一次请求 / 检查**时现算，而不是在装配时取一份快照：
+ *
+ *   - `notificationsMuted` 是**用户此刻的意愿**（托盘上那个勾随时可以变）。取快照的症状是
+ *     "勾了免打扰，通知照旧弹"，而且只有在重启之后才会"自己好了"—— 那是最难查的一类。
+ *   - `notificationsReplaced` 恒为 `true`：页面的消息通知已改由主进程发（见 `permissions.ts`
+ *     里那段说明）。它不是用户意愿，因此不读任何状态；放在这里只是为了与上面那一个**在同一处**
+ *     判 —— 两个处理器各拼一遍的症状是"检查通过、请求被拒"。
  */
-function quietOverride(): { readonly notificationsMuted: boolean } {
-  return { notificationsMuted: quietState().notificationsMuted }
+function permissionOverride(): PermissionOptions {
+  return {
+    notificationsMuted: quietState().notificationsMuted,
+    notificationsReplaced: true,
+  }
 }
 
 /**
@@ -138,7 +146,7 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 一条 `permission denied` 日志是用户能自己判断"这个功能没反应是不是被我们拒了"的唯一线索。
   ses.setPermissionRequestHandler((contents, permission, callback) => {
     const fromUpstream = isUpstreamOrigin(contents.getURL())
-    const allowed = isPermissionAllowed(permission, contents.getURL(), quietOverride())
+    const allowed = isPermissionAllowed(permission, contents.getURL(), permissionOverride())
 
     if (!allowed) reportDenial('request', permission, fromUpstream)
 
@@ -149,7 +157,7 @@ export async function configureSession(ses: Session, getSettings: () => Settings
   // 只接一边的症状是"检查通过、请求被拒"或反过来。托盘的「免打扰」也在这套判据里（[ADR-0082]）。
   ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) => {
     const fromUpstream = isUpstreamOrigin(requestingOrigin)
-    const allowed = isPermissionAllowed(permission, requestingOrigin, quietOverride())
+    const allowed = isPermissionAllowed(permission, requestingOrigin, permissionOverride())
 
     /**
      * ⚠️ 这一条是**新增**的，而且是"共享屏幕到底卡在哪一环"这个问题的关键证据（[ADR-0085]）：

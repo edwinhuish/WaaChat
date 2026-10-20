@@ -14,7 +14,9 @@
  *
  * ⚠️ 那个"页面自己的消息通知"曾经是另一条独立的通道（`permissions.ts` 允许 `notifications`），
  * 现在**归到这里**（[ADR-0093]）：页面那条通知点不动窗口（见下），而它发得出来的场合正是
- * 用户最需要"点了就回去"的场合 —— 于是补上 {@link announceNewMessages}。
+ * 用户最需要"点了就回去"的场合 —— 于是补上 {@link announceNewMessages}，页面那一条改由
+ * 权限层恒拒（`notificationsReplaced`，见 `permissions.ts`）。两条同时存在只会让用户收到
+ * 两份、而且只有一份点得动。
  *
  * **点击通知 = 把那扇窗口带到用户面前**（[ADR-0092]）。这一条**必须我们自己写**：Linux 上
  * Electron 不提供任何"点击通知 → 激活窗口"的默认行为，连网页通知被点击时它也只有一个
@@ -44,6 +46,7 @@ import {
 } from '../shared/notice'
 import type { CaptureFailure } from '../shared/types'
 import { logger } from './logger'
+import { quietState } from './quiet'
 
 /** 已经提示过的**失效种类**。接管恢复正常时清空（见 `shared/notice.ts` 的两条规则）。 */
 let announcedFailures: ReadonlySet<string> = new Set()
@@ -242,6 +245,21 @@ export function announceFullscreenHint(): void {
  * 目的地是 `main`：这条通知说的就是聊天窗口里的事，把用户送到设置页毫无道理。
  */
 export function announceNewMessages(count: number): void {
+  /**
+   * 「免打扰」（[ADR-0082]）在这里落地。
+   *
+   * 它原本落在权限层 —— 拒掉页面的 `notifications`。而页面那条通知已经整体被替代
+   * （[ADR-0093]），权限层再拒什么都拦不到东西了。于是同一项意愿搬到**唯一还剩下的那扇门**
+   * 上：我们自己发的通知。
+   *
+   * ⚠️ 判断放在这里而不是调用点：这是"免打扰"这条规则唯一该在的地方，放外面就等于允许
+   * 第二个调用方把它忘了。
+   *
+   * ⚠️ 它**只**拦这一条。接管失效、词典下载失败、全屏提示不受影响 —— 那三条是我们自己发现
+   * 的问题（"允许失效，不允许静默失效"），而免打扰的意思是"别人的消息别吵我"。
+   */
+  if (quietState().notificationsMuted) return
+
   if (show(NEW_MESSAGES_TITLE, newMessagesBody(count))) {
     logger.info('notice: told the user about unread messages', { count })
   }

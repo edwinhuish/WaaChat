@@ -700,6 +700,9 @@ check('退避带抖动且有上界', nextDelayMs(1, () => 1) <= 400 && nextDelay
 
 section('权限白名单')
 
+/** 上游源 —— 白名单的两半（来源 + 类型）里"来源"那一半的基准。 */
+const UPSTREAM_ORIGIN = 'https://web.whatsapp.com/'
+
 check(
   '上游源可以申请放行的那几项',
   isPermissionAllowed('media', 'https://web.whatsapp.com/') &&
@@ -2128,9 +2131,14 @@ check(
 )
 check(
   '未读跟踪在 createTray() 之后接上（托盘不存在时那一次调用是空转，徽标会一直空到下次变化）',
-  entrySource.includes('attachUnreadTracking(mainWindow, applyTrayUnread)') &&
+  // 回调体里第一件事必须还是喂托盘：新消息通知（[ADR-0093]）接在同一个读数上，
+  // 它一旦被排到 `applyTrayUnread(count)` 前面，徽标就会晚一轮。
+  entrySource.includes('attachUnreadTracking(mainWindow, (count) =>') &&
+    entrySource.includes('applyTrayUnread(count)') &&
+    entrySource.indexOf('applyTrayUnread(count)') <
+      entrySource.indexOf('shouldAnnounceNewMessages(') &&
     entrySource.indexOf('attachUnreadTracking(') > entrySource.indexOf('createTray('),
-  '顺序反了：启动后第一个未读数出现之前，托盘上不会有徽标',
+  '顺序反了：启动后第一个未读数出现之前，托盘上不会有徽标（或者徽标晚一轮）',
 )
 check(
   '两个新模块都不导入 electron（判据要能在没有 Electron 的环境里断言）',
@@ -2179,17 +2187,23 @@ check(
 )
 check(
   '免打扰走的是权限判据，而且两个处理器都传了同一份覆盖（不注入、不伪造通知）',
-  permissionsSource.includes("permission === 'notifications'") &&
-    sessionSource.includes('isPermissionAllowed(permission, contents.getURL(), quietOverride())') &&
-    sessionSource.includes('isPermissionAllowed(permission, requestingOrigin, quietOverride())') &&
-    (sessionSource.match(/quietOverride\(\)/g) ?? []).length >= 2,
+  permissionsSource.includes('permission === PAGE_NOTIFICATION_PERMISSION') &&
+    sessionSource.includes(
+      'isPermissionAllowed(permission, contents.getURL(), permissionOverride())',
+    ) &&
+    sessionSource.includes(
+      'isPermissionAllowed(permission, requestingOrigin, permissionOverride())',
+    ) &&
+    (sessionSource.match(/permissionOverride\(\)/g) ?? []).length >= 2,
   '有一处权限处理器没带上免打扰，或者它绕开了权限层 —— 症状是"检查通过、请求被拒"',
 )
 check(
   '只覆盖 notifications：media（麦克风 / 摄像头）必须照旧放行，否则通话连不上',
-  permissionsSource.includes(
-    "options.notificationsMuted === true && permission === 'notifications'",
-  ),
+  // 行为断言而不是源码字面量：两项覆盖各自都要走一遍，而 media 一次都不能被波及。
+  !isPermissionAllowed('notifications', UPSTREAM_ORIGIN, { notificationsMuted: true }) &&
+    !isPermissionAllowed('notifications', UPSTREAM_ORIGIN, { notificationsReplaced: true }) &&
+    isPermissionAllowed('media', UPSTREAM_ORIGIN, { notificationsMuted: true }) &&
+    isPermissionAllowed('media', UPSTREAM_ORIGIN, { notificationsReplaced: true }),
   '免打扰顺手把别的权限也拒了 —— 通话会因为拿不到麦克风而直接失败',
 )
 check(

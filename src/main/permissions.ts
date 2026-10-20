@@ -38,7 +38,13 @@ type PermissionType = Parameters<PermissionHandler>[1]
  * `docs/security.md` T5 要防的写法。
  */
 export const ALLOWED_PERMISSIONS: ReadonlySet<PermissionType> = new Set<PermissionType>([
-  /** 页面自己的消息通知 —— 托盘常驻就是为了让它能到达。 */
+  /**
+   * 页面自己的消息通知。
+   *
+   * ⚠️ 把它留在白名单里**不等于它会放行**：运行期覆盖恒拒（见下面
+   * {@link PermissionOptions.notificationsReplaced}，[ADR-0093]）。这一行说的是"这项能力
+   * 本身不危险"，而拒绝它的是另一件事 —— 那条通知已经改由我们发。
+   */
   'notifications',
   /** 麦克风 / 摄像头：通话与语音消息。 */
   'media',
@@ -60,30 +66,67 @@ export const ALLOWED_PERMISSIONS: ReadonlySet<PermissionType> = new Set<Permissi
 ])
 
 /**
+ * 页面自己发通知的那项权限。
+ *
+ * ⚠️ 它仍然在白名单里，但**运行期恒被拒**（{@link PermissionOptions.notificationsReplaced}，
+ * [ADR-0093]）：拒绝它的不是"这个能力危险"，而是"这条通知已经被我们替代了"。两者要分开写，
+ * 因为将来若真要做"用回页面通知"的开关，需要知道这项能力本身是**允许的**。
+ */
+const PAGE_NOTIFICATION_PERMISSION: PermissionType = 'notifications'
+
+/**
+ * 运行期覆盖（与白名单是两件事，但必须在**同一处**判）。
+ *
+ * 让两个处理器（请求 / 检查）各自拼一遍"白名单 + 覆盖"，症状就是那一对相反的不一致
+ * （"检查通过、请求被拒"或反过来），而它恰好只在通话那种场合才暴露出来。
+ */
+export interface PermissionOptions {
+  /** 「免打扰」（[ADR-0082]）：用户在此刻不想被打扰。 */
+  readonly notificationsMuted?: boolean
+  /**
+   * 页面自己的消息通知已由主进程接管（[ADR-0093]）。
+   *
+   * ⚠️ 这一个**不是用户的意愿**，而是装配事实 —— 它与 {@link notificationsMuted} 指向同一条
+   * 权限、理由却完全不同：页面那条通知在 Linux 上点击之后窗口不会动（[ADR-0092]），而
+   * `notice.ts` 自己发的那一条点了就回窗口。两条同时存在只会让用户收到两份、且只有一份能用。
+   *
+   * 因此它**恒为 `true`**（见 `session.ts` 的 `permissionOverride()`）。留在选项里而不是把
+   * `notifications` 从白名单里删掉，是为了保留"用回页面通知"这个回退点。
+   */
+  readonly notificationsReplaced?: boolean
+}
+
+/**
  * 这个权限请求该不该放行。
  *
  * @param permission 请求的权限类型。Electron 会给字符串；上游将来引入的新类型也会原样传进来 ——
  *   不在白名单里的一律拒绝（这正是白名单的意义）
  * @param requestingOrigin 发起方的 origin。空串、非法值、以及非上游源一律拒绝
- * @param options 运行期的用户覆盖（见下）。**默认空对象**，因此"只看白名单"的调用点与断言
+ * @param options 运行期的用户覆盖（见上）。**默认空对象**，因此"只看白名单"的调用点与断言
  *   （单测、离线自检）一行都不用改。
  */
 export function isPermissionAllowed(
   permission: string,
   requestingOrigin: string,
-  options: { readonly notificationsMuted?: boolean } = {},
+  options: PermissionOptions = {},
 ): boolean {
   if (!isUpstreamOrigin(requestingOrigin)) return false
 
   /**
-   * **免打扰**（[ADR-0082]）是**运行期**的用户覆盖，与白名单是两件事 —— 但它必须与白名单在
-   * **同一处**判：让两个处理器（请求 / 检查）各自拼一遍"白名单 + 免打扰"，症状就是那一对
-   * 相反的不一致（"检查通过、请求被拒"或反过来），而它恰好只在通话那种场合才暴露出来。
+   * 两个理由、同一个落点：**免打扰**是用户此刻不想被打扰（[ADR-0082]），而**通知已被替代**是
+   * 这条通道已经改由我们自己发（[ADR-0093]）。
+   *
+   * ⚠️ `notificationsMuted` 这一项在这里**已经是冗余的**（`notificationsReplaced` 恒真，它
+   * 自己就能拒）。留着它有两个理由：一是它把这句意愿钉在它原本的落点上，读代码的人能看见
+   * 免打扰仍然管着权限层；二是将来真要做"用回页面通知"的开关时，`replaced` 一旦关掉，
+   * 免打扰必须立刻仍然生效 —— 那时候删掉这一行就是一个静默的功能回退。
    *
    * ⚠️ 只覆盖 `notifications` 一项：免打扰要的是"别弹通知"，而 `media`（麦克风 / 摄像头）
    * 被顺手拒掉的后果是通话直接连不上 —— 那是另一件事。
    */
-  if (options.notificationsMuted === true && permission === 'notifications') return false
+  if (permission === PAGE_NOTIFICATION_PERMISSION) {
+    if (options.notificationsMuted === true || options.notificationsReplaced === true) return false
+  }
 
   // 断言只在这里出现，而且只是为了查表：调用方传来的可能是 Electron 不认识的新值，
   // `has()` 对它会自然返回 false。
