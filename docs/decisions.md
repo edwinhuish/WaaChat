@@ -5056,21 +5056,31 @@ https://edge.microsoft.com/redirectordictionaries/dict/
   **SUID 沙箱**，而那份 `chrome-sandbox` 不是 setuid 的，于是 zygote 阶段直接 FATAL
   （`The SUID sandbox helper binary was found, but is not configured correctly`）。
 
-  正确做法是 `NO_SANDBOX=1 pnpm run dev`：`electron-vite` 自带这个开关（`startElectron()` 里
-  `process.env.NO_SANDBOX === '1'` → 追加 `--no-sandbox`），只作用于这一条命令，`package.json`
-  与打包产物都不动。`ELECTRON_DISABLE_SANDBOX=1` 效果等价（`electron_main_delegate.cc` 的
-  `BasicStartupComplete()` 里 `HasVar` 为真就追加同一个开关），但它对**所有** Electron 进程生效，
-  不如前者精确。**只限本地调试** —— 与 `AGENTS.md` 第 5 节那条"不要全局加 `--no-sandbox`"不冲突：
-  打包产物里的沙箱一个字节都不改。
+  做法有两条，**都不关沙箱**（关沙箱等于让 dev 跑在产物永远不会有的配置里，而这个页面渲的
+  正是互联网内容）：
 
-  ⚠️ **不要照报错提示去 `chmod 4755 chrome-sandbox`。** 本机 `/home` 与 `/` 都是 `nosuid` 挂载
-  （`findmnt -no OPTIONS -T /home` 给出 `rw,nosuid,relatime`），setuid 位根本不会被遵守 ——
-  那一步需要 root，做完症状一字不变。报错文案是 Chromium 按"权限没设对"的那种情景写的，
-  它不知道挂载选项这一层。
+  1. **给 dev 二进制单独一份 profile**（推荐，一次性）：`userns,` + `flags=(unconfined)`，
+     与安装版同形，路径用 `node_modules/.pnpm/electron@*/…` 通配。装到
+     `/etc/apparmor.d/waachat-dev` 并 `apparmor_parser -r` 之后，`pnpm run dev` 原样跑。
+     ⚠️ 同一 profile 只能挂**一条**附件路径：`apparmor_parser` 5.0.2 拒绝多路径写法。
+  2. **借安装版那份 profile 的 label**（零 root，依赖 deb 已装且 profile 已加载）：
+     `aa-exec -p waachat -- pnpm run dev`。`change_profile` 由策略决定、不看 uid，
+     子进程继承同一个 label，于是 dev 也拿到了 `userns,`。deb 被卸载后这条失效。
 
-  ⚠️ 想**保留**沙箱而不是关掉它，就得给 dev 二进制单独一份 profile（`userns,` +
-  `flags=(unconfined)`，与安装版同形，路径用 `node_modules/.pnpm/electron@*/…` 通配）。
-  代价是要 root、且每台开发机各做一次；收益是 `pnpm run dev` 保持原样。二选一，不要两条都上。
+  最后手段是 `NO_SANDBOX=1 pnpm run dev` —— `electron-vite` 自带这个开关
+  （`startElectron()` 里 `process.env.NO_SANDBOX === '1'` → 追加 `--no-sandbox`）。
+  它能立刻起，但**沙箱整层消失**，且 Electron 会改走 `ElectronRendererClient`
+  而不是 `ElectronSandboxedRendererClient`（`electron_main_delegate.cc` 的
+  `CreateContentRendererClient`）—— dev 与产物从此不是同一条渲染路径。
+  `ELECTRON_DISABLE_SANDBOX=1` 等价且作用面更大（该 shell 里所有 Electron 进程）。
+
+  ⚠️ **不要照报错提示去 `chmod 4755 chrome-sandbox`。** 本机 `/`、`/home`、`/run`、`/dev`
+  全是 `nosuid` 挂载（`findmnt -no OPTIONS -T /home` 给出 `rw,nosuid,relatime`），
+  setuid 位根本不会被遵守 —— 那一步需要 root，做完症状一字不变。报错文案是 Chromium
+  按"权限没设对"的那种情景写的，它不知道挂载选项这一层。
+
+  ⚠️ 判断是否真的带沙箱，看**第一个 renderer 起来之后**的进程，而不是看有没有 FATAL：
+  Chromium 的 zygote 是惰性的，一个不加载任何 URL 的窗口可以不触发检查。
 
 ---
 
