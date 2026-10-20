@@ -100,7 +100,8 @@
 | [0090](#adr-0090) | 启动期追加内核开关 `--disable-gpu-process-crash-limit`：GPU 进程**连续失败三次不再 `LOG(FATAL)` 掉整个浏览器进程**（`src/main/gpu-crash-limit.ts`，幂等、用户自己写了就不动）。注销时 systemd 停 cgroup 的那 34 ms 里，内核在退出路径上"再起 GPU 进程 → 失败 → 计数"，数到 3 就自杀 ⇒ apport 报「已意外关闭」；驱动把 GPU 打崩三次是同一个计数器的第二个受害者。开关名与 FATAL 前的 `HasSwitch` 分支在本机二进制里核对过，取证留在源码注释里 | 已生效（新增；**不动** [ADR-0036](#adr-0036) / [ADR-0038](#adr-0038) 的后端选择与 [ADR-0081](#adr-0081) 的平滑滚动 —— 只管"崩溃计数"这一条；否决了"抢 SIGTERM 立刻 `app.exit(0)`"那条赛跑式解法（会跳过 `before-quit`，丢掉 `wipeArchiveOnExit`）。⚠️ **终局验证只能上真机**：注销一次后 `/var/crash` 不应再新增条目） |
 | [0091](#adr-0091) | 词典下载状态从**四态**扩到**五态**，并给"内核一直不说话"补一条自己动手的路：①新增 `pending`（已交给内核、还没等到第一条消息）与 `queued` 事件（`applySpellcheck()` 交出语言后记一笔）；②**看门狗** —— 交出后 8 秒 / 30 秒各回头一次，仍停在 `pending` 就"清空再设回"，60 秒后再没动静记成 `failed`；③`unknown` 重新解释为"候选（不会被下载）"，界面画成**虚线空槽 + 「待选」**、`pending` 画成**走满的淡蓝 + 「等待中…」**，五态各有一句话；④失败那一行多一颗「重试」，走新通道 `settings:dictionary-retry`（无参数，重试前作废旧判决并清掉重试预算） | 已生效（新增；**不动** [ADR-0071](#adr-0071) 的事件含义与两条通道、[ADR-0072](#adr-0072) 的退避、[ADR-0074](#adr-0074) 的「下载中 / 已就绪」外观、[ADR-0089](#adr-0089) 的"只交一门"。**补上** [ADR-0089](#adr-0089) 已知限制 2 与 4 的一半：那一格不再是一条说不清状态的灰槽，"正在等待 / 下载 / 失败"的那一行就是被选中的那一门。否决了"新增一条当前生效语言的通道""给灰槽换个更深的灰""失败后无限重试"。⚠️ 看门狗只认 `pending`：`download-begin` 之后卡死仍然看不出来；真机验证待做） |
 | [0092](#adr-0092) | **点击通知 → 把窗口带到用户面前**由我们自己写：`show()` 给每个 `Notification` 绑 `click`（并用 `live` 集合持有引用 —— 对象被 GC 之后事件永远不会再来），目的地由装配处注入（`main` / `settings`，词典失败指向设置页，那里才有 [ADR-0091](#adr-0091) 的「重试」）。**修正** [ADR-0086](#adr-0086) 里"由内核承担"那句判断：Linux 上 Electron 的网页通知点击只派发给页面（`NotificationDelegateImpl::NotificationClick()` → `DispatchNonPersistentClickEvent`），主进程通知也只有一条 `click` 事件，两边都没有激活窗口的默认行为；页面自己的 `window.focus()` 实测也无效（`BrowserWindow::OnActivateContents` 只隐藏菜单） | 已生效（新增；**不动** [ADR-0086](#adr-0086) 的"不拦截、不自建"与 [ADR-0084](#adr-0084) 的判据。⚠️ 页面自己发的**消息通知**点击仍然不会激活窗口 —— 在 [INV-1](#adr-0057) 下没有可用信号，写进 `usage.md` 当已知限制；否决了"加 preload 监听 `notificationclick`""自己发通知""D-Bus 旁听 `ActionInvoked`"三条路。真机点一次待验证。**其中两处已被 [ADR-0093](#adr-0093) 推翻**） |
-| [0093](#adr-0093) | **页面自己的消息通知改由主进程发**：数据源是页面标题里的未读数（[ADR-0080](#adr-0080)，不读消息内容），页面 `notifications` 权限因此**运行期恒拒**（`notificationsReplaced`）。判据是"未读数上升 **且** 主窗口不在前台"。目的是把"点了就回到聊天"这件页面做不到的事补上 —— 拉下 WhatsApp Web 的 service worker 源码看过：`notificationclick` 的**每一条**分支终点都是 `client.focus()`，`clients.openWindow` 只在通话通知那一支，所以 `setWindowOpenHandler` 那条路是空的。转圈 15 秒则是 GNOME 起的 xdg-activation token 无人消费，一直等到 startup notification 超时 | 已生效（**推翻** [ADR-0092](#adr-0092) 的两处判断："自己发通知"被否决的理由是"要读消息内容"，而实际上**只需要未读总数**；"页面通知点击不会激活窗口"从已知限制变成已解决。**不动** [ADR-0086](#adr-0086) 的"不拦截"—— 没有 hook 任何东西。免打扰（[ADR-0082](#adr-0082)）顺势从权限层搬到 `announceNewMessages()`，因此它**立刻生效**，不再需要"重新加载页面"。代价是通知里没有发送者与摘要。⚠️ 页面会不会显示"通知已关闭"、以及"正在看的会话"会不会漏提示，**待真机确认**） |
+| [0093](#adr-0093) | **页面自己的消息通知改由主进程发**：数据源是页面标题里的未读数（[ADR-0080](#adr-0080)，不读消息内容），页面 `notifications` 权限因此**运行期恒拒**（`notificationsReplaced`）。判据是"未读数上升 **且** 主窗口不在前台"。目的是把"点了就回到聊天"这件页面做不到的事补上 —— 拉下 WhatsApp Web 的 service worker 源码看过：`notificationclick` 的**每一条**分支终点都是 `client.focus()`，`clients.openWindow` 只在通话通知那一支，所以 `setWindowOpenHandler` 那条路是空的。转圈 15 秒则是 GNOME 起的 xdg-activation token 无人消费，一直等到 startup notification 超时 | 已生效（**推翻** [ADR-0092](#adr-0092) 的两处判断："自己发通知"被否决的理由是"要读消息内容"，而实际上**只需要未读总数**；"页面通知点击不会激活窗口"从已知限制变成已解决。**不动** [ADR-0086](#adr-0086) 的"不拦截"—— 没有 hook 任何东西。免打扰（[ADR-0082](#adr-0082)）顺势从权限层搬到 `announceNewMessages()`，因此它**立刻生效**，不再需要"重新加载页面"。代价是通知里没有发送者与摘要。⚠️ 已知限制 3（页面显示"通知已关闭"的提示条）**真机确认出现**，已由 [ADR-0094](#adr-0094) 解决；"正在看的会话会不会漏提示"仍待真机对照） |
+| [0094](#adr-0094) | **把页面的通知 API 整个拿掉**：启动期追加内核开关 `--disable-notifications`（`src/main/page-notifications.ts`）。[ADR-0093](#adr-0093) 之后页面那条通知由我们代发、它的 `notifications` 权限恒拒 ⇒ `Notification.permission` 是 `denied`，网页版自己挂一条「去浏览器里开启通知」的提示条，而且**点不掉**（横幅上那个按钮调的 `requestPermission()` 同样被拒，真机日志里就是那行 `permission denied`）。探针实测这个开关**不是**"授权但静默"：渲染进程里 `typeof Notification === 'undefined'`；上游那条判据（`WAWebPushNotificationsGatingUtils`）只在 `default`、或 `denied` + Chrome 系 UA 时为真，读到 `undefined` 两分支都不成立 ⇒ 提示条消失。**主进程 `Notification` 不受影响**（`show` 事件与 D-Bus `Notify` 实测都在），我们自己那几条照旧能弹能点 | 已生效（新增；**解决** [ADR-0093](#adr-0093) 已知限制 3，真机两次启动的日志对照 + 用户目视确认。与 `notificationsReplaced` 是一对：将来若真要做"用回页面通知"的回退开关，必须**同时**撤掉它，否则回退是个静默的空功能。⚠️ 网页版设置页「通知」里那一行文案会变成什么样**没有验过**） |
 
 ---
 
@@ -6837,6 +6838,10 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
    ⚠️ 这条是推断，需要真机对照确认。
 3. **页面可能显示"通知已关闭"的提示条。** 权限恒拒之后 `Notification.permission` 是
    `denied`，上游有自己的检测。若真出现，需要另想办法（**待真机确认**）。
+   > **后续（2026-10-20）**：**真机上出现了**，用户报的是「内部 WhatsApp 显示需要开启通知」，
+   > 而且那条提示**点不掉**（按钮调的 `requestPermission()` 同样被我们拒）。已由
+   > [ADR-0094](#adr-0094) 解决：启动期追加 `--disable-notifications`，让渲染进程里根本没有
+   > `Notification` 这个接口 —— 上游那条判据读到 `undefined`，提示条不再出现。
 4. **`minimize()` 在 Wayland 下不生效**（证据 4），因此"最小化状态"这条路无法在本机单独验证。
 5. **仍然是"请求"而不是"命令"**：Wayland 下 `focus()` 由合成器裁决。不过点击通知本身带来了
    activation token（背景那一段），这一次请求是**有凭据**的。
@@ -6849,4 +6854,126 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
 3. 免打扰：托盘勾上「免打扰（暂停通知）」→ 再来一条消息 → **不应**弹通知（同一进程内立刻
    生效，不用重载页面）。
 4. 反向确认：窗口可见且在前台时来消息 → **不应**弹（否则就是刷屏）。
-5. 待确认项：页面上有没有出现"通知被关闭"的提示条（见已知限制 3）。
+5. 待确认项：页面上有没有出现"通知被关闭"的提示条（见已知限制 3）。**已确认出现，见
+   [ADR-0094](#adr-0094)。**
+
+## ADR-0094
+
+**决定**：启动期追加内核开关 `--disable-notifications`（`src/main/page-notifications.ts`），
+让**渲染进程里根本没有 `Notification` 这个接口** —— 网页版那条「需要开启通知」的提示条因此
+不再出现；主进程的 `Notification`（我们自己发的那几条）一点不受影响。
+
+**状态**：已生效（新增；**解决** [ADR-0093](#adr-0093) 已知限制 3，真机两次启动的日志对照 +
+用户目视确认。**不动** [ADR-0093](#adr-0093) 的"页面通知由我们代发"与
+[ADR-0086](#adr-0086) 的"不拦截、不自建"）
+
+**背景**：用户报「内部 WhatsApp 显示需要开启通知」。真机日志（运行中的 1.1.4，同一次启动）：
+
+```
+21:44:23  WARN permission check denied {"permission":"notifications","fromUpstream":true}
+21:44:49  WARN permission denied       {"permission":"notifications","fromUpstream":true}
+```
+
+第二条是**请求**而不是检查 —— 页面（或者说提示条上那个按钮）真的调了
+`Notification.requestPermission()`，被 `permissions.ts` 的 `notificationsReplaced` 拒掉。
+于是那条提示既**关不掉**（点了没反应）也**不可能被满足**：它的前提是"用户去浏览器里允许"，
+而我们没有浏览器设置页这种东西，权限是我们自己在运行期写死的。
+
+**证据**：
+
+1. **上游的判据是"权限值"，不是"能不能发"**（拉下网页版 bundle 逐个 grep，原文摘录）：
+
+   ```js
+   // WAWebPushNotificationsGatingUtils
+   function u(e, t) {            // e = Notification.permission, t = 是否 Chrome 系
+     return e === PERMISSION_DEFAULT ||
+            (e === PERMISSION_DENIED && t && (isChrome || EDGE || Firefox || opera))
+   }
+   l.canShowNotificationsBanner = u
+   ```
+
+   我们是 `denied` + Chromium 的 Chrome 系 UA ⇒ **恒为真**。这也解释了为什么它只在我们这里出现：
+   普通浏览器里用户能真的去设置里打开。
+
+2. **`--disable-notifications` 是"没有这个接口"，不是"授权但不弹"**（探针实测，Electron 44.7.0 /
+   Chromium 152，同一个权限处理器放行 `notifications` 的两种启动）：
+
+   ```
+   基线     [page] {"step":"initial","permission":"granted"} → {"step":"onshow"}
+            D-Bus: member=Notify  string "waachat probe"
+   加开关   [page] {"step":"throw-initial","error":"ReferenceError: Notification is not defined"}
+   ```
+
+   ⇒ 页面拿到的是 `undefined`（`globalThis.Notification?.permission`），判据 1 的两个分支都不成立
+   ⇒ 提示条不出现。**目标正是这个**：我们要的不是"骗页面说已授权"（那会让页面真的去发通知），
+   而是"这个浏览器没有这项能力"。
+
+3. **主进程不受影响**（同一次探针，另加一条主进程 `Notification`）：`show` 事件照发，D-Bus 上
+   照出现 `Notify`。⇒ 我们自己那几条（「N 条未读」/ 接管失效 / 词典失败 / 全屏提示）与
+   [ADR-0092](#adr-0092) 的可点击性都不变。
+
+4. **真机两次启动的日志对照**：不加开关时启动十几秒内必有两行 `notifications` 权限记录（上面那
+   两条）；加了开关之后**一条都没有**（只剩 `background-sync`）—— 页面根本没再碰这项权限。
+
+**理由**：
+
+1. **提示条是常驻的，而且把人指向一个不存在的地方。** 它说"去浏览器里开启通知"，而我们是桌面
+   应用：没有浏览器设置页，权限也不由用户在这一层决定。留着它等于在界面上长期挂一条假指路。
+2. **这是唯一不改页面就能改结果的动作。** 判据读的是 `Notification` 这个**接口存不存在 / 报什么
+   值**，而这正是内核能决定的事 —— 不必注入、不必 hook、不必读页面内容（[INV-1](#adr-0057)）。
+3. **它和 [ADR-0093](#adr-0093) 是同一件事的两半**：权限层说"这一条不用你发了"，这一层说
+   "你也没有这个能力"。两半缺一半就会出现"页面以为自己被剥夺了某项能力"。代价写在明处 ——
+   页面**真的**不能发通知了，只是这件事本来就已经被我们接管。
+4. **开关名与语义都在二进制/探针里核对过**，不是从文档里抄的（同 [ADR-0036](#adr-0036) /
+   [ADR-0090](#adr-0090) 的做法）：`strings … | grep -x -c disable-notifications` = 1，行为见证据 2。
+
+**被否决的替代方案**：
+
+- **让权限"检查"报 granted、只在"请求"时拒**：页面一旦读到 `granted`，`new Notification(...)`
+  **不再经过请求处理器**直接发 —— 于是变回两份通知（页面那份点不动）、GNOME 那 15 秒转圈也
+  跟着回来（[ADR-0092](#adr-0092) / [ADR-0093](#adr-0093) 的原始动机）。
+- **回退 [ADR-0093](#adr-0093)（放行页面通知）**：提示条会消失、通知还带发送者与摘要，但
+  "点击把窗口带回来"这件事重新变成做不到，转圈 15 秒也回来 —— 那是用户最初报的问题。
+- **让 `permission` 报 `default`（"还没问过"）**：Electron 的两个处理器都只返回布尔，没有
+  "ask" 这个态，命令行上也没有对应的开关。
+- **把 UA 伪装成非 Chrome 系**（判据 1 里 `denied` 那一支才看 UA）：能绕，但 UA 是我们刻意保持
+  干净的（`session: user agent applied {"userAgentClean":true}`，见 [ADR-0057](#adr-0057) 与
+  [ADR-0066](#adr-0066) 那条线），改它会连带改页面走的其它分支 —— 为一个提示条动 UA，
+  代价与收益完全不成比例。
+- **注入 CSS / JS 把提示条藏掉**：[INV-1](#adr-0057) 的红线，而且那要读页面 DOM。
+- **去动系统的通知守护进程（或 `.desktop` 的 `StartupNotify`）**：解决的是另一件事
+  —— 那是"通知能不能弹、点了转不转圈"（[ADR-0092](#adr-0092)），而这里坏的是**页面上那条
+  指路提示**。关掉守护只会让我们自己的通知也不响。
+
+**影响**：
+
+- `src/main/page-notifications.ts`：新增 `PAGE_NOTIFICATIONS_SWITCH` 与
+  `applyPageNotificationSuppression()`（纯函数 + 可注入的命令行接口，与其它启动期开关同形）。
+- `src/main/index.ts`：在 `whenReady` **之前**接线，动过命令行时记一行
+  `notifications: the page has no Notification API, so it stops asking to enable it`。
+- `test/unit/page-notifications.test.ts`：默认加上 / 用户写了就不动 / 幂等 / 开关名逐字一致。
+- `scripts/check-capture.ts`：新增「页面通知 API」一节 —— 开关名、`hasSwitch`（不是
+  `getSwitchValue`）、三条边界、**应用时机早于 `whenReady`**。这三处失效都不报错。
+- `docs/usage.md`：通知那一节补一句"网页版上那条『需要开启通知』的提示不会再出现，
+  因为它已经不由页面发"。
+- `docs/README.md`：模块清单里登记这个文件。
+
+**已知限制**：
+
+1. **它与 `notificationsReplaced` 是一对**。将来若真要做"用回页面通知"的回退开关，必须**同时**
+   撤掉这个内核开关，否则页面连 API 都没有 —— 回退会变成一个静默的空功能（勾上去什么都不会变）。
+2. **上游若改成"没有 API 也挂提示"**，这条路就失效了。自检挡不住这一条（它断的是我们的约定，
+   不是上游行为），症状会是"那条提示条又回来了"，只能靠用户报。
+3. **只在启动期生效**：正在跑的进程不会因为升级而改变，重启之后才有。
+4. **设置页里那一行文案没验过。** 页面现在读到的是"这个浏览器没有通知能力"，它自己那一栏
+   可能显示成"不支持"或干脆不显示 —— 无论哪种都比常驻的假指路好，但**没有实测**。
+
+**怎么验证**：
+
+1. `pnpm run check` 通过（含新增的「页面通知 API」四条断言）。
+2. 真机：启动之后网页版上**不再**出现「需要开启通知」；日志里**没有**任何 `notifications`
+   权限记录（其余权限照旧）。
+3. 反向确认：把开关从命令行里去掉再启动（或临时注释掉接线），那条提示应当**回来**
+   —— 这是"它确实由这一行造成的"的直接证据。
+4. 通知本身不受影响：关到托盘 → 另一台设备发一条消息 → 应当照旧收到「N 条未读」→ 点它
+   窗口到前台。
