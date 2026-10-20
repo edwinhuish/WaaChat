@@ -125,6 +125,7 @@ waachat/
 │   │   ├── permissions.ts          权限白名单（来源 + 类型，双向；纯模块可单测，见 T5）
 │   │   ├── linux-gpu.ts            Wayland 启动期的 GPU 开关（ADR-0036 / ADR-0038）
 │   │   ├── gpu-crash-limit.ts      GPU 进程反复失败时不让应用退出（ADR-0090，启动期开关）
+│   │   ├── page-notifications.ts   拿掉页面的 Notification API，网页版就不再挂「需要开启通知」（ADR-0094，启动期开关）
 │   │   ├── dev-probe.ts            **仅开发模式**：把只读探针注入聊天窗口（ADR-0046）
 │   │   ├── dev-probe-source.ts     它的路径与注入代码（纯函数，可单测）
 │   │   ├── dev-probe-lang.ts       **仅开发模式**：只读观察页面那条语言偏好 cookie（ADR-0066）
