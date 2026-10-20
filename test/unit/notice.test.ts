@@ -18,8 +18,11 @@ import {
   CAPTURE_FAILED_TITLE,
   FULLSCREEN_HINT_BODY,
   FULLSCREEN_HINT_TITLE,
+  NEW_MESSAGES_TITLE,
   SPELLCHECK_DICTIONARY_FAILED_TITLE,
   captureFailureBody,
+  newMessagesBody,
+  shouldAnnounceNewMessages,
   spellcheckDictionaryFailureBody,
   trackCaptureFailure,
   trackDictionaryFailure,
@@ -118,5 +121,62 @@ describe('全屏提示的内容', () => {
   it('**不**把 F11 写进去 —— 它是我们自己的「窗口全屏」，退不出页面的 HTML 全屏', () => {
     // 写进去的后果是用户按了没用，然后连这条提示一起不信。
     expect(FULLSCREEN_HINT_BODY).not.toContain('F11')
+  })
+})
+
+describe('新消息提示的判据（shouldAnnounceNewMessages）', () => {
+  /** 窗口在后台、未读从 5 涨到 6 —— 最典型的那一次。 */
+  const behind = { foreground: false }
+
+  it('未读上升且窗口不在前台：提示', () => {
+    expect(shouldAnnounceNewMessages({ ...behind, previous: 5, current: 6 })).toBe(true)
+  })
+
+  it('窗口在前台：不提示（用户自己看得见，再弹一次是重复）', () => {
+    expect(shouldAnnounceNewMessages({ foreground: true, previous: 5, current: 6 })).toBe(false)
+  })
+
+  it('计数没变：不提示（标题会被切会话与上游定时器频繁重写）', () => {
+    expect(shouldAnnounceNewMessages({ ...behind, previous: 5, current: 5 })).toBe(false)
+  })
+
+  it('读掉几条（5 → 3）：不提示', () => {
+    expect(shouldAnnounceNewMessages({ ...behind, previous: 5, current: 3 })).toBe(false)
+  })
+
+  it('读完清零（5 → null）：不提示', () => {
+    expect(shouldAnnounceNewMessages({ ...behind, previous: 5, current: null })).toBe(false)
+  })
+
+  it('读完又来一条（null → 1）：**要**提示 —— null 是"没有已知未读"，不是"不知道"', () => {
+    // 这一条是最容易写错的那个边界：把 null 当成"未知"而跳过，读完消息之后的第一次提示
+    // 就会永久沉默（直到重启）。
+    expect(shouldAnnounceNewMessages({ ...behind, previous: null, current: 1 })).toBe(true)
+  })
+
+  it('启动时页面报上来的历史未读（首次读数、窗口可见）：不提示', () => {
+    // `previous: null` + 窗口在前台，正是"昨天没读完的 5 条被页面报上来"那一刻。
+    expect(shouldAnnounceNewMessages({ foreground: true, previous: null, current: 5 })).toBe(false)
+  })
+
+  it('启动时窗口就是隐藏的（托盘常驻自启）：提示 —— 那时它确实该出现', () => {
+    expect(shouldAnnounceNewMessages({ ...behind, previous: null, current: 5 })).toBe(true)
+  })
+
+  it('current 为 null（标题里没有未读前缀）：不提示', () => {
+    expect(shouldAnnounceNewMessages({ ...behind, previous: null, current: null })).toBe(false)
+  })
+})
+
+describe('新消息提示的内容', () => {
+  it('标题与正文都非空，正文说出总数', () => {
+    expect(NEW_MESSAGES_TITLE).not.toBe('')
+    expect(newMessagesBody(7)).toContain('7')
+  })
+
+  it('正文把那个数字说成**未读总数**，而不是"又来了 N 条"', () => {
+    // 页面标题里的数字是未读总数（5 → 6 是"现在 6 条"，不是"刚来 1 条"）。
+    // 写成增量会让用户以为丢了消息。
+    expect(newMessagesBody(6)).not.toContain('又')
   })
 })
