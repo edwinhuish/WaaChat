@@ -5052,9 +5052,25 @@ https://edge.microsoft.com/redirectordictionaries/dict/
 - **开发机跑 dev 还需要一个沙箱开关**（与拼写检查无关，但排查时一定会撞上）：Ubuntu 24.04+ 的 AppArmor
   限制非特权 user namespace（`kernel.apparmor_restrict_unprivileged_userns=1`），而
   `/etc/apparmor.d/waachat` 里的 profile 只覆盖安装版那条路径（`/opt/WaaChat/waachat`）⇒ 从
-  `node_modules/.pnpm/electron@…/dist/electron` 起的 dev 进程会在 zygote 阶段直接 FATAL。调试命令上加
-  `--no-sandbox --disable-setuid-sandbox`（**只限本地调试命令** —— 见 `AGENTS.md` 第 5 节那条
-  "不要全局加 `--no-sandbox`"）。
+  `node_modules/.pnpm/electron@…/dist/electron` 起的 dev 进程拿不到 user namespace，内核于是回落到
+  **SUID 沙箱**，而那份 `chrome-sandbox` 不是 setuid 的，于是 zygote 阶段直接 FATAL
+  （`The SUID sandbox helper binary was found, but is not configured correctly`）。
+
+  正确做法是 `NO_SANDBOX=1 pnpm run dev`：`electron-vite` 自带这个开关（`startElectron()` 里
+  `process.env.NO_SANDBOX === '1'` → 追加 `--no-sandbox`），只作用于这一条命令，`package.json`
+  与打包产物都不动。`ELECTRON_DISABLE_SANDBOX=1` 效果等价（`electron_main_delegate.cc` 的
+  `BasicStartupComplete()` 里 `HasVar` 为真就追加同一个开关），但它对**所有** Electron 进程生效，
+  不如前者精确。**只限本地调试** —— 与 `AGENTS.md` 第 5 节那条"不要全局加 `--no-sandbox`"不冲突：
+  打包产物里的沙箱一个字节都不改。
+
+  ⚠️ **不要照报错提示去 `chmod 4755 chrome-sandbox`。** 本机 `/home` 与 `/` 都是 `nosuid` 挂载
+  （`findmnt -no OPTIONS -T /home` 给出 `rw,nosuid,relatime`），setuid 位根本不会被遵守 ——
+  那一步需要 root，做完症状一字不变。报错文案是 Chromium 按"权限没设对"的那种情景写的，
+  它不知道挂载选项这一层。
+
+  ⚠️ 想**保留**沙箱而不是关掉它，就得给 dev 二进制单独一份 profile（`userns,` +
+  `flags=(unconfined)`，与安装版同形，路径用 `node_modules/.pnpm/electron@*/…` 通配）。
+  代价是要 root、且每台开发机各做一次；收益是 `pnpm run dev` 保持原样。二选一，不要两条都上。
 
 ---
 
