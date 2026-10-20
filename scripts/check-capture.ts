@@ -122,6 +122,10 @@ import {
 import { UNREAD_BADGE_LIMIT, parseUnreadCount, unreadBadgeLabel } from '../src/shared/unread'
 import { drawUnreadBadge } from '../src/shared/tray-badge'
 import { NO_SMOOTH_SCROLLING_SWITCH, applySmoothScrolling } from '../src/main/smooth-scroll'
+import {
+  PAGE_NOTIFICATIONS_SWITCH,
+  applyPageNotificationSuppression,
+} from '../src/main/page-notifications'
 import { FULLSCREEN_HINT_BODY, trackFullscreenHint } from '../src/shared/notice'
 import { CHAT_PROTOCOL, parseChatTarget } from '../src/shared/deep-link'
 import { denialKey, trackDenial } from '../src/shared/permission-log'
@@ -2220,6 +2224,73 @@ check(
     !('notificationsMuted' in DEFAULT_SETTINGS) &&
     !quietCode.includes('saveSettings'),
   '它被写进设置文件了 —— 用户会在几周后才发现自己一直在免打扰里',
+)
+
+/**
+ * 页面通知 API（[ADR-0094]）。
+ *
+ * [ADR-0093] 让我们拒掉页面的 `notifications` 权限，于是页面读到的 `Notification.permission`
+ * 是 `denied`，它自己就挂一条「去浏览器里开启通知」的提示条 —— 而那条提示**点不掉也满足不了**
+ * （按钮调的 `requestPermission()` 同样被拒）。解法是启动期把内核的 `Notification` 接口整个
+ * 从渲染进程里拿掉。三种坏法都是**安静**的：
+ *
+ *   1. **开关名写错** —— 命令行上多一个没人认识的开关，Chromium 只忽略它，症状是那条提示条
+ *      回来了（不报错、不进日志，只在界面上常驻）；
+ *   2. **判据用 `getSwitchValue()` 而不是 `hasSwitch()`** —— 用户写 `--disable-notifications`
+ *      （不带 `=`）时读出来是空串，与"没写"分不开，于是我们覆盖掉他显式传的那一份；
+ *   3. **应用时机晚于 `whenReady`** —— 命令行那时已经解析完，这一项从此永远不生效。
+ */
+section('页面通知 API')
+
+const pageNotificationsSource = source('../src/main/page-notifications.ts')
+
+/** 去掉注释之后的源码：下面那条问的是"代码里怎么写"，而注释里**必须**写着 getSwitchValue()。 */
+const pageNotificationsCode = pageNotificationsSource
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\/\/[^\n]*/g, '')
+
+/** 与 `app.commandLine` 同形的假对象（判据是纯函数，因此这里不必启动内核）。 */
+function pageNotificationsCli(explicit: readonly string[] = []): {
+  hasSwitch: (name: string) => boolean
+  appendSwitch: (name: string) => void
+} {
+  const switches = new Set(explicit)
+
+  return {
+    hasSwitch: (name) => switches.has(name),
+    appendSwitch: (name) => switches.add(name),
+  }
+}
+
+check(
+  '开关名与内核里核对过的那一个逐字一致（写错＝那条提示条静默回来）',
+  PAGE_NOTIFICATIONS_SWITCH === 'disable-notifications',
+  '开关名被改过 —— 症状是网页版又挂出「需要开启通知」，而且不报错',
+)
+check(
+  '判据读的是"这个开关在不在"（hasSwitch），不是它的取值 —— 布尔开关普遍不带 `=`',
+  pageNotificationsCode.includes('hasSwitch(') &&
+    !pageNotificationsCode.includes('getSwitchValue('),
+  '用了 getSwitchValue()：用户显式传的 `--disable-notifications` 会被我们覆盖掉',
+)
+check(
+  '默认加上；用户自己写了自己就不动；重复调用幂等',
+  applyPageNotificationSuppression(pageNotificationsCli()) === true &&
+    applyPageNotificationSuppression(pageNotificationsCli([PAGE_NOTIFICATIONS_SWITCH])) === false &&
+    (() => {
+      const cli = pageNotificationsCli()
+      applyPageNotificationSuppression(cli)
+
+      return applyPageNotificationSuppression(cli) === false
+    })(),
+  '三条边界之一被改过（见 page-notifications.ts 的文件头）',
+)
+check(
+  '在 whenReady 之前应用（命令行解析之后就固定了）',
+  entrySource.includes('applyPageNotificationSuppression(app.commandLine)') &&
+    entrySource.indexOf('applyPageNotificationSuppression(') <
+      entrySource.indexOf('app.whenReady('),
+  '时机不对 —— 晚于 whenReady 时这一项永远不生效，而界面上的症状与"没加开关"一模一样',
 )
 
 /**

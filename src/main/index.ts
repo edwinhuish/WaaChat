@@ -28,6 +28,7 @@ import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
 import { installApplicationMenu } from './menu'
 import { announceNewMessages, setNoticeActivation } from './notice'
+import { applyPageNotificationSuppression } from './page-notifications'
 import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
@@ -163,6 +164,24 @@ if (applySmoothScrolling(app.commandLine, getSettings().smoothScrolling)) {
  */
 if (applyGpuCrashTolerance(app.commandLine)) {
   logger.info('gpu: process failures will no longer terminate the app')
+}
+
+/**
+ * 页面自己那条通知：连 **API** 一起拿掉（[ADR-0094]）。
+ *
+ * [ADR-0093] 之后页面那条通知由我们代发，因此 `notifications` 权限在运行期恒拒 ⇒ 页面读到的
+ * `Notification.permission` 是 `denied`，于是它自己挂一条「去浏览器里开启通知」的提示条
+ * （判据见 `WAWebPushNotificationsGatingUtils`，取证在 ADR-0094）。那条提示既关不掉、也不可能
+ * 被满足：它的按钮调的 `requestPermission()` 同样被我们拒。
+ *
+ * `--disable-notifications` 让渲染进程里**没有** `Notification` 这个接口（真机探针实测
+ * `typeof Notification === 'undefined'`），页面那条判据两分支都不成立 ⇒ 提示条不再出现。它
+ * **不影响主进程**的 `Notification`：我们自己发的那几条照旧能弹、能点回窗口。
+ *
+ * 与上面两段同类：**启动期一次性的内核开关**，必须早于 `whenReady`（命令行解析之后就固定了）。
+ */
+if (applyPageNotificationSuppression(app.commandLine)) {
+  logger.info('notifications: the page has no Notification API, so it stops asking to enable it')
 }
 
 /**
