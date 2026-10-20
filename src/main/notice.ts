@@ -10,12 +10,21 @@
  * 标签里"尚无接管记录"没有信息量、正常状态也没有，而**真的失效**时用户未必正看着那扇窗口。
  * 顶栏整个去掉之后（[ADR-0042]），失效改走这条通道：平时一声不响，出事时弹一次。
  *
- * 也不是弹窗：弹窗会打断且必须点掉，而这件事只是"提个醒"。这与页面自己的消息通知走同一条
- * 通道（`permissions.ts` 允许 `notifications`）。
+ * 也不是弹窗：弹窗会打断且必须点掉，而这件事只是"提个醒"。
+ *
+ * ⚠️ 那个"页面自己的消息通知"曾经是另一条独立的通道（`permissions.ts` 允许 `notifications`），
+ * 现在**归到这里**（[ADR-0093]）：页面那条通知点不动窗口（见下），而它发得出来的场合正是
+ * 用户最需要"点了就回去"的场合 —— 于是补上 {@link announceNewMessages}。
  *
  * **点击通知 = 把那扇窗口带到用户面前**（[ADR-0092]）。这一条**必须我们自己写**：Linux 上
  * Electron 不提供任何"点击通知 → 激活窗口"的默认行为，连网页通知被点击时它也只有一个
- * "派发给页面"的动作。目的地由 `index.ts` 注入（见 `setNoticeActivation()`）。
+ * "派发给页面"的动作 —— 而那个动作什么都不会发生。目的地由 `index.ts` 注入（见
+ * `setNoticeActivation()`）。
+ *
+ * 这条差别正是新消息那条通知存在的**唯一**理由：通知的内容我们比页面少得多（说不出谁发的），
+ * 但"点一下就回到聊天"这件页面做不到的事，只有这里能做。实测（Electron 44.7.0 / Chromium 152
+ * / Wayland）：窗口隐藏时点我们的通知，`presentWindow()` 之后 `visible` 与 `focused` 都变成
+ * `true` —— 这正是页面那条走不通的路。
  */
 
 import { Notification } from 'electron'
@@ -24,8 +33,10 @@ import {
   CAPTURE_FAILED_TITLE,
   FULLSCREEN_HINT_BODY,
   FULLSCREEN_HINT_TITLE,
+  NEW_MESSAGES_TITLE,
   SPELLCHECK_DICTIONARY_FAILED_TITLE,
   captureFailureBody,
+  newMessagesBody,
   spellcheckDictionaryFailureBody,
   trackCaptureFailure,
   trackDictionaryFailure,
@@ -214,5 +225,24 @@ export function announceFullscreenHint(): void {
 
   if (show(FULLSCREEN_HINT_TITLE, FULLSCREEN_HINT_BODY)) {
     logger.info('notice: told the user how to leave full screen')
+  }
+}
+
+/**
+ * 提示"有新消息"（[ADR-0093]）。
+ *
+ * 由 `index.ts` 在未读数变化时调用，判据是 `shared/notice.ts` 的
+ * {@link shouldAnnounceNewMessages} —— 这里只负责弹，不判断该不该弹。
+ *
+ * ⚠️ **正文里没有发送者**。那部分信息只在页面手里，而读它就是读页面（INV-1 / [ADR-0086]）。
+ * 这条通知换来的不是内容，是**点击能回到聊天窗口**：页面自己那条通知在 Linux 上点击之后
+ * 不会有任何窗口动作（[ADR-0092]），并且会让 GNOME 顶着一个忙碌光标空转约 15 秒，
+ * 等一个永远没人消费的 activation token。
+ *
+ * 目的地是 `main`：这条通知说的就是聊天窗口里的事，把用户送到设置页毫无道理。
+ */
+export function announceNewMessages(count: number): void {
+  if (show(NEW_MESSAGES_TITLE, newMessagesBody(count))) {
+    logger.info('notice: told the user about unread messages', { count })
   }
 }

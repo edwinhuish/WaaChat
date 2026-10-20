@@ -9,6 +9,7 @@ import { app, dialog, session } from 'electron'
 
 import { APP_ID, DESKTOP_FILE_NAME } from '../shared/constants'
 import { isForeignArchiveDir, withInstanceSuffix } from '../shared/instance'
+import { shouldAnnounceNewMessages } from '../shared/notice'
 import { resolveAccountKey } from './account'
 import { attachContextMenu } from './context-menu'
 import { applyArchiveDir, closeArchiveStore } from './archive/store'
@@ -26,7 +27,7 @@ import { applyLinuxGpuSwitches } from './linux-gpu'
 import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
 import { installApplicationMenu } from './menu'
-import { setNoticeActivation } from './notice'
+import { announceNewMessages, setNoticeActivation } from './notice'
 import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
@@ -424,8 +425,37 @@ app.whenReady().then(async () => {
    * ⚠️ 必须在 `createTray()` **之后**：这一句会立刻按"当前没有未读"设一次标题与托盘图标，
    * 而托盘还不存在时那次调用只是白跑（`applyTrayUnread` 没有托盘就什么都不做）——
    * 顺序反了不会报错，只会让徽标在启动后的第一次未读数变化之前一直是空的。
+   *
+   * 同一个读数还驱动**新消息通知**（[ADR-0093]）：页面自己那条通知在 Linux 上点不动窗口，
+   * 而这里发的那一条点一下就回到聊天。判据（上升 + 窗口不在前台）在 `shared/notice.ts`，
+   * 这里只负责把两个状态（上一次读数、此刻是否在前台）喂给它。
+   *
+   * `previous` 必须在**这次判断之后**才更新 —— 顺序反了，任何一次变化都会先被自己抹平，
+   * 通知于是一条都不出来。
    */
-  attachUnreadTracking(mainWindow, applyTrayUnread)
+  let previousUnread: number | null = null
+
+  attachUnreadTracking(mainWindow, (count) => {
+    applyTrayUnread(count)
+
+    /**
+     * `count !== null` 在判据里也有一份，这里的这一半只是给类型收窄用的：判据返回 `boolean`，
+     * 编译器看不出它已经排除了 `null`。把它删掉不会改变行为，只会让 `announceNewMessages`
+     * 收到一个 `number | null`。
+     */
+    if (
+      count !== null &&
+      shouldAnnounceNewMessages({
+        previous: previousUnread,
+        current: count,
+        foreground: mainWindow.isVisible() && mainWindow.isFocused(),
+      })
+    ) {
+      announceNewMessages(count)
+    }
+
+    previousUnread = count
+  })
 
   /**
    * `app.getLocale()` 仍然记一条（[ADR-0066] 之后它是**系统** locale，不再由我们设置）。
