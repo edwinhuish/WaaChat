@@ -129,6 +129,13 @@ linux:
       # launcher never merges with the running window. scripts/verify-package.sh
       # asserts this after every build.
       StartupWMClass: io.github.edwinhuish.waachat
+      # 点击页面自己的通知时，GNOME 会为这个应用起一个 xdg-activation 凭据并等它被消费；
+      # 而 Chromium 从不拿它去激活已有窗口 ⇒ Shell 顶着一个忙碌光标空转约 15 秒
+      # （[ADR-0095] 之后通知又由页面发，因此这条重新变成必需）。
+      #
+      # ⚠️ 它与 `src/shared/appicon.ts` 的 `buildDesktopEntry()` 是**两份**条目：用户在设置里
+      # 换过图标之后，用户级那份会盖掉安装产物这一份 —— 两处都要带这个键。
+      StartupNotify: false
       Terminal: false
       Type: Application
 

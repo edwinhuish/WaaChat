@@ -171,6 +171,11 @@ describe('buildDesktopEntry', () => {
     expect(entry).toContain(DESKTOP_ENTRY_MARKER)
   })
 
+  it('声明 StartupNotify=false（否则点页面的通知后光标空转约 15 秒）', () => {
+    // [ADR-0095] 之后消息通知由页面发，GNOME 会等一个没人消费的 activation token。
+    expect(entry).toContain('StartupNotify=false\n')
+  })
+
   it('以换行结尾（桌面条目按行解析，末行没有换行会丢）', () => {
     expect(entry.endsWith('\n')).toBe(true)
   })

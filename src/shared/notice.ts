@@ -9,8 +9,9 @@
  * 第三条（页面进入全屏，[ADR-0084]）不是"失效"，而是"用户可能找不到出口"：全屏之后没有窗口
  * 装饰，而 Wayland 下更看不到任何可点的地方。它的判据因此与上面两条不同 —— 见那一节。
  *
- * 第四条（有新消息，[ADR-0093]）与前三条的来历都不同：它不是我们**发现**的问题，而是替页面
- * 发它发不下去的那一条 —— 页面自己的通知点击之后窗口不动（见 `main/notice.ts` 文件头）。
+ * ⚠️ **"有新消息"那条不在这里**（[ADR-0095]）：页面自己那条通知带发送者与摘要，而主进程能
+ * 拿到的只有未读总数 —— 少了"谁发的"这一整块，用户报的正是这个。消息通知因此回到页面手里，
+ * 这里只剩"我们自己发现的问题"。
  *
  * ── 为什么"该不该弹"也在这里 ──
  *
@@ -155,59 +156,4 @@ export interface FullscreenHintTracking {
  */
 export function trackFullscreenHint(announced: boolean): FullscreenHintTracking {
   return { announce: !announced, announced: true }
-}
-
-// ---------------------------------------------------------------------------
-// 有新消息（[ADR-0093]）
-// ---------------------------------------------------------------------------
-
-/**
- * 新消息通知的标题。
- *
- * ⚠️ **说不出是谁发的**，而这正是这条通知的代价：发送者与消息摘要在页面手里，读它就是读页面
- * （INV-1 / [ADR-0086]）。于是这里与页面自己那条通知的差别，恰好就是"谁发的"这一整块。
- */
-export const NEW_MESSAGES_TITLE = '有新消息'
-
-/**
- * 正文：**只有总数**。
- *
- * 不写"又有 1 条新消息"：我们的读数来自页面标题，那个数字是**未读总数**，不是这一次事件的
- * 增量（5 → 6 说的是"现在有 6 条未读"，不是"刚来了一条"）。把它当增量写出来，用户会以为
- * 丢了消息。
- */
-export function newMessagesBody(count: number): string {
-  return `现在共有 ${count} 条未读消息。点这里回到聊天窗口。`
-}
-
-/** {@link shouldAnnounceNewMessages} 的输入，全部来自主进程已经知道的只读事实。 */
-export interface NewMessageSignal {
-  /** 上一次已知的未读数；`null` = 还不知道（启动后还没读到，或者刚刚读完、标题里没有前缀）。 */
-  readonly previous: number | null
-  /** 这次读到的未读数；`null` = 标题里没有 `(N)` 前缀。 */
-  readonly current: number | null
-  /** 主窗口此刻是否**在前台**（可见且有焦点）。 */
-  readonly foreground: boolean
-}
-
-/**
- * 该不该为新消息弹一条通知（纯函数）。
- *
- * 两条**同时**成立才弹：
- *
- *   1. **未读数上升了**（`current > previous`，`null` 按 0 算 —— 那表示"没有已知未读"，
- *      而不是"不知道现在几条"）。只看上升，因此读掉几条（5 → 3）或者读完清零（5 → `null`）
- *      都不会弹。
- *   2. **窗口不在前台**。这一条是必须的，而且它同时解决三件事：
- *      - 启动时页面报上来的那个数（昨天没读完的 5 条）不是"新消息"，而这时窗口通常是可见的；
- *      - 用户正看着窗口时他自己看得见，再弹一次是重复；
- *      - 而**托盘常驻自启**（启动即隐藏）那种情形恰恰相反 —— 那时它确实该弹，而判据会照办。
- *
- * ⚠️ 不要把它改成"每次标题变化都弹"：标题会被切会话、上游的定时器频繁重写，而计数通常没变。
- */
-export function shouldAnnounceNewMessages(signal: NewMessageSignal): boolean {
-  if (signal.foreground) return false
-  if (signal.current === null) return false
-
-  return signal.current > (signal.previous ?? 0)
 }

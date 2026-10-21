@@ -74,11 +74,15 @@ getDesktopFileName(fallback = this.packager.executableName) {
 这不是与上面那份打架，而是 XDG 的查找顺序在起作用：同名条目在用户目录里优先，因此
 **不需要 root**，卸载时系统那份也仍然完好。「恢复默认」会把用户级那份删掉。
 
-据此有两条约束：
+据此有三条约束：
 
 - **`buildDesktopEntry()` 必须继续带 `Comment=…unofficial…` 与 `StartupWMClass=<appId>`。**
   它取代了安装产物里那份条目，因此 INV-4 的义务跟着一起走。`pnpm run selfcheck` 两条都断言
   （并且会回头核对 `Comment` 与 `electron-builder.yml` 里的那一行同文）。
+- **`StartupNotify=false` 两份条目都要带**（[ADR-0095](decisions.md#adr-0095)）。它决定"点页面的
+  通知之后 GNOME 会不会等一个永远没人消费的 activation token"—— 缺了它，光标会空转约 15 秒。
+  只在 `electron-builder.yml` 里加是不够的：**换过图标的用户**用的是用户级那份。两处都有断言
+  （`selfcheck` 断言两份配置，`verify-package.sh` 解包后断言产物里真的那一行）。
 - **`Exec` 在 AppImage 下必须取 `process.env.APPIMAGE`**，而不是挂载点里的可执行文件 ——
   挂载点每次启动都不同（与 `integration/login.ts` 是同一个陷阱）。
 

@@ -41,9 +41,9 @@ export const ALLOWED_PERMISSIONS: ReadonlySet<PermissionType> = new Set<Permissi
   /**
    * 页面自己的消息通知。
    *
-   * ⚠️ 把它留在白名单里**不等于它会放行**：运行期覆盖恒拒（见下面
-   * {@link PermissionOptions.notificationsReplaced}，[ADR-0093]）。这一行说的是"这项能力
-   * 本身不危险"，而拒绝它的是另一件事 —— 那条通知已经改由我们发。
+   * 平时放行，**只在用户勾了「免打扰」时**由运行期覆盖拒掉（{@link PermissionOptions.notificationsMuted}）。
+   * 那条通道 2026-10 起又回到了页面自己手里（[ADR-0095] 撤掉了 [ADR-0093]/[ADR-0094] 的
+   * "由我们代发"）：只有页面那条通知带发送者与消息摘要。
    */
   'notifications',
   /** 麦克风 / 摄像头：通话与语音消息。 */
@@ -68,9 +68,8 @@ export const ALLOWED_PERMISSIONS: ReadonlySet<PermissionType> = new Set<Permissi
 /**
  * 页面自己发通知的那项权限。
  *
- * ⚠️ 它仍然在白名单里，但**运行期恒被拒**（{@link PermissionOptions.notificationsReplaced}，
- * [ADR-0093]）：拒绝它的不是"这个能力危险"，而是"这条通知已经被我们替代了"。两者要分开写，
- * 因为将来若真要做"用回页面通知"的开关，需要知道这项能力本身是**允许的**。
+ * 单独拎出来是因为它是**唯一**一项会被运行期覆盖影响的权限：免打扰只该关掉"别人的消息"，
+ * 顺手拒掉 `media` 会让通话直接连不上。
  */
 const PAGE_NOTIFICATION_PERMISSION: PermissionType = 'notifications'
 
@@ -83,17 +82,6 @@ const PAGE_NOTIFICATION_PERMISSION: PermissionType = 'notifications'
 export interface PermissionOptions {
   /** 「免打扰」（[ADR-0082]）：用户在此刻不想被打扰。 */
   readonly notificationsMuted?: boolean
-  /**
-   * 页面自己的消息通知已由主进程接管（[ADR-0093]）。
-   *
-   * ⚠️ 这一个**不是用户的意愿**，而是装配事实 —— 它与 {@link notificationsMuted} 指向同一条
-   * 权限、理由却完全不同：页面那条通知在 Linux 上点击之后窗口不会动（[ADR-0092]），而
-   * `notice.ts` 自己发的那一条点了就回窗口。两条同时存在只会让用户收到两份、且只有一份能用。
-   *
-   * 因此它**恒为 `true`**（见 `session.ts` 的 `permissionOverride()`）。留在选项里而不是把
-   * `notifications` 从白名单里删掉，是为了保留"用回页面通知"这个回退点。
-   */
-  readonly notificationsReplaced?: boolean
 }
 
 /**
@@ -113,19 +101,17 @@ export function isPermissionAllowed(
   if (!isUpstreamOrigin(requestingOrigin)) return false
 
   /**
-   * 两个理由、同一个落点：**免打扰**是用户此刻不想被打扰（[ADR-0082]），而**通知已被替代**是
-   * 这条通道已经改由我们自己发（[ADR-0093]）。
+   * 免打扰（[ADR-0082]）是这里**唯一**的运行期覆盖：用户此刻不想被打扰。
    *
-   * ⚠️ `notificationsMuted` 这一项在这里**已经是冗余的**（`notificationsReplaced` 恒真，它
-   * 自己就能拒）。留着它有两个理由：一是它把这句意愿钉在它原本的落点上，读代码的人能看见
-   * 免打扰仍然管着权限层；二是将来真要做"用回页面通知"的开关时，`replaced` 一旦关掉，
-   * 免打扰必须立刻仍然生效 —— 那时候删掉这一行就是一个静默的功能回退。
+   * ⚠️ 它拒掉的是**页面自己的**通知权限（[ADR-0095] 之后消息通知重新由页面发）。代价是
+   * `Notification.permission` 会变成 `denied`，上游可能因此挂出「去浏览器里开启通知」的
+   * 提示条；取消免打扰之后要重新加载页面（或重启）才能回到 `granted`。
    *
    * ⚠️ 只覆盖 `notifications` 一项：免打扰要的是"别弹通知"，而 `media`（麦克风 / 摄像头）
    * 被顺手拒掉的后果是通话直接连不上 —— 那是另一件事。
    */
   if (permission === PAGE_NOTIFICATION_PERMISSION) {
-    if (options.notificationsMuted === true || options.notificationsReplaced === true) return false
+    if (options.notificationsMuted === true) return false
   }
 
   // 断言只在这里出现，而且只是为了查表：调用方传来的可能是 Electron 不认识的新值，

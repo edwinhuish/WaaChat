@@ -174,9 +174,11 @@ export interface DesktopEntryInput {
  *
  *   - `MimeType` 漏掉 ⇒ 深链接不再归我们（[ADR-0083]）。用户点一个 `wa.me` 链接，系统不认识
  *     它，什么都不会发生 —— 而他不会把这件事与"上周换了个图标"联系起来；
- *   - `Exec` 末尾那个 `%U` 同理：关联还在，但 URL 不会被当参数传进来（应用被拉起来，停在首页）。
+ *   - `Exec` 末尾那个 `%U` 同理：关联还在，但 URL 不会被当参数传进来（应用被拉起来，停在首页）；
+ *   - `StartupNotify=false` 漏掉 ⇒ 点页面的通知之后，GNOME 为一个永远不会被消费的
+ *     xdg-activation 凭据空转约 15 秒（[ADR-0095]：消息通知由页面发）。
  *
- * 因此这两个键在这里是**必须**的，而不是"顺手带上"。自检对它们都有断言。
+ * 因此这几个键在这里是**必须**的，而不是"顺手带上"。自检对它们都有断言。
  */
 export function buildDesktopEntry(input: DesktopEntryInput): string {
   return [
@@ -187,6 +189,8 @@ export function buildDesktopEntry(input: DesktopEntryInput): string {
     `Exec=${desktopEntryExec(input.exec)} %U`,
     `Icon=${input.iconPath}`,
     'Terminal=false',
+    // 不要在点击页面通知之后空等一个没人消费的 activation token（见上面的说明）。
+    'StartupNotify=false',
     `Categories=${DESKTOP_ENTRY_CATEGORIES}`,
     `Keywords=${DESKTOP_ENTRY_KEYWORDS}`,
     `MimeType=x-scheme-handler/${CHAT_PROTOCOL};`,

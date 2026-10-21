@@ -122,10 +122,6 @@ import {
 import { UNREAD_BADGE_LIMIT, parseUnreadCount, unreadBadgeLabel } from '../src/shared/unread'
 import { drawUnreadBadge } from '../src/shared/tray-badge'
 import { NO_SMOOTH_SCROLLING_SWITCH, applySmoothScrolling } from '../src/main/smooth-scroll'
-import {
-  PAGE_NOTIFICATIONS_SWITCH,
-  applyPageNotificationSuppression,
-} from '../src/main/page-notifications'
 import { FULLSCREEN_HINT_BODY, trackFullscreenHint } from '../src/shared/notice'
 import { CHAT_PROTOCOL, parseChatTarget } from '../src/shared/deep-link'
 import { denialKey, trackDenial } from '../src/shared/permission-log'
@@ -606,6 +602,12 @@ check(
 check(
   '启动器条目的 StartupWMClass 与 appId 同源',
   launcherEntry.includes(`StartupWMClass=${APP_ID}`),
+)
+check(
+  '两份 .desktop 都带 StartupNotify=false（[ADR-0095]：否则点页面通知后光标空转约 15 秒）',
+  // 用户换过图标之后，用户级那份会盖掉安装产物那份 —— 只在 electron-builder.yml 里加不够。
+  launcherEntry.includes('StartupNotify=false\n') && builderConfig.includes('StartupNotify: false'),
+  '漏一处：换过图标的用户点通知之后，鼠标仍会转圈约 15 秒（不报错）',
 )
 
 /**
@@ -2135,14 +2137,10 @@ check(
 )
 check(
   '未读跟踪在 createTray() 之后接上（托盘不存在时那一次调用是空转，徽标会一直空到下次变化）',
-  // 回调体里第一件事必须还是喂托盘：新消息通知（[ADR-0093]）接在同一个读数上，
-  // 它一旦被排到 `applyTrayUnread(count)` 前面，徽标就会晚一轮。
   entrySource.includes('attachUnreadTracking(mainWindow, (count) =>') &&
     entrySource.includes('applyTrayUnread(count)') &&
-    entrySource.indexOf('applyTrayUnread(count)') <
-      entrySource.indexOf('shouldAnnounceNewMessages(') &&
     entrySource.indexOf('attachUnreadTracking(') > entrySource.indexOf('createTray('),
-  '顺序反了：启动后第一个未读数出现之前，托盘上不会有徽标（或者徽标晚一轮）',
+  '顺序反了：启动后第一个未读数出现之前，托盘上不会有徽标',
 )
 check(
   '两个新模块都不导入 electron（判据要能在没有 Electron 的环境里断言）',
@@ -2203,12 +2201,17 @@ check(
 )
 check(
   '只覆盖 notifications：media（麦克风 / 摄像头）必须照旧放行，否则通话连不上',
-  // 行为断言而不是源码字面量：两项覆盖各自都要走一遍，而 media 一次都不能被波及。
+  // 行为断言而不是源码字面量：免打扰走一遍，而 media 一次都不能被波及。
   !isPermissionAllowed('notifications', UPSTREAM_ORIGIN, { notificationsMuted: true }) &&
-    !isPermissionAllowed('notifications', UPSTREAM_ORIGIN, { notificationsReplaced: true }) &&
-    isPermissionAllowed('media', UPSTREAM_ORIGIN, { notificationsMuted: true }) &&
-    isPermissionAllowed('media', UPSTREAM_ORIGIN, { notificationsReplaced: true }),
+    isPermissionAllowed('media', UPSTREAM_ORIGIN, { notificationsMuted: true }),
   '免打扰顺手把别的权限也拒了 —— 通话会因为拿不到麦克风而直接失败',
+)
+check(
+  '消息通知由页面自己发（[ADR-0095]）：默认放行，且入口不再把页面通知的 API 拿掉',
+  isPermissionAllowed('notifications', UPSTREAM_ORIGIN) &&
+    !entrySource.includes('disable-notifications') &&
+    !entrySource.includes('applyPageNotificationSuppression'),
+  '又回到了"我们代发"：通知里会重新只剩未读总数，看不到谁发的与内容',
 )
 check(
   '改状态的入口只有托盘那一处（勾选态是快照：第二个入口会让"勾"与真实状态不一致）',
@@ -2224,73 +2227,6 @@ check(
     !('notificationsMuted' in DEFAULT_SETTINGS) &&
     !quietCode.includes('saveSettings'),
   '它被写进设置文件了 —— 用户会在几周后才发现自己一直在免打扰里',
-)
-
-/**
- * 页面通知 API（[ADR-0094]）。
- *
- * [ADR-0093] 让我们拒掉页面的 `notifications` 权限，于是页面读到的 `Notification.permission`
- * 是 `denied`，它自己就挂一条「去浏览器里开启通知」的提示条 —— 而那条提示**点不掉也满足不了**
- * （按钮调的 `requestPermission()` 同样被拒）。解法是启动期把内核的 `Notification` 接口整个
- * 从渲染进程里拿掉。三种坏法都是**安静**的：
- *
- *   1. **开关名写错** —— 命令行上多一个没人认识的开关，Chromium 只忽略它，症状是那条提示条
- *      回来了（不报错、不进日志，只在界面上常驻）；
- *   2. **判据用 `getSwitchValue()` 而不是 `hasSwitch()`** —— 用户写 `--disable-notifications`
- *      （不带 `=`）时读出来是空串，与"没写"分不开，于是我们覆盖掉他显式传的那一份；
- *   3. **应用时机晚于 `whenReady`** —— 命令行那时已经解析完，这一项从此永远不生效。
- */
-section('页面通知 API')
-
-const pageNotificationsSource = source('../src/main/page-notifications.ts')
-
-/** 去掉注释之后的源码：下面那条问的是"代码里怎么写"，而注释里**必须**写着 getSwitchValue()。 */
-const pageNotificationsCode = pageNotificationsSource
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/\/\/[^\n]*/g, '')
-
-/** 与 `app.commandLine` 同形的假对象（判据是纯函数，因此这里不必启动内核）。 */
-function pageNotificationsCli(explicit: readonly string[] = []): {
-  hasSwitch: (name: string) => boolean
-  appendSwitch: (name: string) => void
-} {
-  const switches = new Set(explicit)
-
-  return {
-    hasSwitch: (name) => switches.has(name),
-    appendSwitch: (name) => switches.add(name),
-  }
-}
-
-check(
-  '开关名与内核里核对过的那一个逐字一致（写错＝那条提示条静默回来）',
-  PAGE_NOTIFICATIONS_SWITCH === 'disable-notifications',
-  '开关名被改过 —— 症状是网页版又挂出「需要开启通知」，而且不报错',
-)
-check(
-  '判据读的是"这个开关在不在"（hasSwitch），不是它的取值 —— 布尔开关普遍不带 `=`',
-  pageNotificationsCode.includes('hasSwitch(') &&
-    !pageNotificationsCode.includes('getSwitchValue('),
-  '用了 getSwitchValue()：用户显式传的 `--disable-notifications` 会被我们覆盖掉',
-)
-check(
-  '默认加上；用户自己写了自己就不动；重复调用幂等',
-  applyPageNotificationSuppression(pageNotificationsCli()) === true &&
-    applyPageNotificationSuppression(pageNotificationsCli([PAGE_NOTIFICATIONS_SWITCH])) === false &&
-    (() => {
-      const cli = pageNotificationsCli()
-      applyPageNotificationSuppression(cli)
-
-      return applyPageNotificationSuppression(cli) === false
-    })(),
-  '三条边界之一被改过（见 page-notifications.ts 的文件头）',
-)
-check(
-  '在 whenReady 之前应用（命令行解析之后就固定了）',
-  entrySource.includes('applyPageNotificationSuppression(app.commandLine)') &&
-    entrySource.indexOf('applyPageNotificationSuppression(') <
-      entrySource.indexOf('app.whenReady('),
-  '时机不对 —— 晚于 whenReady 时这一项永远不生效，而界面上的症状与"没加开关"一模一样',
 )
 
 /**

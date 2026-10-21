@@ -132,6 +132,14 @@ check_desktop_entry() {
     *) bad "$label：Exec 是 '${exec_line:-（缺失）}'，缺 %U —— 链接就算找到了我们，URL 也不会传进来（症状是“点了链接、应用开在首页”）" ;;
   esac
 
+  # 点页面的通知时 GNOME 会等一个没人消费的 activation token，症状是光标空转约 15 秒
+  # （[ADR-0095]）。这个键只影响那一件事，因此漏了不会有任何构建期报错。
+  if grep -qx 'StartupNotify=false' "$desktop"; then
+    ok "$label：StartupNotify=false（点击页面通知不会再空转）"
+  else
+    bad "$label：.desktop 里缺 StartupNotify=false —— 点通知后光标会空转约 15 秒（检查 electron-builder.yml 的 linux.desktop.entry.StartupNotify）"
+  fi
+
   grep -qE '^Icon=' "$desktop" && ok "$label：Icon 存在" || bad "$label：缺 Icon"
 }
 
