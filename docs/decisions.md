@@ -102,6 +102,7 @@
 | [0092](#adr-0092) | **点击通知 → 把窗口带到用户面前**由我们自己写：`show()` 给每个 `Notification` 绑 `click`（并用 `live` 集合持有引用 —— 对象被 GC 之后事件永远不会再来），目的地由装配处注入（`main` / `settings`，词典失败指向设置页，那里才有 [ADR-0091](#adr-0091) 的「重试」）。**修正** [ADR-0086](#adr-0086) 里"由内核承担"那句判断：Linux 上 Electron 的网页通知点击只派发给页面（`NotificationDelegateImpl::NotificationClick()` → `DispatchNonPersistentClickEvent`），主进程通知也只有一条 `click` 事件，两边都没有激活窗口的默认行为；页面自己的 `window.focus()` 实测也无效（`BrowserWindow::OnActivateContents` 只隐藏菜单） | 已生效（新增；**不动** [ADR-0086](#adr-0086) 的"不拦截、不自建"与 [ADR-0084](#adr-0084) 的判据。⚠️ 页面自己发的**消息通知**点击仍然不会激活窗口 —— 在 [INV-1](#adr-0057) 下没有可用信号，写进 `usage.md` 当已知限制；否决了"加 preload 监听 `notificationclick`""自己发通知""D-Bus 旁听 `ActionInvoked`"三条路。真机点一次待验证。**其中两处已被 [ADR-0093](#adr-0093) 推翻**） |
 | [0093](#adr-0093) | **页面自己的消息通知改由主进程发**：数据源是页面标题里的未读数（[ADR-0080](#adr-0080)，不读消息内容），页面 `notifications` 权限因此**运行期恒拒**（`notificationsReplaced`）。判据是"未读数上升 **且** 主窗口不在前台"。目的是把"点了就回到聊天"这件页面做不到的事补上 —— 拉下 WhatsApp Web 的 service worker 源码看过：`notificationclick` 的**每一条**分支终点都是 `client.focus()`，`clients.openWindow` 只在通话通知那一支，所以 `setWindowOpenHandler` 那条路是空的。转圈 15 秒则是 GNOME 起的 xdg-activation token 无人消费，一直等到 startup notification 超时 | 已生效（**推翻** [ADR-0092](#adr-0092) 的两处判断："自己发通知"被否决的理由是"要读消息内容"，而实际上**只需要未读总数**；"页面通知点击不会激活窗口"从已知限制变成已解决。**不动** [ADR-0086](#adr-0086) 的"不拦截"—— 没有 hook 任何东西。免打扰（[ADR-0082](#adr-0082)）顺势从权限层搬到 `announceNewMessages()`，因此它**立刻生效**，不再需要"重新加载页面"。代价是通知里没有发送者与摘要。⚠️ 已知限制 3（页面显示"通知已关闭"的提示条）**真机确认出现**，已由 [ADR-0094](#adr-0094) 解决；"正在看的会话会不会漏提示"仍待真机对照） |
 | [0094](#adr-0094) | **把页面的通知 API 整个拿掉**：启动期追加内核开关 `--disable-notifications`（`src/main/page-notifications.ts`）。[ADR-0093](#adr-0093) 之后页面那条通知由我们代发、它的 `notifications` 权限恒拒 ⇒ `Notification.permission` 是 `denied`，网页版自己挂一条「去浏览器里开启通知」的提示条，而且**点不掉**（横幅上那个按钮调的 `requestPermission()` 同样被拒，真机日志里就是那行 `permission denied`）。探针实测这个开关**不是**"授权但静默"：渲染进程里 `typeof Notification === 'undefined'`；上游那条判据（`WAWebPushNotificationsGatingUtils`）只在 `default`、或 `denied` + Chrome 系 UA 时为真，读到 `undefined` 两分支都不成立 ⇒ 提示条消失。**主进程 `Notification` 不受影响**（`show` 事件与 D-Bus `Notify` 实测都在），我们自己那几条照旧能弹能点 | 已生效（新增；**解决** [ADR-0093](#adr-0093) 已知限制 3，真机两次启动的日志对照 + 用户目视确认。与 `notificationsReplaced` 是一对：将来若真要做"用回页面通知"的回退开关，必须**同时**撤掉它，否则回退是个静默的空功能。⚠️ 网页版设置页「通知」里那一行文案会变成什么样**没有验过**） |
+| [0095](#adr-0095) | **消息通知交回页面自己发**：撤掉 [ADR-0093](#adr-0093) 的主进程代发与 [ADR-0094](#adr-0094) 的 `--disable-notifications`，页面的 `notifications` 权限恢复放行、`Notification` 接口回来，主进程不再发「有新消息」。两份 `.desktop` 条目同时加 `StartupNotify=false`，单独治掉"点通知后光标空转约 15 秒"。判据是**内容比跳转重要**：主进程能拿到的只有未读总数（标题），而发送者与摘要在页面手里 —— 在 INV-1 之下没有任何合法来源 | 已生效（2026-10-21；**推翻** [ADR-0093](#adr-0093) 与 [ADR-0094](#adr-0094)，让 [ADR-0086](#adr-0086) 的"不拦截、不自建"重新成为完整描述。代价：点页面通知不激活窗口（[ADR-0092](#adr-0092) 的老限制重新成立）；免打扰落回权限层，勾上时 `permission` 变 `denied`、页面可能挂出「需要开启通知」（[ADR-0094](#adr-0094) 的症状只在用户主动开免打扰时出现）。`StartupNotify=false` 未真机验证） |
 
 ---
 
@@ -6977,3 +6978,96 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
    —— 这是"它确实由这一行造成的"的直接证据。
 4. 通知本身不受影响：关到托盘 → 另一台设备发一条消息 → 应当照旧收到「N 条未读」→ 点它
    窗口到前台。
+
+## ADR-0095
+
+**决定**：**消息通知交回页面自己发。** 撤掉 [ADR-0093](#adr-0093) 的"主进程代发"与
+[ADR-0094](#adr-0094) 的 `--disable-notifications`：页面的 `notifications` 权限恢复放行、
+渲染进程里的 `Notification` 接口回来，主进程不再发「有新消息」那一条。同时给**两份**
+`.desktop` 条目加 `StartupNotify=false`，把"点通知后光标空转约 15 秒"单独治掉。
+
+这一条**推翻** [ADR-0093](#adr-0093) 与 [ADR-0094](#adr-0094)，让
+[ADR-0086](#adr-0086) 的"不拦截、不自建"重新成为这段行为的完整描述。
+
+**状态**：已生效（2026-10-21；用户选择的取舍，理由是下一条"背景"里的那次反馈）。
+
+**背景**：用户报"现在每次有新消息，提示都只说有消息，看不到谁发的信息，以及内容"。
+
+那正是 [ADR-0093](#adr-0093) 已知限制 1 的原文：通知里只有未读总数。当初的账是
+"内容换跳转"—— 页面那条通知点不动窗口（[ADR-0092](#adr-0092)），而"点一下就回到聊天"
+是页面结构上做不到的事。真用起来这笔账不划算：**内容才是通知的全部价值**，而"点了不跳"
+可以用托盘 / 应用菜单里的「显示聊天」补上，缺了发送者与摘要却没有替代品。
+
+**证据**：
+
+1. **主进程拿不到页面通知的内容。** Electron 44 的 `Notification` 类只是"主进程自己发一条"
+   的入口（`electron.d.ts` 里没有任何"页面通知被展示 / 被点击"的事件；Linux 上
+   `handleActivation()` 也标着 `@platform win32`）。页面的通知经 Chromium 的
+   `ElectronPlatformNotificationService` 直接交给桌面，主进程这一侧没有可读的对象。
+2. **窗口标题里只有未读数**（[ADR-0080](#adr-0080)）：`(3) WhatsApp` 不含发送者，更不含正文。
+   在 INV-1 之下这是主进程唯一能读的那一处元数据，因此"自己发一条带内容的通知"在任何版本里
+   都拼不出来。
+3. **转圈可以单独治。** GNOME 点带 `desktop-entry` hint 的通知时会为该应用起一个
+   xdg-activation 凭据并等它被消费，而 Chromium 从不拿它去激活已有窗口；`StartupNotify=false`
+   让 Shell 根本不去等（[ADR-0094](#adr-0094) 把它写成"解决的是另一件事"并否决了 —— 当时它
+   确实只是半个解法，因为窗口仍然不跳；现在跳窗这件事已经放弃，它就成了完整的那一半）。
+
+**理由**：
+
+1. **只有页面那条通知带发送者与摘要**，而这是用户唯一在意的那部分信息。
+2. **两条通知不能并存**（[ADR-0093](#adr-0093) 的理由仍然成立）：重复弹两份、且只有一份
+   点得动，比任何一种单条都糟。因此"代发"必须整个撤掉，而不是加开关并存。
+3. **免打扰回到权限层**（[ADR-0082](#adr-0082) 的原始落点）。页面通知回来后，那是唯一还
+   存在的门；代价见下面的已知限制。
+
+**被否决的替代方案**：
+
+- **两条都留（页面发内容 + 我们发一条可点的）**：用户收到两份，其中一份点得动。是噪音。
+- **D-Bus 旁听 `Notify` 把内容抄下来再自己发**：会话总线默认不允许 eavesdrop；还要按
+  `desktop-entry` 与 id 分辨是不是我们这个应用的，跨通知守护进程不一致 —— 理由与
+  [ADR-0092](#adr-0092) 否决"旁听 `ActionInvoked`"时相同。
+- **注入脚本读页面里的通知数据**：[INV-1](#adr-0057) 的红线，而且要求 hook
+  `ServiceWorkerRegistration.showNotification`。
+- **保持 [ADR-0093](#adr-0093) 不变**：就是用户这次报的问题。
+
+**影响**：
+
+- `src/main/index.ts`：删掉 `--disable-notifications` 的接线；未读回调只喂托盘与标题。
+- `src/main/page-notifications.ts`、`test/unit/page-notifications.test.ts`：**删除**。
+- `src/main/permissions.ts` / `session.ts`：删掉 `notificationsReplaced`；免打扰
+  （`notificationsMuted`）成为唯一的运行期覆盖。
+- `src/main/notice.ts` / `src/shared/notice.ts`：删掉 `announceNewMessages()`、
+  `shouldAnnounceNewMessages()`、`NEW_MESSAGES_TITLE`、`newMessagesBody()`。
+  接管失效 / 词典失败 / 全屏提示那三条不变。
+- `electron-builder.yml` 与 `src/shared/appicon.ts`：两份 `.desktop` 都加
+  `StartupNotify=false`（用户换过图标之后用户级那份会盖掉安装那份，因此漏一处就等于没加）。
+- `scripts/check-capture.ts`：删掉「页面通知 API」一节；新增一条**负向断言**
+  （入口里重新出现 `disable-notifications` / `applyPageNotificationSuppression` 就变红）
+  与一条"默认放行 `notifications`"；「两份 `.desktop` 都带 StartupNotify」。
+- `scripts/verify-package.sh`：解包后断言产物 `.desktop` 里有 `StartupNotify=false`。
+
+**已知限制**：
+
+1. **点页面的通知不会把窗口带到前台**（[ADR-0092](#adr-0092)）。入口是托盘 / 菜单里的
+   「显示聊天」。这一条**没有**解法：`client.focus()` 落在 `BrowserWindow::OnActivateContents()`，
+   只隐藏菜单。
+2. **免打扰会引出「需要开启通知」的提示条。** 勾上之后 `Notification.permission` 变成
+   `denied`，上游那条判据（`WAWebPushNotificationsGatingUtils`）成立 ⇒ 页面自己挂一条
+   点不掉的横幅（这正是 [ADR-0094](#adr-0094) 要解决的）。取消免打扰之后要**重新加载页面**
+   （或重启）才回到 `granted`。选择这条路是因为：免打扰是用户主动说"别吵我"，而通知内容
+   是常态需求。
+3. **已经换过自定义图标的用户**，其 `~/.local/share/applications/<appId>.desktop` 是当时生成的、
+   不含 `StartupNotify` ⇒ 升级之后点通知仍会转圈约 15 秒。在设置里重设一次图标（或删掉那份
+   条目）即可。
+4. **`StartupNotify=false` 之后 GNOME 不再等凭据**，因此点击的副作用只剩"派发给页面"。
+   这使得点击看起来**毫无反应**（连转圈都没有了）—— 比转 15 秒更安静，但同样是"点了没动静"。
+5. **`StartupNotify=false` 本身没有真机验证过。** 断言只覆盖"两份条目里都有这个键"。
+
+**怎么验证**：
+
+1. `pnpm run check` 通过。
+2. 真机：关到托盘 → 另一台设备发一条消息 → 通知应当带**发送者与消息摘要**；点它之后光标
+   **不再空转**（窗口不跳是预期）。
+3. 免打扰：托盘勾上「免打扰（暂停通知）」→ 再来一条消息 → 不应弹；此时页面上可能出现那条
+   「需要开启通知」的横幅（已知限制 2），取消勾选并重新加载页面后恢复。
+4. 反向确认：接管失效 / 词典下载失败 / 全屏提示那三条**仍然**弹、仍然点得动、仍然不受免打扰影响。
