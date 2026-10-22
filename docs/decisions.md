@@ -103,7 +103,7 @@
 | [0093](#adr-0093) | **页面自己的消息通知改由主进程发**：数据源是页面标题里的未读数（[ADR-0080](#adr-0080)，不读消息内容），页面 `notifications` 权限因此**运行期恒拒**（`notificationsReplaced`）。判据是"未读数上升 **且** 主窗口不在前台"。目的是把"点了就回到聊天"这件页面做不到的事补上 —— 拉下 WhatsApp Web 的 service worker 源码看过：`notificationclick` 的**每一条**分支终点都是 `client.focus()`，`clients.openWindow` 只在通话通知那一支，所以 `setWindowOpenHandler` 那条路是空的。转圈 15 秒则是 GNOME 起的 xdg-activation token 无人消费，一直等到 startup notification 超时 | 已生效（**推翻** [ADR-0092](#adr-0092) 的两处判断："自己发通知"被否决的理由是"要读消息内容"，而实际上**只需要未读总数**；"页面通知点击不会激活窗口"从已知限制变成已解决。**不动** [ADR-0086](#adr-0086) 的"不拦截"—— 没有 hook 任何东西。免打扰（[ADR-0082](#adr-0082)）顺势从权限层搬到 `announceNewMessages()`，因此它**立刻生效**，不再需要"重新加载页面"。代价是通知里没有发送者与摘要。⚠️ 已知限制 3（页面显示"通知已关闭"的提示条）**真机确认出现**，已由 [ADR-0094](#adr-0094) 解决；"正在看的会话会不会漏提示"仍待真机对照） |
 | [0094](#adr-0094) | **把页面的通知 API 整个拿掉**：启动期追加内核开关 `--disable-notifications`（`src/main/page-notifications.ts`）。[ADR-0093](#adr-0093) 之后页面那条通知由我们代发、它的 `notifications` 权限恒拒 ⇒ `Notification.permission` 是 `denied`，网页版自己挂一条「去浏览器里开启通知」的提示条，而且**点不掉**（横幅上那个按钮调的 `requestPermission()` 同样被拒，真机日志里就是那行 `permission denied`）。探针实测这个开关**不是**"授权但静默"：渲染进程里 `typeof Notification === 'undefined'`；上游那条判据（`WAWebPushNotificationsGatingUtils`）只在 `default`、或 `denied` + Chrome 系 UA 时为真，读到 `undefined` 两分支都不成立 ⇒ 提示条消失。**主进程 `Notification` 不受影响**（`show` 事件与 D-Bus `Notify` 实测都在），我们自己那几条照旧能弹能点 | 已生效（新增；**解决** [ADR-0093](#adr-0093) 已知限制 3，真机两次启动的日志对照 + 用户目视确认。与 `notificationsReplaced` 是一对：将来若真要做"用回页面通知"的回退开关，必须**同时**撤掉它，否则回退是个静默的空功能。⚠️ 网页版设置页「通知」里那一行文案会变成什么样**没有验过**） |
 | [0095](#adr-0095) | **消息通知交回页面自己发**：撤掉 [ADR-0093](#adr-0093) 的主进程代发与 [ADR-0094](#adr-0094) 的 `--disable-notifications`，页面的 `notifications` 权限恢复放行、`Notification` 接口回来，主进程不再发「有新消息」。两份 `.desktop` 条目同时加 `StartupNotify=false`，单独治掉"点通知后光标空转约 15 秒"。判据是**内容比跳转重要**：主进程能拿到的只有未读总数（标题），而发送者与摘要在页面手里 —— 在 INV-1 之下没有任何合法来源 | 已生效（2026-10-21；**推翻** [ADR-0093](#adr-0093) 与 [ADR-0094](#adr-0094)，让 [ADR-0086](#adr-0086) 的"不拦截、不自建"重新成为完整描述。代价：点页面通知不激活窗口（[ADR-0092](#adr-0092) 的老限制重新成立）；免打扰落回权限层，勾上时 `permission` 变 `denied`、页面可能挂出「需要开启通知」（[ADR-0094](#adr-0094) 的症状只在用户主动开免打扰时出现）。`StartupNotify=false` 未真机验证） |
-| [0096](#adr-0096) | **页面通知的点击由我们接住**：主进程旁听会话总线上的 `org.freedesktop.Notifications`，用"这条 `Notify` 的 sender 是不是**我自己这个进程**"（`GetConnectionCredentials` 的 `ProcessID` 对比 `process.pid`）认领，认领到就 `presentWindow()`。通知内容仍由页面自己发、我们一个字都不改（[INV-1](#adr-0057) 不动）；不拦截、不代发、不注入。**修正** [ADR-0092](#adr-0092) 否决"旁听 `ActionInvoked`"的三条理由（PID 相关性经实测成立，"无法判断是不是我们的"不再成立），并**推翻** [ADR-0095](#adr-0095) 已知限制 1 的"没有解法" | 草案（2026-10-22；证据是本机实测：WaaChat 的 `Notify` 由 pid 1715402 的 **Electron 浏览器进程**发出、`argv` 不含 `--type=`，点击的 `ActionInvoked(id,"default")` 单播回那条连接、旁听连接看得到。⚠️ 实现形态（自写最小监视客户端 vs 引入 `dbus-next`）是最值得在评审时推翻的一处；旁听连接可见全总线通知内容，需写进 `DISCLAIMER.md`） |
+| [0096](#adr-0096) | **页面通知的点击由我们接住**：主进程旁听会话总线上的 `org.freedesktop.Notifications`，用"这条 `Notify` 的 sender 是不是**我自己这个进程**"（`GetConnectionCredentials` 的 `ProcessID` 对比 `process.pid`）认领，认领到就 `presentWindow()`。通知内容仍由页面自己发、我们一个字都不改（[INV-1](#adr-0057) 不动）；不拦截、不代发、不注入。**修正** [ADR-0092](#adr-0092) 否决"旁听 `ActionInvoked`"的三条理由（PID 相关性经实测成立，"无法判断是不是我们的"不再成立），并**推翻** [ADR-0095](#adr-0095) 已知限制 1 的"没有解法" | 已生效（2026-10-22；证据是本机实测：WaaChat 的 `Notify` 由 pid 1715402 的 **Electron 浏览器进程**发出、`argv` 不含 `--type=`，点击的 `ActionInvoked(id,"default")` 单播回那条连接、旁听连接看得见。落地用 `dbus-next`（运行时依赖 2→3，`usocket: false`，两个内部行为的坑写在正文）；旁听连接可见全总线通知内容，已写进 `DISCLAIMER.md` 与 security T8。⚠️ **应用内的一次真实点击**待验证） |
 
 ---
 
@@ -7088,8 +7088,9 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
 这一条**修正** [ADR-0092](#adr-0092) 否决"旁听 `ActionInvoked`"时那三条理由，并**推翻**
 [ADR-0095](#adr-0095) 已知限制 1 的"这一条**没有**解法"。
 
-**状态**：草案（2026-10-22；机制已由真机实测确认，实现尚未落地）。⚠️ **实现形态**那一小节是
-本文最值得在评审时推翻的一处。
+**状态**：已生效（2026-10-22；机制经真机实测，实现已落地并通过 `pnpm run check`。⚠️ **应用内的一次
+真实点击**待验证 —— 见"怎么验证"第 3 条；**依赖**那一小节是本文最值得复核的一处，它与初稿的
+主张相反）。
 
 **背景**：用户要的是两样东西同时成立 —— 通知里要有**发送者与摘要**（只有页面那条有），并且
 **点它能把窗口带回来**。[ADR-0095](#adr-0095) 当时把这两件事算成互斥的：页面通知有内容、点不动；
@@ -7124,22 +7125,48 @@ locale），View 里带着 Force Reload、Toggle DevTools、Reset Zoom / Zoom In
    回到现状（点通知什么都不发生）。不存在"静默失效"。
 4. **判据能单测**：认领、id 映射、上限都是纯函数，与 socket 分开。
 
-**实现形态**：自写一个最小监视客户端 `src/main/dbus-monitor.ts`（`node:net`，**零新依赖**），只说三件
-事：`AUTH EXTERNAL` 握手 → `Hello` → `BecomeMonitor([], 0)`；之后只读。判据放
-`src/shared/notify-activation.ts`（纯函数：输入一条已解码的消息，输出 `none` / `record-id` / `activate`），
-动作由 `src/main/index.ts` 注入 `presentWindow(getMainWindow())` —— 与 `notice.ts` 的
-`setNoticeActivation()` 同形。认领链是：
+**实现形态**：`src/main/notify-activation.ts` 开**两条**会话总线连接 —— 一条 `BecomeMonitor([], 0)`
+只读旁听，另一条普通连接专门问 `GetConnectionCredentials`（监视连接只读，发一条消息就会被总线
+断开）。判据全在 `src/shared/notify-activation.ts`（纯函数，不导入 electron），动作由 `index.ts`
+注入 `presentWindow(getMainWindow())` —— 与 `notice.ts` 的 `setNoticeActivation()` 同形。
+
+认领有**两条路**，任一成立就算我们的：
 
 ```
-Notify(sender pid == process.pid, serial S)  →  等 reply_serial == S 的 method_return  →  ownIds.add(id)
-ActionInvoked(id ∈ ownIds)                   →  从 ownIds 删掉，presentWindow()
-NotificationClosed(id)                       →  ownIds.delete(id)
-其余一切                                      →  在解码边界丢弃，不落日志
+Notify(sender 的 pid == process.pid, serial S) → ownSenders.add(sender)
+                                              → 等 reply_serial == S 的 method_return → ownIds.add(id)
+ActionInvoked(id, destination) → ownIds 里有 id，或 destination ∈ ownSenders  →  presentWindow()
+NotificationClosed(id)         →  ownIds.delete(id)
+其余一切                        →  丢弃：不读正文、不落日志
 ```
 
-`ownIds` 与 `notice.ts` 的 `live` 同样有上限（防泄漏，取 64），`NotificationClosed` 不保证发出是已知
-事实（[ADR-0092](#adr-0092) 已知限制 3）。`BecomeMonitor` 用**空规则**（我们本来就要同时看
-method call / method return / signal，写规则只会漏）。
+两条路都要，因为**单用哪一条都有洞**：只按 id 依赖"守护进程把方法返回也发给监视器"；只按
+`destination` 依赖"信号是单播"（广播形态没有 `destination`，本机 `:1.11` 那一份就是）。它们之间还有
+一个**毫秒级竞态** —— `Notify` 的回复可能比 PID 核实先到，那时 serial 还没记账。所以先到的回复进一个
+有上限的 `recentReturns` 缓冲，等认领成立再回头比对；否则症状是"第一次点击不生效、之后才正常"，
+几乎无法复现。三个册子都有上限（64、64、64，缓冲 16），理由与 `notice.ts` 的 `live` 相同：防泄漏，
+不是语义；`NotificationClosed` 不保证发出是已知事实（[ADR-0092](#adr-0092) 已知限制 3）。
+
+**依赖：`dbus-next`（运行时依赖从 2 个变成 3 个）**。这一条与本文初稿相反 —— 初稿主张自写一个
+`node:net` 的最小客户端。用户评审时选了 dbus-next，代价与理由都记在这里：
+
+- 它带来 7 个运行时依赖、79 个包、13 个已废弃的传递依赖（`event-stream@3.3.4`、`xml2js@0.4`、
+  `hexy` …），而 `ai/CONVENTIONS.md` 第 7 节第一问（"半天内能否自己实现"）的答案是"能"。
+- **它是原生模块吗**：`usocket` 是它的 **optionalDependency**，NAN 时代的产物。dbus-next 的代码里
+  一次都没 `require` 过它（全树 grep 0 命中），但它带 build script ⇒ pnpm 12 让 `pnpm add` 以
+  `ERR_PNPM_IGNORED_BUILDS` 失败。落点：`pnpm-workspace.yaml` 的 `allowBuilds` 里显式
+  `usocket: false`（与 `electron-winstaller: false` 同形）。
+- **维护状态**：0.10.2 是 2021 年的最后一版。
+
+两个实测出来的坑，都靠断言与注释钉着：
+
+1. **监视连接会被自己的自动错误回复打死。** `MessageBus` 收到一条没人认领的 method call 会回
+   `UnknownMethod`，而监视连接只读 —— 发一条就断。实测：观察到第一条 `Notify` 之后彻底静默，
+   连 `error` 事件都没有。堵法是 `addMethodHandler(() => true)`。
+2. **`GetConnectionCredentials` 的 `a{sv}` 返回值走 proxy 那条路会崩**（`marshall-compat` 里
+   `expected value for signature`），必须用裸 `Message` 调。
+
+⚠️ 两条都是 dbus-next 的**内部行为**，升级它之前必须重跑"怎么验证"第 2 条那套 A/B 对照。
 
 **被否决的替代方案**：
 
@@ -7149,10 +7176,10 @@ method call / method return / signal，写规则只会漏）。
   否掉过一次。
 - **`spawn('dbus-monitor')` 解析它的文本输出**：零依赖，但把人看的格式当协议（版本/语言/守护进程
   一变就崩），还要多管一个子进程的生命周期与恢复。
-- **引入 `dbus-next` 之类纯 JS 客户端**：本仓库的运行时依赖只有两个（`better-sqlite3`、
-  `electron-updater`），为了一条点击信号塞进一整套 D-Bus 客户端（连同传递依赖与打包白名单）不划算；
-  我们需要的只是"读三类消息"。⚠️ 若评审认为自写协议代码的风险更高，这是一条**合理的替代**，
-  换它需要在本文改一处而不是新开 ADR。
+- **自写一个 `node:net` 的最小监视客户端**（本文初稿的主张）：零新依赖，只需要 `AUTH EXTERNAL`
+  握手、`Hello`、`BecomeMonitor` 与三个 body 签名（`u` / `us` / 无）的解析。**被用户评审时否决**：
+  自写 marshalling 自有 bug 面（字节序、对齐、header 字段编码），而这一段出错的症状同样是"静默不
+  激活"，与我方代码的规模不成比例。代价是接受了上面"依赖"一节里的全部条目。
 - **只认广播形态的 `ActionInvoked`**：本机代理 `:1.11` 确实是广播（`destination=null`），但这不是
   规范保证的，换守护进程就没了。
 - **按 `desktop-entry` / `x-shell-sender` hints 判断归属**：本机代理会补，裸 GNOME 不补，且多实例
@@ -7160,35 +7187,42 @@ method call / method return / signal，写规则只会漏）。
 
 **影响**：
 
-- 新增 `src/main/dbus-monitor.ts`（socket、鉴权、编解码；只解析 `u` / `us` 两种 body 签名与头部字段）
-  与 `src/shared/notify-activation.ts`（纯判据）。
-- `src/main/index.ts`：在窗口建立之后接线，动作只有 `presentWindow(getMainWindow())`。页面通知不区分
-  窗口归属，一律主窗口（设置窗口的提示仍走 `notice.ts` 那条 `click`）。
-- 新增 `test/unit/notify-activation.test.ts`：sender pid 不匹配 → 丢；`method_return` 映射；未知 id →
-  丢；`ownIds` 上限。
-- `scripts/check-capture.ts` 新增一节：`presentWindow` 只有这一处入口、日志里不出现通知正文、
-  上限常量在、`BecomeMonitor` 空规则。
-- `docs/usage.md`：把"点页面通知不会激活窗口"改成"会"，并保留"展开哪个会话由页面决定"。
-- `docs/security.md` + `DISCLAIMER.md`：新增一段说明旁听连接**可见全总线通知内容**，我们的解析层
-  在解码后立刻丢弃非本进程消息、且从不写入日志。
+- 新增 `src/main/notify-activation.ts`（两条连接、消息分派、PID 核实）与
+  `src/shared/notify-activation.ts`（认领判据）。
+- `src/main/index.ts`：`setNoticeActivation()` 之后接线；`will-quit` 里 `stopPageNotificationActivation()`。
+- `src/main/notice.ts` / `shared/notice.ts`：**不动** —— 那三条是主进程自己发的通知，走 `click` 事件。
+- `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`：`dbus-next`，以及 `usocket: false`。
+- 新增 `test/unit/notify-activation.test.ts`（8 例）：顺序到达、回复先到那个竞态、别人的回复留在
+  缓冲、两条上限、按 id 认领、按连接认领、重复点击、`NotificationClosed` 之后不再认领。
+- `scripts/check-capture.ts` 新增「页面通知的点击（D-Bus 旁听）」一节（6 条断言）。
+- `docs/usage.md` / `ai/CONTEXT.md` / `docs/roadmap.md` 的行为描述改写；`docs/security.md` 新增 T8
+  与 T6 的一条补充；`DISCLAIMER.md` 第 2 节加一行。
 
 **已知限制**：
 
 1. **需要总线允许 `BecomeMonitor`。** 被策略拒绝时整个功能不生效（退化为现状），只在日志里说一次。
-2. **旁听者看得到所有通知的标题与正文**（不只是我们的）。这是本方案唯一实质性的隐私代价：
-   `DISCLAIMER.md` 必须写明，且"不落日志"要靠断言钉住，不能靠自觉。
+2. **旁听者看得到所有通知的标题与正文**（不只是我们的）。这是本方案唯一实质性的隐私代价，已写进
+   `DISCLAIMER.md` 与 [`security.md`](security.md) 的 T8；"不落日志"由自检断言钉着，不靠自觉。
 3. **Electron 不暴露 xdg-activation token**，Wayland 下 `focus()` 仍然只是"请求"。点击本身带来
    token（证据 3），[ADR-0092](#adr-0092) 的实测是我们这边唯一依据。
 4. **只做"激活窗口"**：点完之后展开哪个会话、是否标记已读，仍是页面自己的事。
 5. **不同通知守护进程 / `dbus-broker` 未逐一验证**：实测环境是 `dbus-daemon` + Ubuntu 的通知代理层。
+   "广播形态没有 `destination`"那一支有代码兜着，但没有真机证据。
 6. **同一进程内的多个窗口不区分**：一律主窗口（设置窗口的提示仍由 `notice.ts` 处理，不受影响）。
+7. **依赖的维护状态是长期的债**：dbus-next 停在 2021 年，而上面两个坑都是对**内部行为**的假设。
+   升级它、或它哪天在 Electron 的新版本下行为变了，症状会是"点了通知毫无反应"—— 没有断言能覆盖
+   到那一步，只能靠"怎么验证"那套 A/B 对照。
 
 **怎么验证**：
 
-1. `pnpm run check` 通过（新增单测 + 自检那一节）。
-2. 真机（步骤与本次探测相同）：关到托盘 → 另一个账号发一条消息 → 通知带**发送者与摘要** →
-   点它 → 窗口到前台。
-3. **多实例**：两个实例登录不同账号，让 A 收消息 → 点 A 的通知 → **只有 A 的窗口**到前台（PID 认领
+1. `pnpm run check` 通过（单测 8 例 + 自检那一节的 6 条）。
+2. **已做的实测**（2026-10-22，本轮）：`GetConnectionCredentials` 的 PID 与本进程一致；页面通知的
+   `Notify` 来自 Electron 浏览器进程；点击的 `ActionInvoked` 单播回该连接；旁听连接看得到
+   `method return`；dbus-next 的两个坑各有一组 A/B 对照（补上 `addMethodHandler` 之前监视器在第一条
+   `Notify` 之后静默、补上之后继续收到消息）。
+3. **应用内的一次真实点击**（待做）：关到托盘 → 另一个账号发一条消息 → 点通知 → 窗口到前台，
+   日志里出现 `page-notification: clicked, bringing the window back`。这一步验证的才是"装配接对了"。
+4. **多实例**：两个实例登录不同账号，让 A 收消息 → 点 A 的通知 → **只有 A 的窗口**到前台（PID 认领
    是否真的精确，只有这一步能证明）。
-4. 反向：在一台拒绝 `BecomeMonitor` 的机器/沙箱里启动 → 日志一条 warn、应用照常、点通知不激活。
-5. 隐私回归：日志里 grep 通知正文的一个特征串，必须为空。
+5. 反向：在一台拒绝 `BecomeMonitor` 的机器/沙箱里启动 → 日志一条 warn、应用照常、点通知不激活。
+6. 隐私回归：日志里 grep 通知正文的一个特征串，必须为空。

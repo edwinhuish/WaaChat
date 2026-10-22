@@ -150,6 +150,10 @@
 - 对策：
   - CI 的 `GITHUB_TOKEN` 权限最小化（`contents: read`），只有发布工作流需要 `write`。
   - 依赖更新走 Dependabot，**原生依赖与 Electron 主版本升级需要人工评审并跑 `pnpm run verify`**（见 `dependabot.yml` 里的 ignore 规则）。
+  - 运行时依赖从两个变成三个：`dbus-next`（[ADR-0096](decisions.md#adr-0096)）带进 7 个运行时依赖
+    与 79 个包，自身停在 2021 年。它的 `optionalDependency` `usocket` 是原生插件（dbus-next 从不
+    加载它），因此在 `pnpm-workspace.yaml` 里显式 `usocket: false` —— 不给供应链多开一个编译执行点。
+    升级它之后要重跑 ADR-0096「怎么验证」第 2 条那套 A/B 对照。
   - 发布产物附 SHA-256；发布工作流同时归档产物。
 
 ### T7 · 用户误解归档的加密属性
@@ -157,6 +161,20 @@
 - 触发条件：用户以为"端到端加密"覆盖了本地归档。
 - 后果：把归档目录放进同步盘，实质泄露全部通信文件。
 - 对策：`usage.md` 与首次运行的提示中必须明确说明；`DISCLAIMER.md` 第 3 节是对外承诺。
+
+### T8 · 旁听会话总线时看到**其他**应用的通知
+
+- 触发条件：为接住"点击页面通知"这件事，主进程用 `BecomeMonitor` 旁听会话总线（[ADR-0096](decisions.md#adr-0096)）。
+- 后果：监视连接拿到的是**全量**副本 —— 本机其它应用弹出的通知（含标题与正文）也会流经我们的解析层。
+  把消息对象整个写进日志或崩溃报告，等于把别人的私密内容落到我们的磁盘上（与 T4 同级）。
+- 对策（**强制**）：
+  - 解析层只读**头部**（`sender` / `serial` / `reply_serial` / `destination`）与两类 body 的第一个
+    `uint32`；正文只在"已经确认这条通知是我们发的"之后才被读，且**从不**写进日志。
+  - `scripts/check-capture.ts` 断言 `src/main/notify-activation.ts` 里每个 `logger.*` 调用都不含
+    `body` / `summary` / `title`。
+  - 问不出 `GetConnectionCredentials` 时按"不是我们的"处理：宁可少激活一次（用户还有托盘那条路），
+    也不认领别人的通知点击。
+  - 对外声明落在 `DISCLAIMER.md` 第 2 节"通知"那一行。
 
 ## 4. 与合规的关系
 
