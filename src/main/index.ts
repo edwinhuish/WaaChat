@@ -27,6 +27,10 @@ import { applySmoothScrolling } from './smooth-scroll'
 import { configureLogger, logger, redactPath } from './logger'
 import { installApplicationMenu } from './menu'
 import { setNoticeActivation } from './notice'
+import {
+  startPageNotificationActivation,
+  stopPageNotificationActivation,
+} from './notify-activation'
 import { attachDictionaryWatch, configureSession } from './session'
 import { getSettings } from './settings'
 import { applyDictionaryDownloadSource } from './spellcheck'
@@ -260,6 +264,8 @@ app.on('before-quit', () => {
 /** 连接关闭放在 `will-quit`：`before-quit` 之后可能还有窗口在收尾。 */
 app.on('will-quit', () => {
   closeArchiveStore()
+  // 旁听用的两对总线连接（[ADR-0096]）：进程退出本来也会断开，但先关一步更干净。
+  stopPageNotificationActivation()
 })
 
 app.whenReady().then(async () => {
@@ -398,6 +404,22 @@ app.whenReady().then(async () => {
     },
     settings: () => {
       presentWindow(getSettingsWindow() ?? createSettingsWindow())
+    },
+  })
+
+  /**
+   * **页面自己那条**消息通知的点击（[ADR-0096]）—— 与上面那一块是两条不同的通道：
+   * 这里接的是页面发的通知，它的点击**到不了主进程**，只能靠旁听会话总线上的
+   * `ActionInvoked` 认领（判据在 `shared/notify-activation.ts`，接线在 `notify-activation.ts`）。
+   *
+   * 目的地只有聊天窗口：页面通知不区分窗口归属，点它就是想回到聊天。拿不到监视权限时那条
+   * 通道自己记一条 warn 退化成现状，这里不做任何判断（也不 `await` —— 它在任何一条通知可能
+   * 弹出来之前就该开始听，晚一步就可能漏掉第一次点击）。
+   */
+  void startPageNotificationActivation({
+    onActivate: () => {
+      const window = getMainWindow()
+      if (window !== null) presentWindow(window)
     },
   })
 

@@ -30,3 +30,14 @@ allowBuilds:
   # 显式 false = "知道它存在、明确不需要"，既堵住 ERR_PNPM_IGNORED_BUILDS，
   # 也不给供应链多开一个执行点。将来若真要加 Windows 目标，把它改成 true 即可。
   electron-winstaller: false
+
+  # usocket 是 dbus-next 的 **optionalDependency**（抽象命名空间的 unix socket），
+  # 用于 [ADR-0096] 那条"旁听 ActionInvoked"的通道。它是 NAN 时代的原生插件：
+  # 批准构建 = 打包机被迫需要 gcc/make，而 `electron-builder.yml` 的 `npmRebuild: false`
+  # 又不会给它重建，装出来的二进制未必对得上 Electron 的 ABI。
+  # 关键是：dbus-next 0.10.2 的代码里**一次都没有 require 过它**（全树 grep 0 命中），
+  # 我们只用普通的 unix socket（`unix:path=…`），走的是 Node 自带的 net。
+  # 显式 false = "知道它存在、明确不需要"。
+  # 复核方式见 [ADR-0096] 的"怎么验证"：`pnpm install` 之后不应再出现
+  # ERR_PNPM_IGNORED_BUILDS。
+  usocket: false

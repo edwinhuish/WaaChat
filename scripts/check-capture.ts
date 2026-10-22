@@ -2377,6 +2377,62 @@ check(
 )
 
 /**
+ * 页面自己那条通知的点击（`src/main/notify-activation.ts` + `src/shared/notify-activation.ts`，
+ * [ADR-0096]）。
+ *
+ * 这条通道的失效**一条都不会报错**：漏了 `addMethodHandler` ⇒ 监视连接在第一条被观察到的
+ * `Notify` 之后静默断连（实测：之后收不到任何消息，也没有 `error` 事件）；认领写成按 app 名
+ * ⇒ 多实例之间互相抢；日志里带上正文 ⇒ 把**别人**的消息摘要写进磁盘。所以这一节钉的是形状。
+ */
+
+section('页面通知的点击（D-Bus 旁听）')
+
+const pageActivationIo = source('../src/main/notify-activation.ts')
+const pageActivationLogic = source('../src/shared/notify-activation.ts')
+
+check(
+  '监视连接堵掉了 dbus-next 的自动错误回复（漏了 ⇒ 第一条 Notify 之后静默断连）',
+  pageActivationIo.includes('addMethodHandler(() => true)'),
+  '症状是"头几分钟能用、之后再也不激活"，而且没有任何错误事件',
+)
+
+check(
+  '装配处开始旁听，动作只有「把聊天窗口带到前面」',
+  entrySource.includes('startPageNotificationActivation(') && entrySource.includes('onActivate:'),
+  '漏了这一句 = 整条通道没开，界面上看不出任何区别',
+)
+
+check(
+  '退出时断开总线连接',
+  entrySource.includes('stopPageNotificationActivation()'),
+  '进程退出本来也会断开，少这一句就说不清有没有泄漏',
+)
+
+check(
+  '认领靠 pid（`GetConnectionCredentials` → `ProcessID`），不靠 app 名或 hint',
+  pageActivationIo.includes('GetConnectionCredentials') &&
+    pageActivationIo.includes('ProcessID') &&
+    pageActivationIo.includes('process.pid'),
+  '按 app 名认会在多实例之间互相抢：点了 A 的通知，B 的窗口跳出来（[ADR-0062]）',
+)
+
+check(
+  '判据在 shared 里，且不导入 electron（要能被单测直接喂）',
+  pageActivationLogic.includes('export function decideClick') &&
+    !pageActivationLogic.includes("from 'electron'"),
+  '',
+)
+
+check(
+  '日志里不出现通知正文（旁听连接看得到**所有人**的通知）',
+  pageActivationIo
+    .split('\n')
+    .filter((line) => line.includes('logger.'))
+    .every((line) => !/\b(body|summary|title)\b/.test(line)),
+  '一条别人的消息摘要进了日志，就是本功能最坏的那个后果',
+)
+
+/**
  * 应用菜单（`src/main/menu.ts`）。
  *
  * 我们不调用 `Menu.setApplicationMenu()` 时，Electron 会装**它自己**那份默认菜单：文案是英文、
