@@ -104,6 +104,8 @@ sudo apt install gnome-shell-extension-appindicator
 > 与官方网页版在浏览器里看到的那条一致。我们只放行它的通知权限，不拦截、不伪造（[INV-1](decisions.md#adr-0057)）。
 > ⚠️ 代价说清楚：**点这条通知不会把窗口带到前台**（Linux 上 Electron 没有这条能力，
 > 页面自己喊的 `client.focus()` 也无效）。想回到聊天：点托盘图标，或托盘 / 菜单里的「显示聊天」。
+> （这一条**已定方案、尚未落地**：旁听总线的 `ActionInvoked` 并按 `ProcessID` 认领，见
+> [ADR-0096](decisions.md#adr-0096) 草案。）
 > 那个"鼠标点通知后一直转圈约 15 秒"的老问题由桌面条目里的 `StartupNotify=false` 解决
 > —— 光标不再空转，但窗口仍然不跳（同一件事的两半）。
 > **应用自己发的另外三条提示**（接管失效 / 词典下载失败 / 全屏退出）仍然点得动 ——

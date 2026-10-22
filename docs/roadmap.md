@@ -199,11 +199,11 @@
 | 深链接与 `--new-chat` | ✅ **已落地**：`whatsapp:` / `wa.me` 链接与命令行三条入口都归一化成上游自己那条路由（代价是重新加载页面） | [ADR-0083](decisions.md#adr-0083) |
 | 页面进 HTML 全屏后怎么退出去 | ✅ **已落地**：每个进程弹一次系统通知，只说 `Esc` | [ADR-0084](decisions.md#adr-0084) |
 | 屏幕共享（`display-capture`） | 🟡 **暂不放行，继续等证据**：判据一个字节都不改，先把取证链路上缺的那一环补上（权限"检查"被拒也留痕）；拿到真实通话的日志之后才回来决定 | [ADR-0085](decisions.md#adr-0085)、[`../ai/TASKS.md`](../ai/TASKS.md) T14 |
-| 点系统里的通知回到窗口 | ⬜ **不做**（也做不到）：通知由页面发、由内核交给桌面，而 **Linux 上点击它不会激活窗口**（`client.focus()` 落到只隐藏菜单的内核路径，[ADR-0092](decisions.md#adr-0092)）；主进程也没有"页面通知被点击"的事件。接管它就得替页面发通知 ⇒ 要读页面内容 ⇒ INV-1，而且那条路已经在 [ADR-0093](decisions.md#adr-0093) 试过、由 [ADR-0095](decisions.md#adr-0095) 撤回 | [ADR-0086](decisions.md#adr-0086) / [ADR-0095](decisions.md#adr-0095) |
+| 点系统里的通知回到窗口 | 🟨 **方案已定、待实现**：通知仍由页面发（内容、权限、免打扰都不变），点击靠主进程旁听会话总线上的 `org.freedesktop.Notifications`、用 `GetConnectionCredentials` 的 `ProcessID` 认领"这条是我发的"，再 `presentWindow()`。原先那句"做不到"已被实测推翻（PID 能精确对到发起进程；点击确实单播回发起连接） | [ADR-0096](decisions.md#adr-0096)（**修正** [ADR-0092](decisions.md#adr-0092) 的否决、**推翻** [ADR-0095](decisions.md#adr-0095) 已知限制 1） |
 
-> 最后一行那条"不做"不是"暂时没排期"，而是一次**决定**：这件事的唯一可行做法就是"内核层不插手"，
-> 而它今天已经在跑。写进路线图是为了下一次盘点时**不再把它当缺口** —— 否则最省事的"修法"正是
-> [ADR-0086](decisions.md#adr-0086) 里那条被否决的路。
+> 最后一行曾经是"不做（也做不到）"，现在是"方案已定、待实现"。**仍然不要**去走
+> [ADR-0086](decisions.md#adr-0086) 里被否决的那条路（替页面发通知 / 注入脚本 / preload）：
+> 新方案一个字节都不碰页面，它只读"某条连接被点了"这个总线事实。
 
 **本批同时把文档对齐了一次**：本文件、[`usage.md`](usage.md)、[`../ai/CONTEXT.md`](../ai/CONTEXT.md)、
 `CHANGELOG.md` 与各条 ADR 逐条核对；[`README.md`](README.md) 第 3 节的目录结构还补上了几个漏登记的
