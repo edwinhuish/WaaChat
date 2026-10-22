@@ -18,6 +18,7 @@ import {
   claimNotificationId,
   claimOwnNotify,
   decideClick,
+  processIdFromCredentials,
   releaseClosed,
   type ClaimState,
 } from '../../src/shared/notify-activation'
@@ -121,5 +122,33 @@ describe('releaseClosed', () => {
   it('不认识 id 时原样返回（不做无意义的拷贝）', () => {
     const state = claimOwnNotify(EMPTY_CLAIM, { sender: OUR_CONNECTION, serial: 64 })
     expect(releaseClosed(state, 123)).toBe(state)
+  })
+})
+
+/**
+ * `GetConnectionCredentials` 的返回值形状。
+ *
+ * 这一组是**回归测试**：第一版按 `Map` 取，实测 dbus-next 给的是普通对象，于是 `ProcessID`
+ * 恒为 `null`、两条认领路径全都不成立，而症状只是"点了没反应"。
+ */
+describe('processIdFromCredentials', () => {
+  it('普通对象 + Variant（dbus-next 的实际形状）', () => {
+    expect(processIdFromCredentials({ ProcessID: { signature: 'u', value: 4321 } })).toBe(4321)
+  })
+
+  it('Map + Variant（类型声明暗示的形状，也要能读）', () => {
+    const credentials = new Map<string, unknown>([['ProcessID', { signature: 'u', value: 4321 }]])
+    expect(processIdFromCredentials(credentials)).toBe(4321)
+  })
+
+  it('已经是裸数字时直接取', () => {
+    expect(processIdFromCredentials({ ProcessID: 4321 })).toBe(4321)
+  })
+
+  it('没有这一项、或值不是数字 → null（宁可少激活，也不认领别人的通知）', () => {
+    expect(processIdFromCredentials({ UnixUserID: { value: 1000 } })).toBeNull()
+    expect(processIdFromCredentials({ ProcessID: { value: '4321' } })).toBeNull()
+    expect(processIdFromCredentials(null)).toBeNull()
+    expect(processIdFromCredentials('nonsense')).toBeNull()
   })
 })

@@ -27,13 +27,14 @@
  * 一环 —— 这也是这里不用 `addMatch` 而是拿**全量**消息、自己做分派的原因之一。
  */
 
-import { Message, MessageType, Variant, sessionBus, type MessageBus } from 'dbus-next'
+import { Message, MessageType, sessionBus, type MessageBus } from 'dbus-next'
 
 import {
   EMPTY_CLAIM,
   claimNotificationId,
   claimOwnNotify,
   decideClick,
+  processIdFromCredentials,
   releaseClosed,
   type ClaimState,
 } from '../shared/notify-activation'
@@ -110,6 +111,9 @@ export async function startPageNotificationActivation(options: ActivationOptions
     return
   }
 
+  // 成功路径也要留一行：没有它，"旁听没起来"与"旁听了但没认领到"在日志里长得一模一样。
+  logger.info('page-notification: listening on the session bus')
+
   monitor.on('message', (message: Message) => {
     try {
       dispatch(message)
@@ -155,6 +159,11 @@ export async function startPageNotificationActivation(options: ActivationOptions
         destination: message.destination ?? null,
       })
       state = decision.state
+      // 一行 debug 值千金：认领失败时"信号根本没来"与"来了但认不下来"只能靠它区分。
+      logger.debug('page-notification: click signal', {
+        claimed: decision.activate,
+        unicast: message.destination !== undefined,
+      })
       if (decision.activate) {
         logger.info('page-notification: clicked, bringing the window back')
         options.onActivate()
@@ -197,7 +206,7 @@ export async function startPageNotificationActivation(options: ActivationOptions
       )
       if (reply === null) return false
 
-      const mine = processIdOf(reply.body) === selfPid
+      const mine = processIdFromCredentials(reply.body[0]) === selfPid
       ownConnections.set(sender, mine)
       return mine
     } catch (error) {
@@ -234,14 +243,4 @@ export function stopPageNotificationActivation(): void {
 function firstNumber(body: readonly unknown[]): number | null {
   const [first] = body
   return typeof first === 'number' ? first : null
-}
-
-/** `GetConnectionCredentials` 的返回值是 `a{sv}`：`Map<string, Variant>`。 */
-function processIdOf(body: readonly unknown[]): number | null {
-  const [credentials] = body
-  if (!(credentials instanceof Map)) return null
-
-  const processId: unknown = credentials.get('ProcessID')
-  const value = processId instanceof Variant ? processId.value : processId
-  return typeof value === 'number' ? value : null
 }

@@ -23,6 +23,31 @@
 export const CLAIM_LIMIT = 64
 
 /**
+ * 从 `GetConnectionCredentials` 的返回值里取出 `ProcessID`。
+ *
+ * ⚠️ **两种形状都要照顾，这是实测出来的，不是猜的**：dbus-next 把 `a{sv}` 解成**普通对象**
+ * （不是 `Map`），值是它自己的 `Variant`（`{ signature, value }`）。按 `Map` 写会得到
+ * `ProcessID === null` ⇒ 两条认领路径全都不成立 ⇒ 整条通道**静默失效**，而日志里只有
+ * "点击信号来了、但没认领"，看起来像守护进程的问题。踩过一次，因此这里也钉了单测。
+ */
+export function processIdFromCredentials(credentials: unknown): number | null {
+  const raw = readCredential(credentials, 'ProcessID')
+  const value = isVariantLike(raw) ? raw.value : raw
+  return typeof value === 'number' ? value : null
+}
+
+function readCredential(credentials: unknown, key: string): unknown {
+  if (credentials instanceof Map) return credentials.get(key) as unknown
+  if (typeof credentials !== 'object' || credentials === null) return null
+  if (!(key in credentials)) return null
+  return (credentials as Record<string, unknown>)[key]
+}
+
+function isVariantLike(value: unknown): value is { readonly value: unknown } {
+  return typeof value === 'object' && value !== null && 'value' in value
+}
+
+/**
  * `recentReturns` 的上限。
  *
  * 比 {@link CLAIM_LIMIT} 小得多是有意的：它只覆盖"回复先于 PID 核实到达"那个毫秒级窗口，

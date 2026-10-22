@@ -2432,6 +2432,13 @@ check(
   '一条别人的消息摘要进了日志，就是本功能最坏的那个后果',
 )
 
+check(
+  '认领失败可诊断：成功时有一行 info，每次点击信号有一行 debug',
+  pageActivationIo.includes("logger.info('page-notification: listening on the session bus')") &&
+    pageActivationIo.includes("logger.debug('page-notification: click signal'"),
+  '"旁听没起来"与"起来了但没认领到"在日志里长得一模一样 —— 排查时只能靠猜',
+)
+
 /**
  * 应用菜单（`src/main/menu.ts`）。
  *

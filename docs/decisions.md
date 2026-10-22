@@ -7158,13 +7158,19 @@ NotificationClosed(id)         →  ownIds.delete(id)
   `usocket: false`（与 `electron-winstaller: false` 同形）。
 - **维护状态**：0.10.2 是 2021 年的最后一版。
 
-两个实测出来的坑，都靠断言与注释钉着：
+三个实测出来的坑，都靠断言与注释钉着：
 
 1. **监视连接会被自己的自动错误回复打死。** `MessageBus` 收到一条没人认领的 method call 会回
    `UnknownMethod`，而监视连接只读 —— 发一条就断。实测：观察到第一条 `Notify` 之后彻底静默，
    连 `error` 事件都没有。堵法是 `addMethodHandler(() => true)`。
 2. **`GetConnectionCredentials` 的 `a{sv}` 返回值走 proxy 那条路会崩**（`marshall-compat` 里
    `expected value for signature`），必须用裸 `Message` 调。
+3. **`a{sv}` 解出来是普通对象，不是 `Map`**（值是 dbus-next 自己的 `Variant`：`{ signature, value }`）。
+   第一版按 `instanceof Map` 取，于是 `ProcessID` 恒为 `null` ⇒ PID 核实永远失败 ⇒ **两条认领路径
+   全部不成立**，整条通道静默失效。症状是日志里"点击信号来了、`claimed: false`"，看起来像守护进程
+   的毛病。修法是 `shared/notify-activation.ts` 的 `processIdFromCredentials()`（两种形状都读，
+   4 例回归单测）。**同时补了两行日志**：成功时的 `listening on the session bus`、以及每次点击信号的
+   `click signal { claimed, unicast }` —— 没有它们，"旁听没起来"与"起来了但没认领到"在日志里一模一样。
 
 ⚠️ 两条都是 dbus-next 的**内部行为**，升级它之前必须重跑"怎么验证"第 2 条那套 A/B 对照。
 
@@ -7220,7 +7226,11 @@ NotificationClosed(id)         →  ownIds.delete(id)
    `Notify` 来自 Electron 浏览器进程；点击的 `ActionInvoked` 单播回该连接；旁听连接看得到
    `method return`；dbus-next 的两个坑各有一组 A/B 对照（补上 `addMethodHandler` 之前监视器在第一条
    `Notify` 之后静默、补上之后继续收到消息）。
-3. **应用内的一次真实点击**（待做）：关到托盘 → 另一个账号发一条消息 → 点通知 → 窗口到前台，
+3. **不需要人点的那套**（私有总线）：`dbus-run-session` 起一条总线 + 一个假守护进程（收到 `Notify`
+   就返回 id、半秒后广播一条 `ActionInvoked`），再把**真实模块**跑在这条总线上。这条覆盖的是 id 认领
+   与 `method return` 捕获 —— 上面坑 3 就是这么被逮到的（`claimed: true` → 激活）。守护进程不支持
+   `InvokeAction`，所以真实总线上的点击无法自动化，只能靠下面这一步。
+4. **应用内的一次真实点击**（待做）：关到托盘 → 另一个账号发一条消息 → 点通知 → 窗口到前台，
    日志里出现 `page-notification: clicked, bringing the window back`。这一步验证的才是"装配接对了"。
 4. **多实例**：两个实例登录不同账号，让 A 收消息 → 点 A 的通知 → **只有 A 的窗口**到前台（PID 认领
    是否真的精确，只有这一步能证明）。
