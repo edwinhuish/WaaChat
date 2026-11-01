@@ -205,7 +205,7 @@ jobs:
       # 产物同时存档 30 天，防止 Release 被误删后无从追溯
       - name: 归档产物
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: waachat-${{ steps.version.outputs.tag || github.ref_name }}
           retention-days: 30
